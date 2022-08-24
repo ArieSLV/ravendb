@@ -185,14 +185,14 @@ namespace Raven.Server.Web.Authentication
                     throw new ArgumentException("Unable to load the provided certificate.", e);
                 }
 
-                if (LoggingSource.AuditLog.IsInfoEnabled)
+                if (LoggingSource.AuditLog.IsOperationsEnabled)
                 {
                     var clientCertificate = GetCurrentCertificate();
                     var auditLog = LoggingSource.AuditLog.GetLogger("Certificates","Audit");
                     var permissions = certificate?.Permissions != null
                         ? Environment.NewLine + string.Join(Environment.NewLine, certificate.Permissions.Select(kvp => kvp.Key + ": " + kvp.Value.ToString()))
                         : string.Empty;
-                    auditLog.Info($"Add new certificate '{certificate?.Thumbprint}'. Security Clearance: {certificate?.SecurityClearance}. Permissions:{permissions}." +
+                    auditLog.Operations($"Add new certificate '{certificate?.Thumbprint}'. Security Clearance: {certificate?.SecurityClearance}. Permissions:{permissions}." +
                                   $"{Environment.NewLine}IP: '{HttpContext.Connection.RemoteIpAddress}'. Certificate: {clientCertificate?.Subject} ({clientCertificate?.Thumbprint})");
                 }
                 
@@ -361,11 +361,11 @@ namespace Raven.Server.Web.Authentication
                 if (definition != null)
                     keysToDelete.AddRange(definition.CollectionSecondaryKeys);
 
-                if (LoggingSource.AuditLog.IsInfoEnabled)
+                if (LoggingSource.AuditLog.IsOperationsEnabled)
                 {
                     var clientCertificate = GetCurrentCertificate();
                     var auditLog = LoggingSource.AuditLog.GetLogger("Certificates","Audit");
-                    auditLog.Info($"Delete certificate '{thumbprint}'. IP: '{HttpContext.Connection.RemoteIpAddress}'. Certificate: {clientCertificate?.Subject} ({clientCertificate?.Thumbprint})");
+                    auditLog.Operations($"Delete certificate '{thumbprint}'. IP: '{HttpContext.Connection.RemoteIpAddress}'. Certificate: {clientCertificate?.Subject} ({clientCertificate?.Thumbprint})");
                 }
                 
                 await DeleteInternal(keysToDelete, GetRaftRequestIdFromQuery());
