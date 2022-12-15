@@ -145,7 +145,6 @@ namespace Raven.Server.Documents.PeriodicBackup
                         runningBackupStatus.LocalBackup.IncrementalBackupDurationInMs = 0;
                         DatabaseSmuggler.EnsureProcessed(_backupResult);
                         AddInfo(message);
-                        _database.NotificationCenter.BackupHistory.Add(run);
 
                         return _backupResult;
                     }
@@ -269,7 +268,6 @@ namespace Raven.Server.Documents.PeriodicBackup
                         // save the backup status
                         AddInfo("Saving backup status");
                         SaveBackupStatus(runningBackupStatus, _database, _logger, _backupResult);
-                        // _database.NotificationCenter.Backups.Add();
                     }
                 }
             }

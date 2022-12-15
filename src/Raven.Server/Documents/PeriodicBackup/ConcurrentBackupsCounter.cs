@@ -88,7 +88,7 @@ namespace Raven.Server.Documents.PeriodicBackup
             {
                 _concurrentBackups++;
             }
-
+            
             if (logger.IsOperationsEnabled)
             {
                 string backupTypeString = "backup";

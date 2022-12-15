@@ -451,6 +451,8 @@ namespace Raven.Server.Web.System
 
                 var sw = Stopwatch.StartNew();
                 ServerStore.ConcurrentBackupsCounter.StartBackup(backupName, Logger);
+                var tcs = new TaskCompletionSource<IOperationResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+                PeriodicBackupStatus runningBackupStatus = null;
                 try
                 {
                     var operationId = ServerStore.Operations.GetNextOperationId();
@@ -477,7 +479,6 @@ namespace Raven.Server.Web.System
                         Documents.Operations.Operations.OperationType.DatabaseBackup,
                         onProgress =>
                         {
-                            var tcs = new TaskCompletionSource<IOperationResult>(TaskCreationOptions.RunContinuationsAsynchronously);
                             PoolOfThreads.GlobalRavenThreadPool.LongRunning(x =>
                             {
                                 try
@@ -487,7 +488,7 @@ namespace Raven.Server.Web.System
 
                                     using (Database.PreventFromUnloadingByIdleOperations())
                                     {
-                                        var runningBackupStatus = new PeriodicBackupStatus { TaskId = 0, BackupType = backupConfiguration.BackupType };
+                                        runningBackupStatus = new PeriodicBackupStatus { TaskId = 0, BackupType = backupConfiguration.BackupType };
                                         var backupResult = backupTask.RunPeriodicBackup(onProgress, ref runningBackupStatus);
                                         BackupTask.SaveBackupStatus(runningBackupStatus, Database, Logger, backupResult);
                                         tcs.SetResult(backupResult);
@@ -507,6 +508,7 @@ namespace Raven.Server.Web.System
                                 finally
                                 {
                                     ServerStore.ConcurrentBackupsCounter.FinishBackup(backupName, backupStatus: null, sw.Elapsed, Logger);
+                                    Database.NotificationCenter.BackupHistory.Add(backupName, tcs.Task, runningBackupStatus);
                                 }
                             }, null, threadName);
                             return tcs.Task;
@@ -521,6 +523,8 @@ namespace Raven.Server.Web.System
                 catch (Exception e)
                 {
                     ServerStore.ConcurrentBackupsCounter.FinishBackup(backupName, backupStatus: null, sw.Elapsed, Logger);
+                    Database.NotificationCenter.BackupHistory.Add(backupName, tcs.Task, runningBackupStatus);
+
 
                     var message = $"Failed to run backup: '{backupName}'";
 

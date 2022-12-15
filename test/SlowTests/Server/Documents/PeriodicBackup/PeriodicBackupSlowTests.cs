@@ -36,6 +36,8 @@ using Raven.Server.Documents;
 using Raven.Server.Documents.PeriodicBackup;
 using Raven.Server.Documents.PeriodicBackup.Restore;
 using Raven.Server.Json;
+using Raven.Server.NotificationCenter;
+using Raven.Server.NotificationCenter.Notifications;
 using Raven.Server.ServerWide.Commands.PeriodicBackup;
 using Raven.Server.ServerWide.Context;
 using Raven.Tests.Core.Utils.Entities;
@@ -3398,6 +3400,78 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                         Assert.NotNull(address);
                         Assert.Equal(country, address.Country);
                     }
+                }
+            }
+        }
+
+        [Theory, Trait("Category", "Smuggler")]
+        [InlineData("abcd123", BackupType.Snapshot)]
+        [InlineData("jklmn9876", BackupType.Backup)]
+        public async Task ShouldStoreEveryBackupToHistoryClusterWise(string backupName, BackupType backupType)
+        {
+            const int clusterSize = 3;
+
+            var backupPath = NewDataPath(suffix: "BackupFolder");
+            var databaseName = GetDatabaseName();
+
+            var (nodes, leaderServer) = await CreateRaftCluster(clusterSize);
+            await CreateDatabaseInCluster(databaseName, clusterSize, leaderServer.WebUrl);
+
+            using (var leaderStore = new DocumentStore
+                   {
+                       Urls = new[] { leaderServer.WebUrl },
+                       Conventions = new DocumentConventions { DisableTopologyUpdates = true },
+                       Database = databaseName
+                   })
+            {
+                leaderStore.Initialize();
+                using (var session = leaderStore.OpenAsyncSession(new SessionOptions { TransactionMode = TransactionMode.ClusterWide }))
+                {
+                    await session.StoreAsync(new User { Name = "Lev" });
+                    await session.SaveChangesAsync();
+                }
+
+                var documentDatabase = await leaderServer.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(leaderStore.Database).ConfigureAwait(false);
+                var backupHistoryNotification = documentDatabase.NotificationCenter.BackupHistory.GetBackupHistoryNotification(nameof(BackupHistoryNotification));
+                Assert.Equal(0, backupHistoryNotification.Details.BackupHistory.Count);
+
+                var config = Backup.CreateBackupConfiguration(backupPath, name: backupName, backupType: backupType);
+
+                var taskId = await Backup.UpdateConfigAndRunBackupAsync(leaderServer, config, leaderStore, isFullBackup: true);
+                var backupStatus = (await leaderStore.Maintenance.SendAsync(new GetPeriodicBackupStatusOperation(taskId))).Status;
+
+                backupHistoryNotification = documentDatabase.NotificationCenter.BackupHistory.GetBackupHistoryNotification(nameof(BackupHistoryNotification));
+                var backupHistoryDetailsEntries = backupHistoryNotification.Details.BackupHistory.ToArray();
+                Assert.Equal(1, backupHistoryDetailsEntries.Length);
+                Assert.Equal(backupName, backupHistoryDetailsEntries[0].BackupName);
+                Assert.Equal(backupType, backupHistoryDetailsEntries[0].BackupType);
+                Assert.Equal(databaseName, backupHistoryDetailsEntries[0].DatabaseName);
+                Assert.Equal(backupStatus.DurationInMs, backupHistoryDetailsEntries[0].DurationInMs);
+                Assert.Null(backupHistoryDetailsEntries[0].Error);
+                Assert.True(backupHistoryDetailsEntries[0].IsCompletedSuccessfully);
+                Assert.Equal(backupStatus.IsFull, backupHistoryDetailsEntries[0].IsFull);
+                Assert.Equal(backupStatus.NodeTag, backupHistoryDetailsEntries[0].NodeTag);
+
+                var notLeaderServer = nodes.First(x => x != leaderServer);
+                using (var notLeaderStore = new DocumentStore
+                       {
+                           Urls = new[] { notLeaderServer.WebUrl }, Conventions = new DocumentConventions { DisableTopologyUpdates = true }, Database = databaseName
+                       })
+                {
+                    config.MentorNode = notLeaderServer.ServerStore.NodeTag;
+                    var newTaskId = await Backup.CreateAndRunBackupInClusterAsync(config, notLeaderStore, isFullBackup: false);
+                    backupStatus = (await leaderStore.Maintenance.SendAsync(new GetPeriodicBackupStatusOperation(newTaskId))).Status;
+                    backupHistoryNotification = documentDatabase.NotificationCenter.BackupHistory.GetBackupHistoryNotification(nameof(BackupHistoryNotification));
+                    backupHistoryDetailsEntries = backupHistoryNotification.Details.BackupHistory.ToArray();
+                    Assert.Equal(2, backupHistoryDetailsEntries.Length);
+                    Assert.Equal(backupName, backupHistoryDetailsEntries[1].BackupName);
+                    Assert.Equal(backupType, backupHistoryDetailsEntries[1].BackupType);
+                    Assert.Equal(databaseName, backupHistoryDetailsEntries[1].DatabaseName);
+                    Assert.Equal(backupStatus.DurationInMs, backupHistoryDetailsEntries[1].DurationInMs);
+                    Assert.Null(backupHistoryDetailsEntries[1].Error);
+                    Assert.True(backupHistoryDetailsEntries[1].IsCompletedSuccessfully);
+                    Assert.Equal(backupStatus.IsFull, backupHistoryDetailsEntries[1].IsFull);
+                    Assert.Equal(backupStatus.NodeTag, backupHistoryDetailsEntries[1].NodeTag);
                 }
             }
         }

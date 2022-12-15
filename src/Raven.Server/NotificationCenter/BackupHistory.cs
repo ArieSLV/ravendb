@@ -1,5 +1,10 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using Nest;
 using Raven.Client.Documents.Conventions;
+using Raven.Client.Documents.Operations;
 using Raven.Client.Documents.Operations.Backups;
 using Raven.Client.Util;
 using Raven.Server.NotificationCenter.Notifications;
@@ -24,20 +29,30 @@ public class BackupHistory : IDisposable
         _logger = LoggingSource.Instance.GetLogger(database, GetType().FullName);
     }
 
-    public void Add(PeriodicBackupStatus status)
+    public void Add(string backupName, Task<IOperationResult> task, PeriodicBackupStatus periodicBackupStatus)
     {
         var notification = GetBackupHistoryNotification(nameof(BackupHistoryNotification));
+
+        if (task.Result is not BackupResult result) 
+            return;
+
         var backup = new BackupHistoryDetails.BackupHistoryDetailsEntry
         {
-            BackupTaskId = status.TaskId,
+            BackupName = backupName,
+            BackupType = periodicBackupStatus?.BackupType,
+            DatabaseName = _database,
             Date = SystemTime.UtcNow,
-            DurationInMs = status.DurationInMs ?? throw new NullReferenceException(nameof(status.DurationInMs))
+            DurationInMs = periodicBackupStatus?.DurationInMs,
+            Error = periodicBackupStatus?.Error,
+            IsCompletedSuccessfully = task.IsCompletedSuccessfully,
+            IsFull = periodicBackupStatus?.IsFull,
+            NodeTag = periodicBackupStatus?.NodeTag,
         };
         notification.Details.Add(backup);
         _notificationCenter.Add(notification);
     }
 
-    private BackupHistoryNotification GetBackupHistoryNotification(string id)
+    internal BackupHistoryNotification GetBackupHistoryNotification(string id)
     {
         using (_notificationsStorage.Read(id, out NotificationTableValue ntv))
         {
@@ -51,7 +66,7 @@ public class BackupHistory : IDisposable
                 details = DocumentConventions.DefaultForServer.Serialization.DefaultConverter.FromBlittable<BackupHistoryDetails>(detailsJson, id);
             }
 
-            return BackupHistoryNotification.Create(_database, "Backup history", "New entries in the backup history appeared", NotificationSeverity.Success, details);
+            return BackupHistoryNotification.Create(_database, "Backup history", "New entries in the backup history appeared", NotificationSeverity.Info, details);
         }
     }
 

@@ -25,6 +25,7 @@ using Raven.Server.Utils;
 using Sparrow.Collections;
 using Sparrow.Logging;
 using Sparrow.Utils;
+using static Raven.Server.Utils.MetricCacher.Keys;
 using Constants = Raven.Client.Constants;
 
 namespace Raven.Server.Documents.PeriodicBackup
@@ -599,6 +600,7 @@ namespace Raven.Server.Documents.PeriodicBackup
             {
                 periodicBackup.BackupStatus = runningBackupStatus;
                 ScheduleNextBackup(periodicBackup, backupResult?.Elapsed, lockTaken: false);
+                _database.NotificationCenter.BackupHistory.Add(periodicBackup.Configuration.Name, tcs.Task, runningBackupStatus);
             }
         }
 
