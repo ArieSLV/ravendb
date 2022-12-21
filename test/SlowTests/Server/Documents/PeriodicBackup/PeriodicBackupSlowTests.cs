@@ -45,13 +45,17 @@ using Tests.Infrastructure.Entities;
 using Voron.Data.Tables;
 using Xunit;
 using Xunit.Abstractions;
+using Size = Raven.Client.Util.Size;
 
 namespace SlowTests.Server.Documents.PeriodicBackup
 {
     public class PeriodicBackupTestsSlow : ClusterTestBase
     {
+        private readonly ITestOutputHelper _output;
+
         public PeriodicBackupTestsSlow(ITestOutputHelper output) : base(output)
         {
+            _output = output;
         }
 
         [Fact, Trait("Category", "Smuggler")]
@@ -2810,6 +2814,24 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                     var user = await session.LoadAsync<User>(docId);
                     Assert.Null(user);
                 }
+            }
+        }
+
+        [Fact, Trait("Category", "Smuggler")]
+        public async Task RestoreDatabaseBenchmark()
+        {
+            var backupPath = NewDataPath(suffix: "BackupFolder");
+            var file = "F:\\HibernatingRhinos\\tmp";
+
+            using (var store = GetDocumentStore())
+            {
+                // await Backup.FillDatabaseWithRandomDataAsync(new Size(500 * 1024 * 1024), numberOfEntries: 1_000, store, 600_000, outputHelper: _output);
+                // WaitForUserToContinueTheTest(store);
+
+                var databaseName = $"restored_database-{Guid.NewGuid()}";
+
+                using (Backup.RestoreDatabase(store,
+                           new RestoreBackupConfiguration { BackupLocation = file, DatabaseName = databaseName, })) ;
             }
         }
 

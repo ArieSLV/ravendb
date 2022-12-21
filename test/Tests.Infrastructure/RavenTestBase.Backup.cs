@@ -1,18 +1,25 @@
 ﻿using System;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
+using Amazon.Glacier.Model;
+using MySqlX.XDevAPI;
 using Org.BouncyCastle.Math.EC;
 using Raven.Client.Documents;
 using Raven.Client.Documents.Operations;
 using Raven.Client.Documents.Operations.Backups;
+using Raven.Client.Documents.Session;
 using Raven.Client.ServerWide.Operations;
 using Raven.Client.Util;
 using Raven.Server;
 using Raven.Server.Documents.PeriodicBackup;
 using Raven.Server.ServerWide.Context;
+using Raven.Tests.Core.Utils.Entities;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace FastTests
 {
@@ -33,7 +40,8 @@ namespace FastTests
             /// <summary>
             /// Run backup with provided task id and wait for completion. Full backup by default.
             /// </summary>
-            public void RunBackup(RavenServer server, long taskId, DocumentStore store, bool isFullBackup = true, OperationStatus opStatus = OperationStatus.Completed, int? timeout = default)
+            public void RunBackup(RavenServer server, long taskId, DocumentStore store, bool isFullBackup = true, OperationStatus opStatus = OperationStatus.Completed,
+                int? timeout = default)
             {
                 AsyncHelpers.RunSync(() => RunBackupAsync(server, taskId, store, isFullBackup, opStatus, timeout));
             }
@@ -41,7 +49,8 @@ namespace FastTests
             /// <summary>
             /// Run backup with provided task id and wait for completion. Full backup by default.
             /// </summary>
-            public async Task<long> RunBackupAsync(RavenServer server, long taskId, DocumentStore store, bool isFullBackup = true, OperationStatus opStatus = OperationStatus.Completed, int? timeout = default)
+            public async Task<long> RunBackupAsync(RavenServer server, long taskId, DocumentStore store, bool isFullBackup = true,
+                OperationStatus opStatus = OperationStatus.Completed, int? timeout = default)
             {
                 var documentDatabase = await server.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(store.Database);
                 var periodicBackupRunner = documentDatabase.PeriodicBackupRunner;
@@ -61,7 +70,8 @@ namespace FastTests
             /// Update backup config, run backup and wait for completion. Full backup by default.
             /// </summary>
             /// <returns>TaskId</returns>
-            public long UpdateConfigAndRunBackup(RavenServer server, PeriodicBackupConfiguration config, DocumentStore store, bool isFullBackup = true, OperationStatus opStatus = OperationStatus.Completed, int? timeout = default)
+            public long UpdateConfigAndRunBackup(RavenServer server, PeriodicBackupConfiguration config, DocumentStore store, bool isFullBackup = true,
+                OperationStatus opStatus = OperationStatus.Completed, int? timeout = default)
             {
                 return AsyncHelpers.RunSync(() => UpdateConfigAndRunBackupAsync(server, config, store, isFullBackup, opStatus, timeout));
             }
@@ -70,7 +80,8 @@ namespace FastTests
             /// Update backup config, run backup and wait for completion. Full backup by default.
             /// </summary>
             /// <returns>TaskId</returns>
-            public async Task<long> UpdateConfigAndRunBackupAsync(RavenServer server, PeriodicBackupConfiguration config, DocumentStore store, bool isFullBackup = true, OperationStatus opStatus = OperationStatus.Completed, int? timeout = default)
+            public async Task<long> UpdateConfigAndRunBackupAsync(RavenServer server, PeriodicBackupConfiguration config, DocumentStore store, bool isFullBackup = true,
+                OperationStatus opStatus = OperationStatus.Completed, int? timeout = default)
             {
                 var result = await store.Maintenance.SendAsync(new UpdatePeriodicBackupOperation(config));
                 await RunBackupAsync(server, result.TaskId, store, isFullBackup, opStatus, timeout);
@@ -81,7 +92,8 @@ namespace FastTests
             /// Run backup with provided task id and wait for completion. Full backup by default.
             /// </summary>
             /// <returns>PeriodicBackupStatus</returns>
-            public PeriodicBackupStatus RunBackupAndReturnStatus(RavenServer server, long taskId, DocumentStore store, bool isFullBackup = true, OperationStatus opStatus = OperationStatus.Completed, long? expectedEtag = default, int? timeout = default)
+            public PeriodicBackupStatus RunBackupAndReturnStatus(RavenServer server, long taskId, DocumentStore store, bool isFullBackup = true,
+                OperationStatus opStatus = OperationStatus.Completed, long? expectedEtag = default, int? timeout = default)
             {
                 return AsyncHelpers.RunSync(() => RunBackupAndReturnStatusAsync(server, taskId, store, isFullBackup, opStatus, expectedEtag, timeout));
             }
@@ -90,7 +102,8 @@ namespace FastTests
             /// Run backup with provided task id and wait for completion. Full backup by default.
             /// </summary>
             /// <returns>PeriodicBackupStatus</returns>
-            public async Task<PeriodicBackupStatus> RunBackupAndReturnStatusAsync(RavenServer server, long taskId, DocumentStore store, bool isFullBackup = true, OperationStatus opStatus = OperationStatus.Completed, long? expectedEtag = default, int? timeout = default)
+            public async Task<PeriodicBackupStatus> RunBackupAndReturnStatusAsync(RavenServer server, long taskId, DocumentStore store, bool isFullBackup = true,
+                OperationStatus opStatus = OperationStatus.Completed, long? expectedEtag = default, int? timeout = default)
             {
                 var opId = await RunBackupAsync(server, taskId, store, isFullBackup, opStatus, timeout);
                 var operation = new GetPeriodicBackupStatusOperation(taskId);
@@ -113,7 +126,8 @@ namespace FastTests
                 return status;
             }
 
-            private static async Task CheckExceptedEtag(RavenServer ravenServer, DocumentStore store, long opId, PeriodicBackupStatus status, long? etag, long expectedEtag)
+            private static async Task CheckExceptedEtag(RavenServer ravenServer, DocumentStore store, long opId, PeriodicBackupStatus status, long? etag,
+                long expectedEtag)
             {
                 var backupOperation = store.Maintenance.Send(new GetOperationStateOperation(opId));
                 Assert.Equal(OperationStatus.Completed, backupOperation.Status);
@@ -128,16 +142,13 @@ namespace FastTests
                 }
             }
 
-            public PeriodicBackupConfiguration CreateBackupConfiguration(string backupPath = null, BackupType backupType = BackupType.Backup, bool disabled = false, string fullBackupFrequency = "0 0 1 1 *",
-                string incrementalBackupFrequency = null, long? taskId = null, string mentorNode = null, BackupEncryptionSettings backupEncryptionSettings = null, AzureSettings azureSettings = null,
+            public PeriodicBackupConfiguration CreateBackupConfiguration(string backupPath = null, BackupType backupType = BackupType.Backup, bool disabled = false,
+                string fullBackupFrequency = "0 0 1 1 *",
+                string incrementalBackupFrequency = null, long? taskId = null, string mentorNode = null, BackupEncryptionSettings backupEncryptionSettings = null,
+                AzureSettings azureSettings = null,
                 GoogleCloudSettings googleCloudSettings = null, S3Settings s3Settings = null, RetentionPolicy retentionPolicy = null, string name = null)
             {
-                var config = new PeriodicBackupConfiguration()
-                {
-                    BackupType = backupType,
-                    FullBackupFrequency = fullBackupFrequency,
-                    Disabled = disabled
-                };
+                var config = new PeriodicBackupConfiguration() { BackupType = backupType, FullBackupFrequency = fullBackupFrequency, Disabled = disabled };
 
                 if (taskId.HasValue)
                     config.TaskId = taskId.Value;
@@ -182,7 +193,8 @@ namespace FastTests
             /// Create and run backup with provided task id in cluster.
             /// </summary>
             /// <returns>TaskId</returns>
-            public long CreateAndRunBackupInCluster(PeriodicBackupConfiguration config, DocumentStore store, bool isFullBackup = true, OperationStatus opStatus = OperationStatus.Completed, int? timeout = default)
+            public long CreateAndRunBackupInCluster(PeriodicBackupConfiguration config, DocumentStore store, bool isFullBackup = true,
+                OperationStatus opStatus = OperationStatus.Completed, int? timeout = default)
             {
                 return AsyncHelpers.RunSync(() => CreateAndRunBackupInClusterAsync(config, store, isFullBackup, opStatus, timeout));
             }
@@ -191,7 +203,8 @@ namespace FastTests
             /// Create and run backup with provided task id in cluster.
             /// </summary>
             /// <returns>TaskId</returns>
-            public async Task<long> CreateAndRunBackupInClusterAsync(PeriodicBackupConfiguration config, DocumentStore store, bool isFullBackup = true, OperationStatus opStatus = OperationStatus.Completed, int? timeout = default)
+            public async Task<long> CreateAndRunBackupInClusterAsync(PeriodicBackupConfiguration config, DocumentStore store, bool isFullBackup = true,
+                OperationStatus opStatus = OperationStatus.Completed, int? timeout = default)
             {
                 var backupTaskId = (await store.Maintenance.SendAsync(new UpdatePeriodicBackupOperation(config))).TaskId;
                 await RunBackupInClusterAsync(store, backupTaskId, isFullBackup, opStatus, timeout);
@@ -201,7 +214,8 @@ namespace FastTests
             /// <summary>
             /// Run backup with provided task id in a cluster.
             /// </summary>
-            public void RunBackupInCluster(DocumentStore store, long taskId, bool isFullBackup = true, OperationStatus opStatus = OperationStatus.Completed, int? timeout = default)
+            public void RunBackupInCluster(DocumentStore store, long taskId, bool isFullBackup = true, OperationStatus opStatus = OperationStatus.Completed,
+                int? timeout = default)
             {
                 AsyncHelpers.RunSync(() => RunBackupInClusterAsync(store, taskId, isFullBackup, opStatus, timeout));
             }
@@ -209,7 +223,8 @@ namespace FastTests
             /// <summary>
             /// Run backup with provided task id in a cluster.
             /// </summary>
-            public async Task RunBackupInClusterAsync(DocumentStore store, long taskId, bool isFullBackup = true, OperationStatus opStatus = OperationStatus.Completed, int? timeout = default)
+            public async Task RunBackupInClusterAsync(DocumentStore store, long taskId, bool isFullBackup = true, OperationStatus opStatus = OperationStatus.Completed,
+                int? timeout = default)
             {
                 var op = await store.Maintenance.SendAsync(new StartBackupOperation(isFullBackup, taskId));
 
@@ -269,7 +284,8 @@ namespace FastTests
                     return $"{nameof(PeriodicBackupStatus)} is null";
 
                 var isFull = status.IsFull ? "a full" : "an incremental";
-                sb.AppendLine($"{nameof(PeriodicBackupStatus)} of backup task '{status.TaskId}', executed {isFull} '{status.BackupType}' on node '{status.NodeTag}' in '{status.DurationInMs}' ms.");
+                sb.AppendLine(
+                    $"{nameof(PeriodicBackupStatus)} of backup task '{status.TaskId}', executed {isFull} '{status.BackupType}' on node '{status.NodeTag}' in '{status.DurationInMs}' ms.");
                 sb.AppendLine("Debug Info: ");
                 sb.AppendLine($"{nameof(PeriodicBackupStatus.LastDatabaseChangeVector)}: '{status.LastDatabaseChangeVector}'");
                 sb.AppendLine($"{nameof(PeriodicBackupStatus.LastEtag)}: {status.LastEtag}'");
@@ -296,7 +312,8 @@ namespace FastTests
 
                     if (string.IsNullOrEmpty(status.LocalBackup?.Exception) == false)
                     {
-                        sb.AppendLine($"{nameof(PeriodicBackupStatus)}.{nameof(PeriodicBackupStatus.LocalBackup)}.{nameof(PeriodicBackupStatus.LocalBackup.Exception)}: ");
+                        sb.AppendLine(
+                            $"{nameof(PeriodicBackupStatus)}.{nameof(PeriodicBackupStatus.LocalBackup)}.{nameof(PeriodicBackupStatus.LocalBackup.Exception)}: ");
                         sb.AppendLine(status.LocalBackup?.Exception);
                     }
                 }
@@ -316,14 +333,17 @@ namespace FastTests
                 {
                     if (string.IsNullOrEmpty(status.UploadToAzure.Exception) == false)
                     {
-                        sb.AppendLine($"{nameof(PeriodicBackupStatus)}.{nameof(PeriodicBackupStatus.UploadToAzure)}.{nameof(PeriodicBackupStatus.UploadToAzure.Exception)}:");
+                        sb.AppendLine(
+                            $"{nameof(PeriodicBackupStatus)}.{nameof(PeriodicBackupStatus.UploadToAzure)}.{nameof(PeriodicBackupStatus.UploadToAzure.Exception)}:");
                         sb.AppendLine(status.UploadToAzure?.Exception);
                     }
                     else
                     {
-                        sb.AppendLine($"{nameof(PeriodicBackupStatus.UploadToAzure)} of backup task '{status.TaskId}', ran successfully in '{status.UploadToAzure.UploadProgress.UploadTimeInMs}' ms, size: '{status.UploadToAzure.UploadProgress.TotalInBytes}' bytes.");
+                        sb.AppendLine(
+                            $"{nameof(PeriodicBackupStatus.UploadToAzure)} of backup task '{status.TaskId}', ran successfully in '{status.UploadToAzure.UploadProgress.UploadTimeInMs}' ms, size: '{status.UploadToAzure.UploadProgress.TotalInBytes}' bytes.");
                     }
                 }
+
                 if (status.UploadToFtp == null)
                 {
                     sb.AppendLine($"{nameof(PeriodicBackupStatus.UploadToFtp)} of backup task '{status.TaskId}' is null.");
@@ -341,9 +361,11 @@ namespace FastTests
                     }
                     else
                     {
-                        sb.AppendLine($"{nameof(PeriodicBackupStatus.UploadToFtp)} of backup task '{status.TaskId}', ran successfully in '{status.UploadToFtp.UploadProgress.UploadTimeInMs}' ms, size: '{status.UploadToFtp.UploadProgress.TotalInBytes}' bytes.");
+                        sb.AppendLine(
+                            $"{nameof(PeriodicBackupStatus.UploadToFtp)} of backup task '{status.TaskId}', ran successfully in '{status.UploadToFtp.UploadProgress.UploadTimeInMs}' ms, size: '{status.UploadToFtp.UploadProgress.TotalInBytes}' bytes.");
                     }
                 }
+
                 if (status.UploadToGlacier == null)
                 {
                     sb.AppendLine($"{nameof(PeriodicBackupStatus.UploadToGlacier)} of backup task '{status.TaskId}' is null.");
@@ -356,14 +378,17 @@ namespace FastTests
                 {
                     if (string.IsNullOrEmpty(status.UploadToGlacier.Exception) == false)
                     {
-                        sb.AppendLine($"{nameof(PeriodicBackupStatus)}.{nameof(PeriodicBackupStatus.UploadToGlacier)}.{nameof(PeriodicBackupStatus.UploadToGlacier.Exception)}:");
+                        sb.AppendLine(
+                            $"{nameof(PeriodicBackupStatus)}.{nameof(PeriodicBackupStatus.UploadToGlacier)}.{nameof(PeriodicBackupStatus.UploadToGlacier.Exception)}:");
                         sb.AppendLine(status.UploadToGlacier?.Exception);
                     }
                     else
                     {
-                        sb.AppendLine($"{nameof(PeriodicBackupStatus.UploadToGlacier)} of backup task '{status.TaskId}', ran successfully in '{status.UploadToGlacier.UploadProgress.UploadTimeInMs}' ms, size: '{status.UploadToGlacier.UploadProgress.TotalInBytes}' bytes.");
+                        sb.AppendLine(
+                            $"{nameof(PeriodicBackupStatus.UploadToGlacier)} of backup task '{status.TaskId}', ran successfully in '{status.UploadToGlacier.UploadProgress.UploadTimeInMs}' ms, size: '{status.UploadToGlacier.UploadProgress.TotalInBytes}' bytes.");
                     }
                 }
+
                 if (status.UploadToGoogleCloud == null)
                 {
                     sb.AppendLine($"{nameof(PeriodicBackupStatus.UploadToGoogleCloud)} of backup task '{status.TaskId}' is null.");
@@ -376,14 +401,17 @@ namespace FastTests
                 {
                     if (string.IsNullOrEmpty(status.UploadToGoogleCloud.Exception) == false)
                     {
-                        sb.AppendLine($"{nameof(PeriodicBackupStatus)}.{nameof(PeriodicBackupStatus.UploadToGoogleCloud)}.{nameof(PeriodicBackupStatus.UploadToGoogleCloud.Exception)}:");
+                        sb.AppendLine(
+                            $"{nameof(PeriodicBackupStatus)}.{nameof(PeriodicBackupStatus.UploadToGoogleCloud)}.{nameof(PeriodicBackupStatus.UploadToGoogleCloud.Exception)}:");
                         sb.AppendLine(status.UploadToGoogleCloud?.Exception);
                     }
                     else
                     {
-                        sb.AppendLine($"{nameof(PeriodicBackupStatus.UploadToGoogleCloud)} of backup task '{status.TaskId}', ran successfully in '{status.UploadToGoogleCloud.UploadProgress.UploadTimeInMs}' ms, size: '{status.UploadToGoogleCloud.UploadProgress.TotalInBytes}' bytes.");
+                        sb.AppendLine(
+                            $"{nameof(PeriodicBackupStatus.UploadToGoogleCloud)} of backup task '{status.TaskId}', ran successfully in '{status.UploadToGoogleCloud.UploadProgress.UploadTimeInMs}' ms, size: '{status.UploadToGoogleCloud.UploadProgress.TotalInBytes}' bytes.");
                     }
                 }
+
                 if (status.UploadToS3 == null)
                 {
                     sb.AppendLine($"{nameof(PeriodicBackupStatus.UploadToS3)} of backup task '{status.TaskId}' is null.");
@@ -401,7 +429,8 @@ namespace FastTests
                     }
                     else
                     {
-                        sb.AppendLine($"{nameof(PeriodicBackupStatus.UploadToS3)} of backup task '{status.TaskId}', ran successfully in '{status.UploadToS3.UploadProgress.UploadTimeInMs}' ms, size: '{status.UploadToS3.UploadProgress.TotalInBytes}' bytes.");
+                        sb.AppendLine(
+                            $"{nameof(PeriodicBackupStatus.UploadToS3)} of backup task '{status.TaskId}', ran successfully in '{status.UploadToS3.UploadProgress.UploadTimeInMs}' ms, size: '{status.UploadToS3.UploadProgress.TotalInBytes}' bytes.");
                     }
                 }
 
@@ -418,7 +447,8 @@ namespace FastTests
                 return string.Join(Environment.NewLine, result.Messages);
             }
 
-            private static async Task CheckBackupOperationStatus(OperationStatus expected, OperationStatus actual, DocumentStore store, long taskId, long opId, PeriodicBackupRunner periodicBackupRunner)
+            private static async Task CheckBackupOperationStatus(OperationStatus expected, OperationStatus actual, DocumentStore store, long taskId, long opId,
+                PeriodicBackupRunner periodicBackupRunner)
             {
                 if (expected == OperationStatus.Completed && actual == OperationStatus.Faulted)
                 {
@@ -428,7 +458,9 @@ namespace FastTests
 
                     TryGetBackupStatusFromPeriodicBackupAndPrint(expected, actual, opId, periodicBackupRunner, status, result: null);
 
-                    Assert.True(false, $"Backup status expected: '{expected}', actual '{actual}',{Environment.NewLine}Backup status from storage for current operation id: '{opId}':{Environment.NewLine}" + PrintBackupStatus(status));
+                    Assert.True(false,
+                        $"Backup status expected: '{expected}', actual '{actual}',{Environment.NewLine}Backup status from storage for current operation id: '{opId}':{Environment.NewLine}" +
+                        PrintBackupStatus(status));
                 }
                 else if (expected == OperationStatus.Completed && actual == OperationStatus.InProgress)
                 {
@@ -439,16 +471,21 @@ namespace FastTests
                         // print previous backup status saved in memory
                         var operation = new GetPeriodicBackupStatusOperation(taskId);
                         var status = (await store.Maintenance.SendAsync(operation)).Status;
-                        Assert.True(false, $"Backup status expected: '{expected}', actual '{actual}',{Environment.NewLine}Could not fetch running backup status for current task id: '{taskId}', previous backup status:{Environment.NewLine}" + PrintBackupStatus(status));
+                        Assert.True(false,
+                            $"Backup status expected: '{expected}', actual '{actual}',{Environment.NewLine}Could not fetch running backup status for current task id: '{taskId}', previous backup status:{Environment.NewLine}" +
+                            PrintBackupStatus(status));
                     }
                     else
                     {
-                        Assert.True(false, $"Backup status expected: '{expected}', actual '{actual}',{Environment.NewLine}Running backup status for current task id: '{taskId}':{Environment.NewLine}" + PrintBackupStatus(pb.RunningBackupStatus));
+                        Assert.True(false,
+                            $"Backup status expected: '{expected}', actual '{actual}',{Environment.NewLine}Running backup status for current task id: '{taskId}':{Environment.NewLine}" +
+                            PrintBackupStatus(pb.RunningBackupStatus));
                     }
                 }
             }
 
-            private static void TryGetBackupStatusFromPeriodicBackupAndPrint(OperationStatus expected, OperationStatus actual, long opId, PeriodicBackupRunner periodicBackupRunner, PeriodicBackupStatus status, BackupResult result)
+            private static void TryGetBackupStatusFromPeriodicBackupAndPrint(OperationStatus expected, OperationStatus actual, long opId,
+                PeriodicBackupRunner periodicBackupRunner, PeriodicBackupStatus status, BackupResult result)
             {
                 if (status?.LastOperationId != opId)
                 {
@@ -467,6 +504,67 @@ namespace FastTests
                             PrintBackupStatus(pb.BackupStatus) + Environment.NewLine + "BackupResult Messages:" + Environment.NewLine +
                             PrintBackupResultMessagesStatus(result));
                     }
+                }
+            }
+
+            public async Task FillDatabaseWithRandomDataAsync(Size databaseSize, int numberOfEntries, DocumentStore store, int? timeout = default,
+                ITestOutputHelper outputHelper = null)
+            {
+                var sw = new Stopwatch();
+                sw.Start();
+                var random = new Random();
+                const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+                var timeoutTimeSpan = TimeSpan.FromMilliseconds(timeout ?? _reasonableTimeout);
+                DateTime baseTimeline = DateTime.Today.ToUniversalTime();
+
+                var entrySize = new Size(databaseSize.SizeInBytes / numberOfEntries);
+
+                outputHelper?.WriteLine(
+                    $"Starting to fill the database with {databaseSize.HumaneSize}: it's {numberOfEntries} entries by {entrySize.HumaneSize} each entry");
+
+                using (var cts = new CancellationTokenSource(timeoutTimeSpan))
+                {
+                    await using (var bulkInsertOperation = store.BulkInsert())
+                    {
+                        for (int i = 1; i <= numberOfEntries; i++)
+                        {
+                            var es = (int)entrySize.SizeInBytes;
+                            var sb = new StringBuilder(es);
+                            for (int j = 0; j < es; j++)
+                            {
+                                sb.Append(chars[random.Next(chars.Length)]);
+                            }
+
+                            var entry = new User { Name = sb.ToString() };
+                            bulkInsertOperation.Store(entry, $"users/{i}");
+
+                            if (i % 100 == 0)
+                                outputHelper?.WriteLine($"Stored {i}/{numberOfEntries} entries");
+                        }
+                    }
+                    sw.Stop();
+                    outputHelper?.WriteLine($"Filling of database by Documents is finished. It took {sw.ElapsedMilliseconds / numberOfEntries} ms per entry ({sw.ElapsedMilliseconds} ms total)");
+                    sw.Reset();
+                    sw.Start();
+                    
+                    for (int i = 1; i <= numberOfEntries; i++)
+                    {
+                        using (var session = store.OpenAsyncSession())
+                        {
+                            // TimeSeries
+                            session.TimeSeriesFor($"users/{i}", "Heartrate").Append(baseTimeline.AddDays(i), new[] { i * 3d }, "watches/1");
+
+                            // Counters
+                            var docCounters = session.CountersFor($"users/{i}");
+                            docCounters.Increment($"TestCounter{i}", i * i);
+                            await session.SaveChangesAsync();
+                        }
+                        if (i % 100 == 0)
+                            outputHelper?.WriteLine($"Finished writing of TimeSeries and Counters for {i}/{numberOfEntries} entries");
+                    }
+
+                    outputHelper?.WriteLine($"Filling of database by TimeSeries and Counters is finished. It took {sw.ElapsedMilliseconds / numberOfEntries} ms per entry ({sw.ElapsedMilliseconds} ms total)");
+
                 }
             }
         }

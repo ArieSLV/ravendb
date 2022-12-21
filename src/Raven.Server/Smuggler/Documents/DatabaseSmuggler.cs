@@ -90,13 +90,16 @@ namespace Raven.Server.Smuggler.Documents
             await using (_destination.InitializeAsync(_options, result, initializeResult.BuildNumber))
             {
                 ModifyV41OperateOnTypes(initializeResult.BuildNumber, isLastFile);
-
+                var sw = new Stopwatch();
                 var buildType = BuildVersion.Type(initializeResult.BuildNumber);
                 var currentType = await _source.GetNextTypeAsync();
                 while (currentType != DatabaseItemType.None)
                 {
+                    sw.Start();
                     await ProcessTypeAsync(currentType, result, buildType, ensureStepsProcessed);
-
+                    sw.Stop();
+                    Console.WriteLine($"Restore {currentType}: {sw.ElapsedMilliseconds}ms");
+                    sw.Reset();
                     currentType = await _source.GetNextTypeAsync();
                 }
 

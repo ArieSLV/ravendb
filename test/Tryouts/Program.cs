@@ -9,6 +9,7 @@ using SlowTests.Issues;
 using SlowTests.MailingList;
 using SlowTests.Rolling;
 using SlowTests.Server.Documents.ETL.Raven;
+using SlowTests.Server.Documents.PeriodicBackup;
 using StressTests.Issues;
 using Tests.Infrastructure;
 
@@ -30,9 +31,9 @@ namespace Tryouts
                 try
                 {
                     using (var testOutputHelper = new ConsoleTestOutputHelper())
-                    using (var test = new ElectionTests(testOutputHelper))
+                    using (var test = new PeriodicBackupTestsSlow(testOutputHelper))
                     {
-                         await test.CanElectOnDivergence4();
+                         await test.RestoreDatabaseBenchmark();
                     }
                 }
                 catch (Exception e)
