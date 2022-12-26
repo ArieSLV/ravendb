@@ -508,7 +508,7 @@ namespace Raven.Server.Web.System
                                 finally
                                 {
                                     ServerStore.ConcurrentBackupsCounter.FinishBackup(backupName, backupStatus: null, sw.Elapsed, Logger);
-                                    Database.NotificationCenter.BackupHistory.Add(backupName, tcs.Task, runningBackupStatus);
+                                    ServerStore.BackupHistoryStorage.Store(backupName, Database.Name, tcs.Task, runningBackupStatus); 
                                 }
                             }, null, threadName);
                             return tcs.Task;
@@ -523,9 +523,8 @@ namespace Raven.Server.Web.System
                 catch (Exception e)
                 {
                     ServerStore.ConcurrentBackupsCounter.FinishBackup(backupName, backupStatus: null, sw.Elapsed, Logger);
-                    Database.NotificationCenter.BackupHistory.Add(backupName, tcs.Task, runningBackupStatus);
-
-
+                    ServerStore.BackupHistoryStorage.Store(backupName, Database.Name, tcs.Task, runningBackupStatus);
+                    
                     var message = $"Failed to run backup: '{backupName}'";
 
                     if (Logger.IsOperationsEnabled)

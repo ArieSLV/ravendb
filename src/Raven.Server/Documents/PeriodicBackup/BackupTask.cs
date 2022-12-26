@@ -851,7 +851,7 @@ namespace Raven.Server.Documents.PeriodicBackup
                 _previousBackupStatus.NodeTag != _database.ServerStore.NodeTag ||
                 _previousBackupStatus.Error != null)
                 return;
-
+        
             // dismiss the previous operation
             var id = $"{NotificationType.OperationChanged}/{_previousBackupStatus.LastOperationId.Value}";
             _database.NotificationCenter.Dismiss(id);

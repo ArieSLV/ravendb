@@ -49,6 +49,7 @@ using Raven.Server.Documents.Indexes.Analysis;
 using Raven.Server.Documents.Indexes.Sorting;
 using Raven.Server.Documents.Operations;
 using Raven.Server.Documents.PeriodicBackup;
+using Raven.Server.Documents.PeriodicBackup.BackupHistory;
 using Raven.Server.Documents.TcpHandlers;
 using Raven.Server.Indexing;
 using Raven.Server.Integrations.PostgreSQL.Commands;
@@ -119,6 +120,8 @@ namespace Raven.Server.ServerWide
 
         private readonly NotificationsStorage _notificationsStorage;
         private readonly OperationsStorage _operationsStorage;
+        public readonly BackupHistoryStorage BackupHistoryStorage;
+
         public ConcurrentDictionary<string, Dictionary<string, long>> IdleDatabases;
 
         private RequestExecutor _clusterRequestExecutor;
@@ -242,6 +245,8 @@ namespace Raven.Server.ServerWide
                     }
                 }
             });
+
+            BackupHistoryStorage = new BackupHistoryStorage();
         }
 
         internal readonly FifoSemaphore ServerWideConcurrentlyRunningIndexesLock;
@@ -794,6 +799,7 @@ namespace Raven.Server.ServerWide
             _timer = new Timer(IdleOperations, null, _frequencyToCheckForIdleDatabases, TimeSpan.FromDays(7));
             _notificationsStorage.Initialize(_env, ContextPool);
             _operationsStorage.Initialize(_env, ContextPool);
+            BackupHistoryStorage.Initialize(_env, ContextPool);
             DatabaseInfoCache.Initialize(_env, ContextPool);
 
             NotificationCenter.Initialize();

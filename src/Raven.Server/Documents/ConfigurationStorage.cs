@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Linq;
 using Raven.Server.Documents.Operations;
+using Raven.Server.Documents.PeriodicBackup.BackupHistory;
 using Raven.Server.NotificationCenter;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.Storage.Layout;
@@ -23,6 +24,8 @@ namespace Raven.Server.Documents
         public NotificationsStorage NotificationsStorage { get; }
 
         public OperationsStorage OperationsStorage { get; }
+
+        public BackupHistoryStorage BackupHistoryStorage { get; }
 
         public StorageEnvironment Environment { get; }
 
@@ -69,6 +72,8 @@ namespace Raven.Server.Documents
 
             OperationsStorage = new OperationsStorage();
 
+            BackupHistoryStorage = new BackupHistoryStorage();
+
             Environment = StorageLoader.OpenEnvironment(options, StorageEnvironmentWithType.StorageEnvironmentType.Configuration);
 
             ContextPool = new TransactionContextPool(Environment, db.Configuration.Memory.MaxContextSizeToKeep);
@@ -78,6 +83,7 @@ namespace Raven.Server.Documents
         {
             NotificationsStorage.Initialize(Environment, ContextPool);
             OperationsStorage.Initialize(Environment, ContextPool);
+            BackupHistoryStorage.Initialize(Environment, ContextPool);
         }
 
         public void Dispose()

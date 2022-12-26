@@ -1,45 +1,40 @@
 using System;
 using System.Diagnostics;
-using System.Threading.Tasks;
-using FastTests.Blittable;
-using FastTests.Client;
-using RachisTests;
-using SlowTests.Client.TimeSeries.Replication;
-using SlowTests.Issues;
-using SlowTests.MailingList;
-using SlowTests.Rolling;
-using SlowTests.Server.Documents.ETL.Raven;
 using Tests.Infrastructure;
+using FastTests.Voron.Sets;
+using FastTests.Corax;
+using System.Threading.Tasks;
+using Raven.Client.Documents.Operations.Backups;
+using SlowTests.Server.Documents.PeriodicBackup;
 
-namespace Tryouts
+namespace Tryouts;
+
+public static class Program
 {
-    public static class Program
+    static Program()
     {
-        static Program()
-        {
-            XunitLogging.RedirectStreams = false;
-        }
+        XunitLogging.RedirectStreams = false;
+    }
 
-        public static async Task Main(string[] args)
+    public static async Task Main(string[] args)
+    {
+        Console.WriteLine(Process.GetCurrentProcess().Id);
+        for (int i = 0; i < 10_000; i++)
         {
-            Console.WriteLine(Process.GetCurrentProcess().Id);
-            for (int i = 0; i < 10_000; i++)
+            Console.WriteLine($"Starting to run {i}");
+            try
             {
-                Console.WriteLine($"Starting to run {i}");
-                try
+                using (var testOutputHelper = new ConsoleTestOutputHelper())
+                using (var test = new PeriodicBackupTestsSlow(testOutputHelper))
                 {
-                    using (var testOutputHelper = new ConsoleTestOutputHelper())
-                    using (var test = new SubscriptionsFailover(testOutputHelper))
-                    {
-                        await test.ContinueFromThePointIStoppedConcurrentSubscription(1, 20);
-                    }
+                    await test.ShouldStoreEveryBackupToHistoryPersistently("abcd123", BackupType.Snapshot);
                 }
-                catch (Exception e)
-                {
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine(e);
-                    Console.ForegroundColor = ConsoleColor.White;
-                }
+            }
+            catch (Exception e)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine(e);
+                Console.ForegroundColor = ConsoleColor.White;
             }
         }
     }
