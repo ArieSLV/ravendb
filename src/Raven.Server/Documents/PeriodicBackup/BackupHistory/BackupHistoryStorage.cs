@@ -21,36 +21,44 @@ public unsafe class BackupHistoryStorage
 {
     private StorageEnvironment _environment;
     private TransactionContextPool _contextPool;
+    private readonly int _backupHistoryEntriesCountLimit;
 
     protected readonly Logger Logger;
 
     private static readonly Slice ByCreatedAt;
+    private static readonly Slice ByCreatedAtFixedSizeIndex;
 
     internal readonly TableSchema _entriesSchema = new();
-    private const long BackupHistoryEntriesCountLimit = 50;
 
     static BackupHistoryStorage()
     {
         using (StorageEnvironment.GetStaticContext(out var ctx))
         {
+            Slice.From(ctx, nameof(ByCreatedAtFixedSizeIndex), ByteStringType.Immutable, out ByCreatedAtFixedSizeIndex);
             Slice.From(ctx, nameof(ByCreatedAt), ByteStringType.Immutable, out ByCreatedAt);
         }
     }
 
-    public BackupHistoryStorage()
+    public BackupHistoryStorage(int backupMaxNumberOfBackupHistoryEntries)
     {
+        _backupHistoryEntriesCountLimit = backupMaxNumberOfBackupHistoryEntries;
         Logger = LoggingSource.Instance.GetLogger<BackupHistoryStorage>("Server");
 
         _entriesSchema.DefineKey(new TableSchema.SchemaIndexDef
         {
-            StartIndex = BackupHistorySchema.BackupHistoryTable.IdIndex, 
+            StartIndex = BackupHistorySchema.BackupHistoryTable.CreatedAtIndex, 
             Count = 1
-        });
+        }); //todo: Define another key?
 
         _entriesSchema.DefineIndex(new TableSchema.SchemaIndexDef
         {
             StartIndex = BackupHistorySchema.BackupHistoryTable.CreatedAtIndex, 
             Name = ByCreatedAt
+        });
+        _entriesSchema.DefineFixedSizeIndex(new TableSchema.FixedSizeSchemaIndexDef()
+        {
+            StartIndex = BackupHistorySchema.BackupHistoryTable.CreatedAtIndex,
+            Name = ByCreatedAtFixedSizeIndex
         });
     }
 
@@ -98,23 +106,23 @@ public unsafe class BackupHistoryStorage
             using (var json = context.ReadObject(backupHistoryEntry.ToJson(), nameof(BackupHistoryEntry), BlittableJsonDocumentBuilder.UsageMode.ToDisk))
             using (var tx = context.OpenWriteTransaction())
             {
-                StoreInternal(backupHistoryEntry.CreatedAt, json, tx);
+                StoreInternal(context, backupHistoryEntry.CreatedAt, json, tx);
                 tx.Commit();
             }
-
-            // ComplyWithLimit(context);
+            
+            ComplyWithLimit(context);
         }
     }
 
 
-    private void StoreInternal(DateTime createdAt, BlittableJsonReaderObject json, RavenTransaction tx)
+    private void StoreInternal(TransactionOperationContext context, DateTime createdAt, BlittableJsonReaderObject json, RavenTransaction tx)
     {
         var table = tx.InnerTransaction.OpenTable(_entriesSchema, BackupHistorySchema.BackupHistoryTree);
-
-        var createdAtTicks = Bits.SwapBytes(createdAt.Ticks);
+                var createdAtTicks = Bits.SwapBytes(createdAt.Ticks);
 
         using (table.Allocate(out TableValueBuilder tvb))
         {
+            // tvb.Add(null, 0);
             tvb.Add((byte*)&createdAtTicks, sizeof(long));
             tvb.Add(json.BasePointer, json.Size);
 
@@ -140,11 +148,10 @@ public unsafe class BackupHistoryStorage
 
         var table = context.Transaction.InnerTransaction.OpenTable(_entriesSchema, BackupHistorySchema.BackupHistoryTree);
 
-        foreach (var tvr in table.SeekForwardFrom(_entriesSchema.Indexes[ByCreatedAt], Slices.BeforeAllKeys, 0))
+        foreach (var tvr in table.SeekForwardFrom(_entriesSchema.Indexes[ByCreatedAt], Slices.BeforeAllKeys,  0))
         {
             yield return Read(context, ref tvr.Result.Reader);
         }
-
     }
 
     private BackupHistoryTableValue Read(TransactionOperationContext context, ref TableValueReader resultReader)
@@ -163,22 +170,27 @@ public unsafe class BackupHistoryStorage
     {
         var table = context.Transaction.InnerTransaction.OpenTable(_entriesSchema, BackupHistorySchema.BackupHistoryTree);
         
-        return table?.GetNumberOfEntriesFor(_entriesSchema.FixedSizeIndexes[ByCreatedAt]) ?? 0;
+        return table?.GetNumberOfEntriesFor(_entriesSchema.FixedSizeIndexes[ByCreatedAtFixedSizeIndex]) ?? 0;
     }
 
     private void ComplyWithLimit(TransactionOperationContext context)
     {
+        long extra;
         using (context.OpenReadTransaction())
         {
-            var extra = GetBackupHistoryEntriesCount(context) - BackupHistoryEntriesCountLimit;
+            extra = GetBackupHistoryEntriesCount(context) - _backupHistoryEntriesCountLimit;
             if (extra <= 0) 
                 return;
-
+        }
+        
+        using (var tx = context.OpenWriteTransaction())
+        {
             var table = context.Transaction.InnerTransaction.OpenTable(_entriesSchema, BackupHistorySchema.BackupHistoryTree);
-            if (table == null) 
+            if (table == null)
                 return;
 
-            table.DeleteBackwardFrom(_entriesSchema.FixedSizeIndexes[ByCreatedAt], long.MaxValue, extra);
+            table.DeleteBackwardFrom(_entriesSchema.FixedSizeIndexes[ByCreatedAtFixedSizeIndex], DateTime.MaxValue.Ticks, extra);
+            tx.Commit();
         }
     }
 
@@ -188,9 +200,9 @@ public unsafe class BackupHistoryStorage
 
         public static class BackupHistoryTable
         {
-            public const int IdIndex = 0;
-            public const int CreatedAtIndex = 1;
-            public const int JsonIndex = 2;
+            // public const int IdIndex = 0;
+            public const int CreatedAtIndex = 0;
+            public const int JsonIndex = 1;
         }
     }
 }

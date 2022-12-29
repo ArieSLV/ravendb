@@ -25,8 +25,6 @@ namespace Raven.Server.Documents
 
         public OperationsStorage OperationsStorage { get; }
 
-        public BackupHistoryStorage BackupHistoryStorage { get; }
-
         public StorageEnvironment Environment { get; }
 
         public ConfigurationStorage(DocumentDatabase db)
@@ -72,8 +70,6 @@ namespace Raven.Server.Documents
 
             OperationsStorage = new OperationsStorage();
 
-            BackupHistoryStorage = new BackupHistoryStorage();
-
             Environment = StorageLoader.OpenEnvironment(options, StorageEnvironmentWithType.StorageEnvironmentType.Configuration);
 
             ContextPool = new TransactionContextPool(Environment, db.Configuration.Memory.MaxContextSizeToKeep);
@@ -83,7 +79,6 @@ namespace Raven.Server.Documents
         {
             NotificationsStorage.Initialize(Environment, ContextPool);
             OperationsStorage.Initialize(Environment, ContextPool);
-            BackupHistoryStorage.Initialize(Environment, ContextPool);
         }
 
         public void Dispose()

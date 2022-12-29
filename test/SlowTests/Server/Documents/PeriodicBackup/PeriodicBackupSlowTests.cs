@@ -3437,8 +3437,84 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                 taskId = await Backup.UpdateConfigAndRunBackupAsync(server, config, store, isFullBackup: true);
                 var backupStatus = (await store.Maintenance.SendAsync(new GetPeriodicBackupStatusOperation(taskId))).Status;
 
-                Server.ServerStore.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out var entries);
-                Assert.Equal(1, entries.Count());
+                using (server.ServerStore.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out var entries))
+                    Assert.Equal(1, entries.Count());
+
+                try
+                {
+                    var disposingResult = await DisposeServerAndWaitForFinishOfDisposalAsync(server);
+
+                    using var newServer = GetNewServer(new ServerCreationOptions
+                    {
+                        DeletePrevious = false,
+                        RunInMemory = false,
+                        DataDirectory = disposingResult.DataDirectory,
+                        CustomSettings = new Dictionary<string, string> { [RavenConfiguration.GetKey(x => x.Core.ServerUrls)] = disposingResult.Url }
+                    });
+                    Assert.NotNull(newServer);
+
+                    using (var newStore = new DocumentStore { Urls = new[] { newServer.WebUrl }, Database = databaseName })
+                    {
+                        newStore.Initialize();
+
+                        DateTime firstEntryTime;
+                        using (newServer.ServerStore.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out var entries))
+                        {
+                            Assert.Equal(1, entries.Count());
+                            firstEntryTime = entries.First().CreatedAt;
+                        }
+                            
+
+                        await WaitForValueAsync(async () =>
+                        {
+                            try
+                            {
+                                backupStatus = await Backup.RunBackupAndReturnStatusAsync(newServer, taskId, newStore);
+                            }
+                            catch (Exception)
+                            {
+                                // just try again
+                            }
+                        
+                            return backupStatus != null;
+                        }, true);
+
+                        DateTime secondEntryTime = default;
+                        for (int i = 1; i <= 50; i++)
+                        {
+                            Backup.RunBackup(newServer, taskId, newStore);
+                            using (newServer.ServerStore.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out var entries))
+                            {
+                                switch (i)
+                                {
+                                    case 1:
+                                        await Task.Delay(1000);
+                                        secondEntryTime = entries.Last().CreatedAt;
+                                        Assert.Equal(i + 1, entries.Count());
+                                        break;
+                                    case 50:
+                                        await Task.Delay(1000);
+                                        var expectedEntryTime = entries.First().CreatedAt;
+                                        Assert.NotEqual(firstEntryTime, expectedEntryTime);
+                                        Assert.Equal(secondEntryTime, expectedEntryTime);
+                                        break;
+                                    default:
+                                        Assert.Equal(i + 1, entries.Count());
+                                        break;
+                                }
+
+                            }
+                        }
+
+
+                    }
+                }
+                catch (Exception e)
+                {
+
+
+                }
+
 
             }
         }
