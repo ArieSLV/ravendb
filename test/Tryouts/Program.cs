@@ -27,7 +27,7 @@ public static class Program
                 using (var testOutputHelper = new ConsoleTestOutputHelper())
                 using (var test = new PeriodicBackupTestsSlow(testOutputHelper))
                 {
-                    await test.ShouldStoreEveryBackupToHistoryPersistently("abcd123", BackupType.Snapshot);
+                    await test.EveryNodeHasDelayInMemory();
                 }
             }
             catch (Exception e)

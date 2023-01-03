@@ -3,9 +3,6 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using Raven.Client.Documents.Operations;
 using Raven.Client.Documents.Operations.Backups;
-using Raven.Client.Util;
-using Raven.Server.NotificationCenter.Notifications.Details;
-using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.Utils;
 using Sparrow.Binary;
@@ -28,7 +25,7 @@ public unsafe class BackupHistoryStorage
     private static readonly Slice ByCreatedAt;
     private static readonly Slice ByCreatedAtFixedSizeIndex;
 
-    internal readonly TableSchema _entriesSchema = new();
+    private readonly TableSchema _entriesSchema = new();
 
     static BackupHistoryStorage()
     {
@@ -48,13 +45,14 @@ public unsafe class BackupHistoryStorage
         {
             StartIndex = BackupHistorySchema.BackupHistoryTable.CreatedAtIndex, 
             Count = 1
-        }); //todo: Define another key?
+        }); 
 
         _entriesSchema.DefineIndex(new TableSchema.SchemaIndexDef
         {
             StartIndex = BackupHistorySchema.BackupHistoryTable.CreatedAtIndex, 
             Name = ByCreatedAt
         });
+
         _entriesSchema.DefineFixedSizeIndex(new TableSchema.FixedSizeSchemaIndexDef()
         {
             StartIndex = BackupHistorySchema.BackupHistoryTable.CreatedAtIndex,
@@ -106,27 +104,24 @@ public unsafe class BackupHistoryStorage
             using (var json = context.ReadObject(backupHistoryEntry.ToJson(), nameof(BackupHistoryEntry), BlittableJsonDocumentBuilder.UsageMode.ToDisk))
             using (var tx = context.OpenWriteTransaction())
             {
-                StoreInternal(context, backupHistoryEntry.CreatedAt, json, tx);
+                var table = context.Transaction.InnerTransaction.OpenTable(_entriesSchema, BackupHistorySchema.BackupHistoryTree);
+                var createdAtTicks = Bits.SwapBytes(backupHistoryEntry.CreatedAt.Ticks);
+
+                using (table.Allocate(out TableValueBuilder tvb))
+                {
+                    tvb.Add((byte*)&createdAtTicks, sizeof(long));
+                    tvb.Add(json.BasePointer, json.Size);
+
+                    table.Set(tvb);
+                }
+
+                var extra = table.NumberOfEntries - _backupHistoryEntriesCountLimit;
+                
+                if (extra > 0)
+                    table.DeleteBackwardFrom(_entriesSchema.FixedSizeIndexes[ByCreatedAtFixedSizeIndex], DateTime.MaxValue.Ticks, extra);
+
                 tx.Commit();
             }
-            
-            ComplyWithLimit(context);
-        }
-    }
-
-
-    private void StoreInternal(TransactionOperationContext context, DateTime createdAt, BlittableJsonReaderObject json, RavenTransaction tx)
-    {
-        var table = tx.InnerTransaction.OpenTable(_entriesSchema, BackupHistorySchema.BackupHistoryTree);
-                var createdAtTicks = Bits.SwapBytes(createdAt.Ticks);
-
-        using (table.Allocate(out TableValueBuilder tvb))
-        {
-            // tvb.Add(null, 0);
-            tvb.Add((byte*)&createdAtTicks, sizeof(long));
-            tvb.Add(json.BasePointer, json.Size);
-
-            table.Set(tvb);
         }
     }
 
@@ -137,15 +132,14 @@ public unsafe class BackupHistoryStorage
             scope.EnsureDispose(_contextPool.AllocateOperationContext(out TransactionOperationContext context));
             scope.EnsureDispose(context.OpenReadTransaction());
 
-            entries = ReadEntriesByCreatedAtIndex(context);
+            entries = ReadEntries(context);
 
             return scope.Delay();
         }
     }
 
-    private IEnumerable<BackupHistoryTableValue> ReadEntriesByCreatedAtIndex(TransactionOperationContext context)
+    private IEnumerable<BackupHistoryTableValue> ReadEntries(TransactionOperationContext context)
     {
-
         var table = context.Transaction.InnerTransaction.OpenTable(_entriesSchema, BackupHistorySchema.BackupHistoryTree);
 
         foreach (var tvr in table.SeekForwardFrom(_entriesSchema.Indexes[ByCreatedAt], Slices.BeforeAllKeys,  0))
@@ -162,36 +156,8 @@ public unsafe class BackupHistoryStorage
         return new BackupHistoryTableValue
         {
             CreatedAt = createdAt,
-            Json = new BlittableJsonReaderObject(jsonPointer,size, context)
+            Json = new BlittableJsonReaderObject(jsonPointer, size, context)
         };
-    }
-
-    private long GetBackupHistoryEntriesCount(TransactionOperationContext context)
-    {
-        var table = context.Transaction.InnerTransaction.OpenTable(_entriesSchema, BackupHistorySchema.BackupHistoryTree);
-        
-        return table?.GetNumberOfEntriesFor(_entriesSchema.FixedSizeIndexes[ByCreatedAtFixedSizeIndex]) ?? 0;
-    }
-
-    private void ComplyWithLimit(TransactionOperationContext context)
-    {
-        long extra;
-        using (context.OpenReadTransaction())
-        {
-            extra = GetBackupHistoryEntriesCount(context) - _backupHistoryEntriesCountLimit;
-            if (extra <= 0) 
-                return;
-        }
-        
-        using (var tx = context.OpenWriteTransaction())
-        {
-            var table = context.Transaction.InnerTransaction.OpenTable(_entriesSchema, BackupHistorySchema.BackupHistoryTree);
-            if (table == null)
-                return;
-
-            table.DeleteBackwardFrom(_entriesSchema.FixedSizeIndexes[ByCreatedAtFixedSizeIndex], DateTime.MaxValue.Ticks, extra);
-            tx.Commit();
-        }
     }
 
     public static class BackupHistorySchema
@@ -200,7 +166,6 @@ public unsafe class BackupHistoryStorage
 
         public static class BackupHistoryTable
         {
-            // public const int IdIndex = 0;
             public const int CreatedAtIndex = 0;
             public const int JsonIndex = 1;
         }
@@ -209,7 +174,7 @@ public unsafe class BackupHistoryStorage
 
 public class BackupHistoryTableValue
 {
-    public BlittableJsonReaderObject Json;
-
     public DateTime CreatedAt;
+
+    public BlittableJsonReaderObject Json;
 }

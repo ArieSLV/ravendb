@@ -1,11 +1,33 @@
 ﻿using System;
 using System.Net.Http;
+using Raven.Client.Documents.Operations.Backups;
 using Raven.Client.Http;
 using Raven.Client.Json.Serialization;
 using Sparrow.Json;
+using Sparrow.Json.Parsing;
 
 namespace Raven.Client.ServerWide.Commands
 {
+    public class GetBackupHistoryCommand : RavenCommand<BlittableJsonReaderObject>
+    {
+        private readonly string _url;
+        public override bool IsReadRequest => true;
+
+        public GetBackupHistoryCommand(string url)
+        {
+            _url = url;
+        }
+
+        public override HttpRequestMessage CreateRequest(JsonOperationContext ctx, ServerNode node, out string url)
+        {
+            url = $"{node.Url}/admin/backup-history?node={node.ClusterTag}";
+
+            return new HttpRequestMessage(HttpMethod.Get, url);
+        }
+    }
+
+    
+
     public class GetTcpInfoCommand : RavenCommand<TcpConnectionInfo>
     {
         private readonly string _tag;
