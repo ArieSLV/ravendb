@@ -3512,15 +3512,13 @@ namespace SlowTests.Server.Documents.PeriodicBackup
 
 
                 }
-
-
             }
         }
 
         [Fact, Trait("Category", "Smuggler")]
-        public async Task EveryNodeHasDelayInMemory()
+        public async Task GetBackupHistoryFromCluster()
         {
-            const int clusterSize = 3;
+            const int clusterSize = 2;
 
             var backupPath = NewDataPath(suffix: "BackupFolder");
             var databaseName = GetDatabaseName();
@@ -3549,7 +3547,8 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                 Assert.NotNull(responsibleDatabase);
                 responsibleDatabase.PeriodicBackupRunner.ForTestingPurposesOnly().OnBackupTaskRunHoldBackupExecution = new TaskCompletionSource<object>();
 
-                WaitForUserToContinueTheTest(leaderStore);
+                using (v)
+                WaitForUserToContinueTheTest($"{leaderServer.WebUrl}/admin/backup-history");
             }
         }
 
@@ -3668,33 +3667,33 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                 // }
 
                 private static string GetBackupPath(IDocumentStore store, long backTaskId, bool incremental = true)
-        {
-            var status = store.Maintenance.Send(new GetPeriodicBackupStatusOperation(backTaskId)).Status;
+                {
+                    var status = store.Maintenance.Send(new GetPeriodicBackupStatusOperation(backTaskId)).Status;
 
-            var backupDirectory = status.LocalBackup.BackupDirectory;
+                    var backupDirectory = status.LocalBackup.BackupDirectory;
 
-            string datePrefix;
-            if (incremental)
-            {
-                Debug.Assert(status.LastIncrementalBackup.HasValue);
-                datePrefix = status.LastIncrementalBackup.Value.ToLocalTime().ToString(BackupTask.DateTimeFormat);
-            }
-            else
-            {
-                var folderName = status.FolderName;
-                var indexOf = folderName.IndexOf(".", StringComparison.OrdinalIgnoreCase);
-                Debug.Assert(indexOf != -1);
-                datePrefix = folderName.Substring(0, indexOf);
-            }
+                    string datePrefix;
+                    if (incremental)
+                    {
+                        Debug.Assert(status.LastIncrementalBackup.HasValue);
+                        datePrefix = status.LastIncrementalBackup.Value.ToLocalTime().ToString(BackupTask.DateTimeFormat);
+                    }
+                    else
+                    {
+                        var folderName = status.FolderName;
+                        var indexOf = folderName.IndexOf(".", StringComparison.OrdinalIgnoreCase);
+                        Debug.Assert(indexOf != -1);
+                        datePrefix = folderName.Substring(0, indexOf);
+                    }
 
-            var fileExtension = incremental
-                ? Constants.Documents.PeriodicBackup.IncrementalBackupExtension
-                : Constants.Documents.PeriodicBackup.FullBackupExtension;
+                    var fileExtension = incremental
+                        ? Constants.Documents.PeriodicBackup.IncrementalBackupExtension
+                        : Constants.Documents.PeriodicBackup.FullBackupExtension;
 
-            return Path.Combine(backupDirectory, $"{datePrefix}{fileExtension}");
-        }
+                    return Path.Combine(backupDirectory, $"{datePrefix}{fileExtension}");
+                }
 
-        private static IDisposable ReadOnly(string path)
+                private static IDisposable ReadOnly(string path)
         {
             var files = Directory.GetFiles(path);
             var attributes = new FileInfo(files[0]).Attributes;
@@ -3713,9 +3712,9 @@ namespace SlowTests.Server.Documents.PeriodicBackup
         }
 
 
-        public IDocumentStore RestoreAndGetStore(IDocumentStore store, string backupPath, out IDisposable releaseDatabase, TimeSpan? timeout = null)
-        {
-            var restoredDatabaseName = GetDatabaseName();
+                public IDocumentStore RestoreAndGetStore(IDocumentStore store, string backupPath, out IDisposable releaseDatabase, TimeSpan? timeout = null)
+                {
+                    var restoredDatabaseName = GetDatabaseName();
 
             releaseDatabase = Backup.RestoreDatabase(store, new RestoreBackupConfiguration
             {
@@ -3723,12 +3722,7 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                 DatabaseName = restoredDatabaseName
             }, timeout);
 
-            return GetDocumentStore(new Options
-            {
-                ModifyDatabaseName = s => restoredDatabaseName,
-                CreateDatabase = false,
-                DeleteDatabaseOnDispose = true
-            });
-        }
+                    return GetDocumentStore(new Options { ModifyDatabaseName = s => restoredDatabaseName, CreateDatabase = false, DeleteDatabaseOnDispose = true });
+                }
     }
 }

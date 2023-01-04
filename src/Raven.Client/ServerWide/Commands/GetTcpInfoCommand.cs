@@ -2,6 +2,7 @@
 using System.Net.Http;
 using Raven.Client.Documents.Operations.Backups;
 using Raven.Client.Http;
+using Raven.Client.Json;
 using Raven.Client.Json.Serialization;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
@@ -20,7 +21,7 @@ namespace Raven.Client.ServerWide.Commands
 
         public override HttpRequestMessage CreateRequest(JsonOperationContext ctx, ServerNode node, out string url)
         {
-            url = $"{node.Url}/admin/backup-history?node={node.ClusterTag}";
+            url = $"{node.Url}/admin/backup-history?node={node.Url}";
 
             return new HttpRequestMessage(HttpMethod.Get, url);
         }
