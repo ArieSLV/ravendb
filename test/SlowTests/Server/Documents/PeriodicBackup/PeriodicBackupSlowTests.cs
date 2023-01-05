@@ -28,6 +28,7 @@ using Raven.Client.Exceptions.Documents;
 using Raven.Client.Http;
 using Raven.Client.Json.Serialization;
 using Raven.Client.ServerWide;
+using Raven.Client.ServerWide.Commands;
 using Raven.Client.ServerWide.Operations;
 using Raven.Client.Util;
 using Raven.Server;
@@ -3532,6 +3533,8 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                        Urls = new[] { leaderServer.WebUrl }, Conventions = new DocumentConventions { DisableTopologyUpdates = true }, Database = databaseName
                    })
             {
+                
+
                 leaderStore.Initialize();
 
                 using (var session = leaderStore.OpenAsyncSession())
@@ -3543,12 +3546,46 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                 var config = Backup.CreateBackupConfiguration(backupPath, mentorNode: leaderServer.ServerStore.NodeTag);
                 var taskId = await Backup.UpdateConfigAndRunBackupAsync(leaderServer, config, leaderStore);
 
+               var a = await GetBackupHistoryList(leaderStore);
+
                 var responsibleDatabase = await leaderServer.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(leaderStore.Database).ConfigureAwait(false);
                 Assert.NotNull(responsibleDatabase);
-                responsibleDatabase.PeriodicBackupRunner.ForTestingPurposesOnly().OnBackupTaskRunHoldBackupExecution = new TaskCompletionSource<object>();
 
-                using (v)
-                WaitForUserToContinueTheTest($"{leaderServer.WebUrl}/admin/backup-history");
+                await Backup.RunBackupAsync(leaderServer, taskId, leaderStore, isFullBackup: false);
+                WaitForUserToContinueTheTest(leaderStore);
+
+                using (var notLeaderStore = new DocumentStore
+                       {
+                           Urls = new[] { notLeaderServer.WebUrl }, Conventions = new DocumentConventions { DisableTopologyUpdates = true }, Database = databaseName
+                       })
+                {
+                    notLeaderStore.Initialize();
+
+                    var notLeaderConfig = Backup.CreateBackupConfiguration(backupPath, mentorNode: notLeaderServer.ServerStore.NodeTag);
+                    var notLeaderTaskId = await Backup.UpdateConfigAndRunBackupAsync(notLeaderServer, notLeaderConfig, notLeaderStore);
+
+                    var notLeaderResponsibleDatabase =
+                        await notLeaderServer.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(notLeaderStore.Database).ConfigureAwait(false);
+
+
+                    WaitForUserToContinueTheTest(notLeaderStore);
+                }
+            }
+
+            async Task<NodeBackupHistoryResult> GetBackupHistoryList(DocumentStore store)
+            {
+                var client = store.GetRequestExecutor().HttpClient;
+                var response = await client.GetAsync($"{notLeaderServer.WebUrl}/admin/backup-history");
+                string result = response.Content.ReadAsStringAsync().Result;
+
+                using (var ctx = JsonOperationContext.ShortTermSingleUse())
+                {
+                    using var bjro = ctx.Sync.ReadForMemory(result, "Result");
+
+                    var nodeBackupHistoryResult = JsonDeserializationClient.NodeBackupHistoryResult(bjro);
+                    return nodeBackupHistoryResult;
+                }
+
             }
         }
 

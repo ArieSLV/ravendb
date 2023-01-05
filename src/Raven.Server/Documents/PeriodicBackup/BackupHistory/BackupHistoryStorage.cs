@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using Raven.Client.Documents.Operations;
 using Raven.Client.Documents.Operations.Backups;
+using Raven.Client.ServerWide.Commands;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.Utils;
 using Sparrow.Binary;
@@ -84,7 +85,7 @@ public unsafe class BackupHistoryStorage
             BackupType = periodicBackupStatus?.BackupType,
             DatabaseName = databaseName,
             DurationInMs = periodicBackupStatus?.DurationInMs,
-            Error = periodicBackupStatus?.Error,
+            Error = periodicBackupStatus?.Error?.ToString(),
             IsCompletedSuccessfully = task.IsCompletedSuccessfully,
             IsFull = periodicBackupStatus?.IsFull,
             NodeTag = periodicBackupStatus?.NodeTag,

@@ -2,11 +2,13 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using CsvHelper;
 using NuGet.Protocol;
 using Raven.Client.Documents.Conventions;
 using Raven.Client.Documents.Operations.Backups;
 using Raven.Client.Documents.Operations.OngoingTasks;
 using Raven.Client.Http;
+using Raven.Client.Json;
 using Raven.Client.ServerWide.Commands;
 using Raven.Server.Documents;
 using Raven.Server.Documents.PeriodicBackup;
@@ -105,106 +107,89 @@ namespace Raven.Server.Web.System
         [RavenAction("/admin/backup-history", "GET", AuthorizationStatus.Operator)]
         public async Task GetBackupHistory()
         {
-            // var backupHistoryEntries = new List<BackupHistoryTableValue>();
             var dest = GetStringQueryString("url", false) ?? GetStringQueryString("node", false);
-
             var topology = ServerStore.GetClusterTopology();
-            var tasks = new List<Task<GetNodeBackupHistoryResult>>();
+            var tasks = new List<Task>();
+            var firstOnCluster = true;
+
             using (ServerStore.ContextPool.AllocateOperationContext(out JsonOperationContext context))
             await using (var writer = new AsyncBlittableJsonTextWriter(context, ResponseBodyStream()))
             {
+                writer.WriteStartObject();
+                writer.WritePropertyName("Result");
+
+                writer.WriteStartArray();
+
                 if (string.IsNullOrEmpty(dest))
                 {
                     foreach (var node in topology.AllNodes)
                     {
-                        tasks.Add(GetNodeBackupHistory(node.Value));
+                        await GetNodeBackupHistory(node.Value, writer);
                     }
                 }
                 else
                 {
                     var url = topology.GetUrlFromTag(dest);
-                    tasks.Add(GetNodeBackupHistory(url ?? dest));
+                    tasks.Add(GetNodeBackupHistory(url ?? dest, writer));
                 }
 
-
-                writer.WriteStartObject();
-                writer.WritePropertyName("Result");
-
-                writer.WriteStartArray();
                 while (tasks.Count > 0)
                 {
                     var task = await Task.WhenAny(tasks);
                     tasks.Remove(task);
-                    foreach (var entry in task.Result.Entries)
-                    {
-                        entry.BlittableValidation();
-                        writer.WriteObject(entry);
-                    }
 
                     if (tasks.Count > 0)
                     {
                         writer.WriteComma();
                     }
+
                     await writer.MaybeFlushAsync();
                 }
 
                 writer.WriteEndArray();
+
                 writer.WriteEndObject();
             }
-        }
 
-        internal async Task<GetNodeBackupHistoryResult> GetNodeBackupHistory(string url)
-        {
-            var result = new GetNodeBackupHistoryResult();
-            if (url.Equals(ServerStore.GetNodeHttpServerUrl(), StringComparison.OrdinalIgnoreCase))
+            async Task GetNodeBackupHistory(string url, AbstractBlittableJsonTextWriter writer)
             {
-                using (ServerStore.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out var entries))
+                var firstOnNode = true;
+                if (ServerStore.GetNodeHttpServerUrl() == url)
                 {
-                    foreach (var entry in entries)
+                    using (ServerStore.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out var entries))
                     {
-                        result.Entries.Add(entry.Json);
+                        foreach (var entry in entries)
+                        {
+                            
+                            if (firstOnNode == false)
+                                writer.WriteComma();
+
+                            firstOnNode = false;
+                            writer.WriteObject(entry.Json);
+                        }
                     }
                 }
-            }
-            else
-            {
-                using (var requestExecutor = ClusterRequestExecutor.CreateForSingleNode(url, ServerStore.Engine.ClusterCertificate, DocumentConventions.DefaultForServer))
-                using (requestExecutor.ContextPool.AllocateOperationContext(out var context))
+                else
                 {
-                    var command = new GetBackupHistoryCommand(url);
-                    await requestExecutor.ExecuteAsync(command, context);
-                    result.Entries.Add(command.Result);
+                    using (var requestExecutor = ClusterRequestExecutor.CreateForSingleNode(url, ServerStore.Engine.ClusterCertificate, DocumentConventions.DefaultForServer))
+                    using (requestExecutor.ContextPool.AllocateOperationContext(out var context))
+                    {
+                        var command = new GetBackupHistoryNodeCommand();
+                        await requestExecutor.ExecuteAsync(command, context);
+
+                        foreach (var entry in command.Result.Result)
+                        {
+                            if (firstOnNode == false)
+                                writer.WriteComma();
+
+                            firstOnNode = false;
+                            context.Write(writer, entry.ToJson());
+                        }
+                    }
                 }
+
             }
-
-            return result;
         }
-
-        // using (ServerStore.ContextPool.AllocateOperationContext(out JsonOperationContext context))
-        // await using (var writer = new AsyncBlittableJsonTextWriter(context, ResponseBodyStream()))
-        // {
-        //
-        //
-        //     var first = true;
-        //
-        //     writer.WriteStartObject();
-        //     writer.WritePropertyName(url);
-        //     writer.WriteStartArray();
-        //
-        //     using (ServerStore.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out var entries))
-        //         foreach (var entry in entries)
-        //         {
-        //             if (first == false)
-        //                 writer.WriteComma();
-        //
-        //             first = false;
-        //             writer.WriteObject(entry.Json);
-        //         }
-        //
-        //
-        //     writer.WriteEndObject();
-        //     writer.WriteEndArray();
-        // }
 
         internal static void WriteEndOfTimers(AbstractBlittableJsonTextWriter writer, int count)
             {
@@ -268,18 +253,5 @@ namespace Raven.Server.Web.System
             }
         }
 
-    internal class GetNodeBackupHistoryResult : IDynamicJsonValueConvertible
-    {
-        public List<BlittableJsonReaderObject> Entries = new();
-
-        public DynamicJsonValue ToJson()
-        {
-            var djv = new DynamicJsonValue
-            {
-                [nameof(Entries)] = new DynamicJsonArray(Entries)
-            };
-
-            return djv;
-        }
-    }
+    
 }
