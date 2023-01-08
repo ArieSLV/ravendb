@@ -1,25 +1,17 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading.Tasks;
-using CsvHelper;
-using NuGet.Protocol;
 using Raven.Client.Documents.Conventions;
 using Raven.Client.Documents.Operations.Backups;
 using Raven.Client.Documents.Operations.OngoingTasks;
 using Raven.Client.Http;
-using Raven.Client.Json;
 using Raven.Client.ServerWide.Commands;
 using Raven.Server.Documents;
 using Raven.Server.Documents.PeriodicBackup;
-using Raven.Server.Documents.PeriodicBackup.BackupHistory;
-using Raven.Server.Json;
 using Raven.Server.Routing;
 using Raven.Server.ServerWide.Context;
-using Raven.Server.Utils;
+using Sparrow;
 using Sparrow.Json;
-using Sparrow.Json.Parsing;
-using static Raven.Server.Documents.Handlers.Debugging.NodeDebugHandler;
 
 namespace Raven.Server.Web.System
 {
@@ -110,16 +102,10 @@ namespace Raven.Server.Web.System
             var dest = GetStringQueryString("url", false) ?? GetStringQueryString("node", false);
             var topology = ServerStore.GetClusterTopology();
             var tasks = new List<Task>();
-            var firstOnCluster = true;
 
             using (ServerStore.ContextPool.AllocateOperationContext(out JsonOperationContext context))
             await using (var writer = new AsyncBlittableJsonTextWriter(context, ResponseBodyStream()))
             {
-                writer.WriteStartObject();
-                writer.WritePropertyName("Result");
-
-                writer.WriteStartArray();
-
                 if (string.IsNullOrEmpty(dest))
                 {
                     foreach (var node in topology.AllNodes)
@@ -133,6 +119,10 @@ namespace Raven.Server.Web.System
                     tasks.Add(GetNodeBackupHistory(url ?? dest, writer));
                 }
 
+                writer.WriteStartObject();
+                writer.WritePropertyName("Result");
+                
+                writer.WriteStartArray();
                 while (tasks.Count > 0)
                 {
                     var task = await Task.WhenAny(tasks);
@@ -147,25 +137,30 @@ namespace Raven.Server.Web.System
                 }
 
                 writer.WriteEndArray();
-
                 writer.WriteEndObject();
             }
 
             async Task GetNodeBackupHistory(string url, AbstractBlittableJsonTextWriter writer)
             {
-                var firstOnNode = true;
+                var first = true;
                 if (ServerStore.GetNodeHttpServerUrl() == url)
                 {
-                    using (ServerStore.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out var entries))
+                    foreach ((var name, Task<DocumentDatabase> task) in ServerStore.DatabasesLandlord.DatabasesCache)
                     {
-                        foreach (var entry in entries)
-                        {
-                            
-                            if (firstOnNode == false)
-                                writer.WriteComma();
+                        if (task.Status != TaskStatus.RanToCompletion)
+                            continue;
 
-                            firstOnNode = false;
-                            writer.WriteObject(entry.Json);
+                        var database = await task;
+                        using (database.ConfigurationStorage.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out var entries))
+                        {
+                            foreach (var entry in entries)
+                            {
+                                if (first == false)
+                                    writer.WriteComma();
+
+                                first = false;
+                                writer.WriteObject(entry.Json);
+                            }
                         }
                     }
                 }
@@ -179,10 +174,10 @@ namespace Raven.Server.Web.System
 
                         foreach (var entry in command.Result.Result)
                         {
-                            if (firstOnNode == false)
+                            if (first == false)
                                 writer.WriteComma();
 
-                            firstOnNode = false;
+                            first = false;
                             context.Write(writer, entry.ToJson());
                         }
                     }

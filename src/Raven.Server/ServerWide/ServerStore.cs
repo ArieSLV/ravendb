@@ -119,7 +119,6 @@ namespace Raven.Server.ServerWide
 
         private readonly NotificationsStorage _notificationsStorage;
         private readonly OperationsStorage _operationsStorage;
-        public readonly BackupHistoryStorage BackupHistoryStorage;
 
         public ConcurrentDictionary<string, Dictionary<string, long>> IdleDatabases;
 
@@ -245,7 +244,6 @@ namespace Raven.Server.ServerWide
                 }
             });
 
-            BackupHistoryStorage = new BackupHistoryStorage(configuration.Backup.MaxNumberOfBackupHistoryEntries);
         }
 
         internal readonly FifoSemaphore ServerWideConcurrentlyRunningIndexesLock;
@@ -798,7 +796,6 @@ namespace Raven.Server.ServerWide
             _timer = new Timer(IdleOperations, null, _frequencyToCheckForIdleDatabases, TimeSpan.FromDays(7));
             _notificationsStorage.Initialize(_env, ContextPool);
             _operationsStorage.Initialize(_env, ContextPool);
-            BackupHistoryStorage.Initialize(_env, ContextPool);
             DatabaseInfoCache.Initialize(_env, ContextPool);
 
             NotificationCenter.Initialize();

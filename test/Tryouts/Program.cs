@@ -27,7 +27,7 @@ public static class Program
                 using (var testOutputHelper = new ConsoleTestOutputHelper())
                 using (var test = new PeriodicBackupTestsSlow(testOutputHelper))
                 {
-                    await test.GetBackupHistoryFromCluster();
+                    await test.BackupHistory_ShouldTakeIntoAccountLimitConfiguration_ShouldDeleteOldestEntriesFirst();
                 }
             }
             catch (Exception e)

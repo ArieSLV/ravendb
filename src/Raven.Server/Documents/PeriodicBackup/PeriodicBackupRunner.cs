@@ -599,7 +599,7 @@ namespace Raven.Server.Documents.PeriodicBackup
             {
                 periodicBackup.BackupStatus = runningBackupStatus;
                 ScheduleNextBackup(periodicBackup, backupResult?.Elapsed, lockTaken: false);
-                _serverStore.BackupHistoryStorage.Store(periodicBackup.Configuration.Name, _database.Name, tcs.Task, runningBackupStatus);
+                _database.ConfigurationStorage.BackupHistoryStorage.Store(periodicBackup.Configuration.Name, _database.Name, tcs.Task, runningBackupStatus);
             }
         }
 

@@ -35,6 +35,7 @@ using Raven.Server;
 using Raven.Server.Config;
 using Raven.Server.Documents;
 using Raven.Server.Documents.PeriodicBackup;
+using Raven.Server.Documents.PeriodicBackup.BackupHistory;
 using Raven.Server.Documents.PeriodicBackup.Restore;
 using Raven.Server.Json;
 using Raven.Server.NotificationCenter;
@@ -3406,304 +3407,344 @@ namespace SlowTests.Server.Documents.PeriodicBackup
             }
         }
 
-        [Theory, Trait("Category", "Smuggler")]
-        [InlineData("abcd123", BackupType.Snapshot)]
-        [InlineData("jklmn9876", BackupType.Backup)]
-        public async Task ShouldStoreEveryBackupToHistoryPersistently(string backupName, BackupType backupType)
+        [Fact, Trait("Category", "Smuggler")]
+        public async Task BackupHistory_ShouldTakeIntoAccountLimitConfiguration_ShouldDeleteOldestEntriesFirst()
         {
+            const int historySizeLimit = 10;
+            var defaultConfiguration = RavenConfiguration.Default;
+            Assert.NotEqual(defaultConfiguration.Backup.MaxNumberOfBackupHistoryEntries, historySizeLimit);
+
             var backupPath = NewDataPath(suffix: "BackupFolder");
             var databaseName = GetDatabaseName();
-            var server = GetNewServer(new ServerCreationOptions { RunInMemory = false });
-            long taskId;
-
+            var server = GetNewServer(new ServerCreationOptions
+            {
+                RunInMemory = false,
+                CustomSettings = new Dictionary<string, string>
+                {
+                    [RavenConfiguration.GetKey(x => x.Backup.MaxNumberOfBackupHistoryEntries)] = historySizeLimit.ToString()
+                }
+            });
 
             using (var store = new DocumentStore { Urls = new[] { server.WebUrl }, Database = databaseName, })
             {
                 store.Initialize();
                 store.Maintenance.Server.Send(new CreateDatabaseOperation(new DatabaseRecord(databaseName)));
-
-                // WaitForUserToContinueTheTest(store);
+                var documentDatabase = await server.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(databaseName).ConfigureAwait(false);
 
                 using (var session = store.OpenAsyncSession(new SessionOptions { TransactionMode = TransactionMode.ClusterWide }))
                 {
-                    await session.StoreAsync(new User { Name = "Lev" });
+                    await session.StoreAsync(new User { Name = "RavenDB-19358" });
                     await session.SaveChangesAsync();
                 }
 
-                // Server.ServerStore.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out var entries);
-                // Assert.Equal(0, entries.Count());
+                var config = Backup.CreateBackupConfiguration(backupPath);
+                var taskId = await Backup.UpdateConfigAndRunBackupAsync(server, config, store, isFullBackup: true);
 
-                var config = Backup.CreateBackupConfiguration(backupPath, name: backupName, backupType: backupType);
-                
-                taskId = await Backup.UpdateConfigAndRunBackupAsync(server, config, store, isFullBackup: true);
-                var backupStatus = (await store.Maintenance.SendAsync(new GetPeriodicBackupStatusOperation(taskId))).Status;
-
-                using (server.ServerStore.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out var entries))
+                using (documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out var entries))
                     Assert.Equal(1, entries.Count());
-
-                try
+                
+                DateTime firstEntryTime = default;
+                DateTime secondEntryTime = default;
+                for (int i = 2; i <= historySizeLimit + 1; i++)
                 {
-                    var disposingResult = await DisposeServerAndWaitForFinishOfDisposalAsync(server);
+                    Backup.RunBackup(server, taskId, store);
 
-                    using var newServer = GetNewServer(new ServerCreationOptions
+                    var expectedNumberOfEntries = i <= historySizeLimit ? i : historySizeLimit;
+                    WaitForValue(() =>
                     {
-                        DeletePrevious = false,
-                        RunInMemory = false,
-                        DataDirectory = disposingResult.DataDirectory,
-                        CustomSettings = new Dictionary<string, string> { [RavenConfiguration.GetKey(x => x.Core.ServerUrls)] = disposingResult.Url }
-                    });
-                    Assert.NotNull(newServer);
+                        using (documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out var entries))
+                            return entries.Count();
+                    }, expectedNumberOfEntries);
 
-                    using (var newStore = new DocumentStore { Urls = new[] { newServer.WebUrl }, Database = databaseName })
-                    {
-                        newStore.Initialize();
-
-                        DateTime firstEntryTime;
-                        using (newServer.ServerStore.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out var entries))
+                    using (documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out var entries)) 
+                        switch (i)
                         {
-                            Assert.Equal(1, entries.Count());
-                            firstEntryTime = entries.First().CreatedAt;
+                            case 2:
+                                firstEntryTime = entries.ElementAt(0).CreatedAt;
+                                secondEntryTime = entries.ElementAt(1).CreatedAt;
+                                break;
+                            case historySizeLimit + 1: // The first attempt to raise the limit will remove the oldest element 
+                                var expectedEntryTime = entries.ElementAt(0).CreatedAt; // Get the creation time of the new entry in the list
+                                Assert.NotEqual(firstEntryTime, expectedEntryTime); // The first entry was rewritten
+                                Assert.Equal(secondEntryTime, expectedEntryTime); // The second entry rewrote the first entry
+                                break;
                         }
-                            
-
-                        await WaitForValueAsync(async () =>
-                        {
-                            try
-                            {
-                                backupStatus = await Backup.RunBackupAndReturnStatusAsync(newServer, taskId, newStore);
-                            }
-                            catch (Exception)
-                            {
-                                // just try again
-                            }
-                        
-                            return backupStatus != null;
-                        }, true);
-
-                        DateTime secondEntryTime = default;
-                        for (int i = 1; i <= 50; i++)
-                        {
-                            Backup.RunBackup(newServer, taskId, newStore);
-                            using (newServer.ServerStore.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out var entries))
-                            {
-                                switch (i)
-                                {
-                                    case 1:
-                                        await Task.Delay(1000);
-                                        secondEntryTime = entries.Last().CreatedAt;
-                                        Assert.Equal(i + 1, entries.Count());
-                                        break;
-                                    case 50:
-                                        await Task.Delay(1000);
-                                        var expectedEntryTime = entries.First().CreatedAt;
-                                        Assert.NotEqual(firstEntryTime, expectedEntryTime);
-                                        Assert.Equal(secondEntryTime, expectedEntryTime);
-                                        break;
-                                    default:
-                                        Assert.Equal(i + 1, entries.Count());
-                                        break;
-                                }
-
-                            }
-                        }
-                    }
-                }
-                catch (Exception e)
-                {
-
-
                 }
             }
         }
 
-        [Fact, Trait("Category", "Smuggler")]
-        public async Task GetBackupHistoryFromCluster()
+        [Theory, Trait("Category", "Smuggler")]
+        [InlineData("abcd123", BackupType.Snapshot)]
+        [InlineData("jklmn9876", BackupType.Backup)]
+        public async Task BackupHistory_ShouldStoreEntriesPersistently(string backupName, BackupType backupType)
         {
-            const int clusterSize = 2;
+            var backupPath = NewDataPath(suffix: "BackupFolder");
+            var databaseName = GetDatabaseName();
+            long taskId;
 
+            var server = GetNewServer(new ServerCreationOptions { RunInMemory = false });
+            var documentDatabase = await server.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(databaseName).ConfigureAwait(false);
+            
+            using (var store = new DocumentStore { Urls = new[] { server.WebUrl }, Database = databaseName, })
+            {
+                store.Initialize();
+                store.Maintenance.Server.Send(new CreateDatabaseOperation(new DatabaseRecord(databaseName)));
+
+                using (var session = store.OpenAsyncSession(new SessionOptions { TransactionMode = TransactionMode.ClusterWide }))
+                {
+                    await session.StoreAsync(new User { Name = "RavenDB-19358" });
+                    await session.SaveChangesAsync();
+                }
+
+                // Do backup and save backup history entry property value
+                var config = Backup.CreateBackupConfiguration(backupPath, name: backupName, backupType: backupType);
+                taskId = await Backup.UpdateConfigAndRunBackupAsync(server, config, store, isFullBackup: true);
+                
+                DateTime entryBeforeRestartCreatedAt;
+                BackupType entryBeforeRestartBackupType;
+                string entryBeforeRestartBackupName;
+                using (documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out var entries))
+                {
+                    Assert.Equal(1, entries.Count());
+                    var historyEntry = entries.ElementAt(0).Json;
+                    historyEntry.TryGet(nameof(BackupHistoryEntry.CreatedAt), out entryBeforeRestartCreatedAt);
+                    Assert.Equal(entryBeforeRestartCreatedAt, entries.ElementAt(0).CreatedAt);
+                    historyEntry.TryGet(nameof(BackupHistoryEntry.BackupType), out entryBeforeRestartBackupType);
+                    historyEntry.TryGet(nameof(BackupHistoryEntry.BackupName), out entryBeforeRestartBackupName);
+                }
+
+                // Restart server
+                var disposingResult = await DisposeServerAndWaitForFinishOfDisposalAsync(server);
+                using var newServer = GetNewServer(new ServerCreationOptions
+                {
+                    DeletePrevious = false,
+                    RunInMemory = false,
+                    DataDirectory = disposingResult.DataDirectory,
+                    CustomSettings = new Dictionary<string, string>
+                    {
+                        [RavenConfiguration.GetKey(x => x.Core.ServerUrls)] = disposingResult.Url,
+                    }
+                });
+                Assert.NotNull(newServer);
+                var newDocumentDatabase = await newServer.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(databaseName).ConfigureAwait(false);
+
+
+                // Check that history persistent and still contains the same entry property value
+                using (var newStore = new DocumentStore { Urls = new[] { newServer.WebUrl }, Database = databaseName })
+                {
+                    newStore.Initialize();
+
+                    using (newDocumentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out var entries))
+                    {
+                        Assert.Equal(1, entries.Count());
+                        Assert.Equal(entryBeforeRestartCreatedAt, entries.ElementAt(0).CreatedAt);
+                        entries.ElementAt(0).Json.TryGet(nameof(BackupHistoryEntry.CreatedAt), out DateTime entryAfterRestartCreatedAt);
+                        entries.ElementAt(0).Json.TryGet(nameof(BackupHistoryEntry.BackupType), out BackupType entryAfterRestartBackupType);
+                        entries.ElementAt(0).Json.TryGet(nameof(BackupHistoryEntry.BackupName), out string entryAfterRestartBackupName);
+                        Assert.Equal(entryBeforeRestartCreatedAt, entryAfterRestartCreatedAt);
+                        Assert.Equal(entryBeforeRestartBackupType, entryAfterRestartBackupType);
+                        Assert.Equal(entryBeforeRestartBackupName, entryAfterRestartBackupName);
+                    }
+                }
+            }
+        }
+
+        [Theory, Trait("Category", "Smuggler")]
+        [InlineData(2)]
+        [InlineData(3)]
+        [InlineData(4)]
+        public async Task GetBackupHistoryFromClusterFromEachNode(int clusterSize)
+        {
+            const string backupName = "RavenDB-19358";
+            const BackupType backupType = BackupType.Backup;
             var backupPath = NewDataPath(suffix: "BackupFolder");
             var databaseName = GetDatabaseName();
 
             var (nodes, leaderServer) = await CreateRaftCluster(clusterSize);
             await CreateDatabaseInCluster(databaseName, clusterSize, leaderServer.WebUrl);
-            var notLeaderServer = nodes.First(x => x != leaderServer);
 
             using (var leaderStore = new DocumentStore
                    {
                        Urls = new[] { leaderServer.WebUrl }, Conventions = new DocumentConventions { DisableTopologyUpdates = true }, Database = databaseName
                    })
             {
-                
-
                 leaderStore.Initialize();
 
                 using (var session = leaderStore.OpenAsyncSession())
                 {
-                    await session.StoreAsync(new User { Name = "RavenDB-19358" }, "user/1");
+                    session.Advanced.WaitForReplicationAfterSaveChanges(replicas: clusterSize - 1);
+
+                    await session.StoreAsync(new User { Name = backupName }, "user/1");
                     await session.SaveChangesAsync();
                 }
-
-                var config = Backup.CreateBackupConfiguration(backupPath, mentorNode: leaderServer.ServerStore.NodeTag);
-                var taskId = await Backup.UpdateConfigAndRunBackupAsync(leaderServer, config, leaderStore);
-
-               var a = await GetBackupHistoryList(leaderStore);
-
-                var responsibleDatabase = await leaderServer.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(leaderStore.Database).ConfigureAwait(false);
-                Assert.NotNull(responsibleDatabase);
-
-                await Backup.RunBackupAsync(leaderServer, taskId, leaderStore, isFullBackup: false);
-                WaitForUserToContinueTheTest(leaderStore);
-
-                using (var notLeaderStore = new DocumentStore
+            }
+            
+            for (var i = 0; i < nodes.Count; i++)
+            {
+                using (var store = new DocumentStore
                        {
-                           Urls = new[] { notLeaderServer.WebUrl }, Conventions = new DocumentConventions { DisableTopologyUpdates = true }, Database = databaseName
+                           Urls = new[] { nodes[i].WebUrl }, Conventions = new DocumentConventions { DisableTopologyUpdates = true }, Database = databaseName
                        })
                 {
-                    notLeaderStore.Initialize();
+                    store.Initialize();
 
-                    var notLeaderConfig = Backup.CreateBackupConfiguration(backupPath, mentorNode: notLeaderServer.ServerStore.NodeTag);
-                    var notLeaderTaskId = await Backup.UpdateConfigAndRunBackupAsync(notLeaderServer, notLeaderConfig, notLeaderStore);
+                    var config = Backup.CreateBackupConfiguration(
+                        backupPath: backupPath,
+                        backupType: backupType,
+                        name: $"{backupName}-{nodes[i].ServerStore.NodeTag}",
+                        mentorNode: nodes[i].ServerStore.NodeTag);
+                    var taskId = await Backup.UpdateConfigAndRunBackupAsync(nodes[i], config, store);
+                    var operation = new GetPeriodicBackupStatusOperation(taskId);
+                    var backupStatus = (await store.Maintenance.SendAsync(operation)).Status;
 
-                    var notLeaderResponsibleDatabase =
-                        await notLeaderServer.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(notLeaderStore.Database).ConfigureAwait(false);
+                    var backupHistoryList = await GetBackupHistoryListFromCluster(store);
+                    Assert.Equal(i + 1, backupHistoryList.Count);
 
-
-                    WaitForUserToContinueTheTest(notLeaderStore);
+                    var entry = backupHistoryList.Single(x => x.NodeTag == nodes[i].ServerStore.NodeTag);
+                    Assert.Equal($"{backupName}-{nodes[i].ServerStore.NodeTag}", entry.BackupName);
+                    Assert.Equal(backupType, entry.BackupType);
+                    Assert.Equal(databaseName, entry.DatabaseName);
+                    Assert.Equal(backupStatus.DurationInMs, entry.DurationInMs);
+                    Assert.Null(entry.Error);
+                    Assert.True(entry.IsCompletedSuccessfully);
+                    Assert.Equal(backupStatus.IsFull, entry.IsFull);
+                    Assert.Equal(backupStatus.NodeTag, entry.NodeTag);
+                    Assert.True(entry.Messages.Count > 20);
                 }
             }
 
-            async Task<NodeBackupHistoryResult> GetBackupHistoryList(DocumentStore store)
+            async Task<List<BackupHistoryEntry>> GetBackupHistoryListFromCluster(IDocumentStore store)
             {
                 var client = store.GetRequestExecutor().HttpClient;
-                var response = await client.GetAsync($"{notLeaderServer.WebUrl}/admin/backup-history");
+                var response = await client.GetAsync($"{store.Urls.First()}/admin/backup-history");
                 string result = response.Content.ReadAsStringAsync().Result;
 
                 using (var ctx = JsonOperationContext.ShortTermSingleUse())
+                using (var bjro = ctx.Sync.ReadForMemory(result, "Result"))
                 {
-                    using var bjro = ctx.Sync.ReadForMemory(result, "Result");
-
                     var nodeBackupHistoryResult = JsonDeserializationClient.NodeBackupHistoryResult(bjro);
-                    return nodeBackupHistoryResult;
+                    return nodeBackupHistoryResult.Result;
                 }
-
             }
         }
 
-        // [Theory, Trait("Category", "Smuggler")]
-                // [InlineData("abcd123", BackupType.Snapshot)]
-                // [InlineData("jklmn9876", BackupType.Backup)]
-                // public async Task ShouldStoreEveryBackupToHistoryPersistently(string backupName, BackupType backupType)
-                // {
-                //     var backupPath = NewDataPath(suffix: "BackupFolder");
-                //     var databaseName = GetDatabaseName();
-                //     var server = GetNewServer(new ServerCreationOptions { RunInMemory = false });
-                //     long taskId;
-                //     BackupHistoryDetails.BackupHistoryDetailsEntry firstNotificationBeforeRestart;
-                //
-                //     using (var store = new DocumentStore
-                //     {
-                //         Urls = new[] { server.WebUrl },
-                //         Database = databaseName,
-                //     })
-                //     {
-                //         store.Initialize();
-                //         store.Maintenance.Server.Send(new CreateDatabaseOperation(new DatabaseRecord(databaseName)));
-                //
-                //         WaitForUserToContinueTheTest(store);
-                //
-                //         using (var session = store.OpenAsyncSession(new SessionOptions { TransactionMode = TransactionMode.ClusterWide }))
-                //         {
-                //             await session.StoreAsync(new User { Name = "Lev" });
-                //             await session.SaveChangesAsync();
-                //         }
-                //
-                //         var documentDatabase = await server.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(databaseName).ConfigureAwait(false);
-                //         var backupHistoryNotification = documentDatabase.NotificationCenter.BackupHistory.GetBackupHistoryNotification(nameof(BackupHistoryNotification));
-                //         Assert.Equal(0, backupHistoryNotification.Details.BackupHistory.Count);
-                //
-                //         var config = Backup.CreateBackupConfiguration(backupPath, name: backupName, backupType: backupType);
-                //
-                //         taskId = await Backup.UpdateConfigAndRunBackupAsync(server, config, store, isFullBackup: true);
-                //         var backupStatus = (await store.Maintenance.SendAsync(new GetPeriodicBackupStatusOperation(taskId))).Status;
-                //
-                //         backupHistoryNotification = documentDatabase.NotificationCenter.BackupHistory.GetBackupHistoryNotification(nameof(BackupHistoryNotification));
-                //         var backupHistoryDetailsEntries = backupHistoryNotification.Details.BackupHistory.ToArray();
-                //         firstNotificationBeforeRestart = backupHistoryDetailsEntries[0];
-                //         Assert.Equal(1, backupHistoryDetailsEntries.Length);
-                //         Assert.Equal(backupName, firstNotificationBeforeRestart.BackupName);
-                //         Assert.Equal(backupType, firstNotificationBeforeRestart.BackupType);
-                //         Assert.Equal(databaseName, firstNotificationBeforeRestart.DatabaseName);
-                //         Assert.Equal(backupStatus.DurationInMs, firstNotificationBeforeRestart.DurationInMs);
-                //         Assert.Null(firstNotificationBeforeRestart.Error);
-                //         Assert.True(firstNotificationBeforeRestart.IsCompletedSuccessfully);
-                //         Assert.Equal(backupStatus.IsFull, firstNotificationBeforeRestart.IsFull);
-                //         Assert.Equal(backupStatus.NodeTag, firstNotificationBeforeRestart.NodeTag);
-                //         Assert.True(firstNotificationBeforeRestart.Messages.Count > 20);
-                //     }
-                //
-                //     var disposingResult = await DisposeServerAndWaitForFinishOfDisposalAsync(server);
-                //     using var newServer = GetNewServer(new ServerCreationOptions
-                //     {
-                //         DeletePrevious = false,
-                //         RunInMemory = false,
-                //         DataDirectory = disposingResult.DataDirectory,
-                //         CustomSettings = new Dictionary<string, string> { [RavenConfiguration.GetKey(x => x.Core.ServerUrls)] = disposingResult.Url }
-                //     });
-                //     Assert.NotNull(newServer);
-                //
-                //     using (var newStore = new DocumentStore
-                //     {
-                //         Urls = new[] { newServer.WebUrl },
-                //         Database = databaseName
-                //     })
-                //     {
-                //         newStore.Initialize();
-                //         var documentDatabase = await newServer.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(databaseName).ConfigureAwait(false);
-                //         WaitForUserToContinueTheTest(newStore);
-                //         PeriodicBackupStatus backupStatus = null;
-                //         await WaitForValueAsync(async () =>
-                //         {
-                //             try
-                //             {
-                //                 backupStatus = await Backup.RunBackupAndReturnStatusAsync(newServer, taskId, newStore);
-                //             }
-                //             catch (Exception)
-                //             {
-                //                 // just try again
-                //             }
-                //
-                //             return backupStatus != null;
-                //         }, true);
-                //
-                //         var backupHistoryNotification = documentDatabase.NotificationCenter.BackupHistory.GetBackupHistoryNotification(nameof(BackupHistoryNotification));
-                //         var backupHistoryDetailsEntries = backupHistoryNotification.Details.BackupHistory.ToArray();
-                //         Assert.Equal(2, backupHistoryDetailsEntries.Length);
-                //
-                //         var firstNotificationAfterRestart = backupHistoryDetailsEntries[0];
-                //         Assert.Equal(firstNotificationBeforeRestart.BackupName, firstNotificationAfterRestart.BackupName);
-                //         Assert.Equal(firstNotificationBeforeRestart.BackupType, firstNotificationAfterRestart.BackupType);
-                //         Assert.Equal(firstNotificationBeforeRestart.DatabaseName, firstNotificationAfterRestart.DatabaseName);
-                //         Assert.Equal(firstNotificationBeforeRestart.DurationInMs, firstNotificationAfterRestart.DurationInMs);
-                //         Assert.Equal(firstNotificationBeforeRestart.Error, firstNotificationAfterRestart.Error);
-                //         Assert.Equal(firstNotificationBeforeRestart.IsCompletedSuccessfully, firstNotificationAfterRestart.IsCompletedSuccessfully);
-                //         Assert.Equal(firstNotificationBeforeRestart.IsFull, firstNotificationAfterRestart.IsFull);
-                //         Assert.Equal(firstNotificationBeforeRestart.NodeTag, firstNotificationAfterRestart.NodeTag);
-                //         Assert.Equal(firstNotificationBeforeRestart.Messages.Count, firstNotificationAfterRestart.Messages.Count);
-                //
-                //         var secondNotification = backupHistoryDetailsEntries[1];
-                //         Assert.Equal(backupName, secondNotification.BackupName);
-                //         Assert.Equal(backupType, secondNotification.BackupType);
-                //         Assert.Equal(databaseName, secondNotification.DatabaseName);
-                //         Assert.Equal(backupStatus.DurationInMs, secondNotification.DurationInMs);
-                //         Assert.Null(secondNotification.Error);
-                //         Assert.True(secondNotification.IsCompletedSuccessfully);
-                //         Assert.Equal(backupStatus.IsFull, secondNotification.IsFull);
-                //         Assert.Equal(backupStatus.NodeTag, secondNotification.NodeTag);
-                //         Assert.True(secondNotification.Messages.Count > 20);
-                //     }
-                // }
+        
 
-                private static string GetBackupPath(IDocumentStore store, long backTaskId, bool incremental = true)
+        // [Theory, Trait("Category", "Smuggler")]
+        // [InlineData("abcd123", BackupType.Snapshot)]
+        // [InlineData("jklmn9876", BackupType.Backup)]
+        // public async Task ShouldStoreEveryBackupToHistoryPersistently(string backupName, BackupType backupType)
+        // {
+        //     var backupPath = NewDataPath(suffix: "BackupFolder");
+        //     var databaseName = GetDatabaseName();
+        //     var server = GetNewServer(new ServerCreationOptions { RunInMemory = false });
+        //     long taskId;
+        //     BackupHistoryDetails.BackupHistoryDetailsEntry firstNotificationBeforeRestart;
+        //
+        //     using (var store = new DocumentStore
+        //     {
+        //         Urls = new[] { server.WebUrl },
+        //         Database = databaseName,
+        //     })
+        //     {
+        //         store.Initialize();
+        //         store.Maintenance.Server.Send(new CreateDatabaseOperation(new DatabaseRecord(databaseName)));
+        //
+        //         WaitForUserToContinueTheTest(store);
+        //
+        //         using (var session = store.OpenAsyncSession(new SessionOptions { TransactionMode = TransactionMode.ClusterWide }))
+        //         {
+        //             await session.StoreAsync(new User { Name = "Lev" });
+        //             await session.SaveChangesAsync();
+        //         }
+        //
+        //         var documentDatabase = await server.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(databaseName).ConfigureAwait(false);
+        //         var backupHistoryNotification = documentDatabase.NotificationCenter.BackupHistory.GetBackupHistoryNotification(nameof(BackupHistoryNotification));
+        //         Assert.Equal(0, backupHistoryNotification.Details.BackupHistory.Count);
+        //
+        //         var config = Backup.CreateBackupConfiguration(backupPath, name: backupName, backupType: backupType);
+        //
+        //         taskId = await Backup.UpdateConfigAndRunBackupAsync(server, config, store, isFullBackup: true);
+        //         var backupStatus = (await store.Maintenance.SendAsync(new GetPeriodicBackupStatusOperation(taskId))).Status;
+        //
+        //         backupHistoryNotification = documentDatabase.NotificationCenter.BackupHistory.GetBackupHistoryNotification(nameof(BackupHistoryNotification));
+        //         var backupHistoryDetailsEntries = backupHistoryNotification.Details.BackupHistory.ToArray();
+        //         firstNotificationBeforeRestart = backupHistoryDetailsEntries[0];
+        //         Assert.Equal(1, backupHistoryDetailsEntries.Length);
+        //         Assert.Equal(backupName, firstNotificationBeforeRestart.BackupName);
+        //         Assert.Equal(backupType, firstNotificationBeforeRestart.BackupType);
+        //         Assert.Equal(databaseName, firstNotificationBeforeRestart.DatabaseName);
+        //         Assert.Equal(backupStatus.DurationInMs, firstNotificationBeforeRestart.DurationInMs);
+        //         Assert.Null(firstNotificationBeforeRestart.Error);
+        //         Assert.True(firstNotificationBeforeRestart.IsCompletedSuccessfully);
+        //         Assert.Equal(backupStatus.IsFull, firstNotificationBeforeRestart.IsFull);
+        //         Assert.Equal(backupStatus.NodeTag, firstNotificationBeforeRestart.NodeTag);
+        //         Assert.True(firstNotificationBeforeRestart.Messages.Count > 20);
+        //     }
+        //
+        //     var disposingResult = await DisposeServerAndWaitForFinishOfDisposalAsync(server);
+        //     using var newServer = GetNewServer(new ServerCreationOptions
+        //     {
+        //         DeletePrevious = false,
+        //         RunInMemory = false,
+        //         DataDirectory = disposingResult.DataDirectory,
+        //         CustomSettings = new Dictionary<string, string> { [RavenConfiguration.GetKey(x => x.Core.ServerUrls)] = disposingResult.Url }
+        //     });
+        //     Assert.NotNull(newServer);
+        //
+        //     using (var newStore = new DocumentStore
+        //     {
+        //         Urls = new[] { newServer.WebUrl },
+        //         Database = databaseName
+        //     })
+        //     {
+        //         newStore.Initialize();
+        //         var documentDatabase = await newServer.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(databaseName).ConfigureAwait(false);
+        //         WaitForUserToContinueTheTest(newStore);
+        //         PeriodicBackupStatus backupStatus = null;
+        //         await WaitForValueAsync(async () =>
+        //         {
+        //             try
+        //             {
+        //                 backupStatus = await Backup.RunBackupAndReturnStatusAsync(newServer, taskId, newStore);
+        //             }
+        //             catch (Exception)
+        //             {
+        //                 // just try again
+        //             }
+        //
+        //             return backupStatus != null;
+        //         }, true);
+        //
+        //         var backupHistoryNotification = documentDatabase.NotificationCenter.BackupHistory.GetBackupHistoryNotification(nameof(BackupHistoryNotification));
+        //         var backupHistoryDetailsEntries = backupHistoryNotification.Details.BackupHistory.ToArray();
+        //         Assert.Equal(2, backupHistoryDetailsEntries.Length);
+        //
+        //         var firstNotificationAfterRestart = backupHistoryDetailsEntries[0];
+        //         Assert.Equal(firstNotificationBeforeRestart.BackupName, firstNotificationAfterRestart.BackupName);
+        //         Assert.Equal(firstNotificationBeforeRestart.BackupType, firstNotificationAfterRestart.BackupType);
+        //         Assert.Equal(firstNotificationBeforeRestart.DatabaseName, firstNotificationAfterRestart.DatabaseName);
+        //         Assert.Equal(firstNotificationBeforeRestart.DurationInMs, firstNotificationAfterRestart.DurationInMs);
+        //         Assert.Equal(firstNotificationBeforeRestart.Error, firstNotificationAfterRestart.Error);
+        //         Assert.Equal(firstNotificationBeforeRestart.IsCompletedSuccessfully, firstNotificationAfterRestart.IsCompletedSuccessfully);
+        //         Assert.Equal(firstNotificationBeforeRestart.IsFull, firstNotificationAfterRestart.IsFull);
+        //         Assert.Equal(firstNotificationBeforeRestart.NodeTag, firstNotificationAfterRestart.NodeTag);
+        //         Assert.Equal(firstNotificationBeforeRestart.Messages.Count, firstNotificationAfterRestart.Messages.Count);
+        //
+        //         var secondNotification = backupHistoryDetailsEntries[1];
+        //         Assert.Equal(backupName, secondNotification.BackupName);
+        //         Assert.Equal(backupType, secondNotification.BackupType);
+        //         Assert.Equal(databaseName, secondNotification.DatabaseName);
+        //         Assert.Equal(backupStatus.DurationInMs, secondNotification.DurationInMs);
+        //         Assert.Null(secondNotification.Error);
+        //         Assert.True(secondNotification.IsCompletedSuccessfully);
+        //         Assert.Equal(backupStatus.IsFull, secondNotification.IsFull);
+        //         Assert.Equal(backupStatus.NodeTag, secondNotification.NodeTag);
+        //         Assert.True(secondNotification.Messages.Count > 20);
+        //     }
+        // }
+
+        private static string GetBackupPath(IDocumentStore store, long backTaskId, bool incremental = true)
                 {
                     var status = store.Maintenance.Send(new GetPeriodicBackupStatusOperation(backTaskId)).Status;
 
