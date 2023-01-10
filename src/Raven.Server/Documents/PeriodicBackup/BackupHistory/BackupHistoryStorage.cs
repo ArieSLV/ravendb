@@ -76,20 +76,16 @@ public unsafe class BackupHistoryStorage
 
     public void Store(string backupName, string databaseName, Task<IOperationResult> task, PeriodicBackupStatus periodicBackupStatus)
     {
-        if (task.Result is not BackupResult result)
-            return;
-
         var backupHistoryEntry = new BackupHistoryEntry
         {
             BackupName = backupName,
             BackupType = periodicBackupStatus?.BackupType,
             DatabaseName = databaseName,
             DurationInMs = periodicBackupStatus?.DurationInMs,
-            Error = periodicBackupStatus?.Error?.ToString(),
+            Error = periodicBackupStatus?.Error?.Exception,
             IsCompletedSuccessfully = task.IsCompletedSuccessfully,
             IsFull = periodicBackupStatus?.IsFull,
-            NodeTag = periodicBackupStatus?.NodeTag,
-            Messages = result.Messages,
+            NodeTag = periodicBackupStatus?.NodeTag
         };
 
         Store(backupHistoryEntry);

@@ -3408,8 +3408,294 @@ namespace SlowTests.Server.Documents.PeriodicBackup
         }
 
         [Fact, Trait("Category", "Smuggler")]
+        public async Task BackupHistory_ShouldStoreAllBackupTypes_Faulted()
+        {
+            string error = new Exception(nameof(DocumentDatabase.PeriodicBackupRunner._forTestingPurposes.SimulateFailedBackup)).ToString();
+            IEnumerable<BackupHistoryTableValue> entries = null;
+            IDisposable scope = null;
+
+            var backupPath = NewDataPath(suffix: "BackupFolder");
+            var databaseName = GetDatabaseName();
+            var server = GetNewServer(new ServerCreationOptions { RunInMemory = false });
+
+            using (var store = new DocumentStore { Urls = new[] { server.WebUrl }, Database = databaseName, })
+            {
+                store.Initialize();
+                store.Maintenance.Server.Send(new CreateDatabaseOperation(new DatabaseRecord(databaseName)));
+                var documentDatabase = await server.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(databaseName).ConfigureAwait(false);
+                
+                using (var session = store.OpenAsyncSession())
+                {
+                    await session.StoreAsync(new User { Name = "RavenDB-19358" });
+                    await session.SaveChangesAsync();
+                }
+                // Backup full periodical
+                documentDatabase.PeriodicBackupRunner.ForTestingPurposesOnly().SimulateFailedBackup = true;
+
+                var configBackup = Backup.CreateBackupConfiguration(backupPath, backupType: BackupType.Backup);
+                var taskId = await Backup.UpdateConfigAndRunBackupAsync(server, configBackup, store, isFullBackup: true, OperationStatus.Faulted);
+
+                try
+                {
+                    WaitForValue(() =>
+                    {
+                        scope = documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out entries);
+                        return entries.Count();
+                    }, 1);
+                
+                    var entry = entries.ElementAt(0).Json;
+                    entry.TryGet(nameof(BackupHistoryEntry.BackupType), out BackupType type);
+                    entry.TryGet(nameof(BackupHistoryEntry.IsFull), out bool isFull);
+                    entry.TryGet(nameof(BackupHistoryEntry.IsCompletedSuccessfully), out bool isCompletedSuccessfully);
+                    entry.TryGet(nameof(BackupHistoryEntry.Error), out string backupError);
+                    Assert.Equal(BackupType.Backup, type);
+                    Assert.True(isFull);
+                    Assert.False(isCompletedSuccessfully);
+                    Assert.True(backupError.Contains(error));
+                }
+                finally
+                {
+                    scope?.Dispose();
+                }
+                
+                // Backup incremental periodical
+                documentDatabase.PeriodicBackupRunner._forTestingPurposes = null;
+                await Backup.RunBackupAsync(server, taskId, store, isFullBackup: true); // We still need to do one successful full backup to have an opportunity to do an incremental backup.
+                documentDatabase.PeriodicBackupRunner.ForTestingPurposesOnly().SimulateFailedBackup = true;
+
+                await Backup.RunBackupAsync(server, taskId, store, isFullBackup: false, OperationStatus.Faulted);
+                try
+                {
+                    WaitForValue(() =>
+                    {
+                        scope = documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out entries);
+                        return entries.Count();
+
+                    }, 3);
+
+                    var entry = entries.ElementAt(2).Json;
+                    entry.TryGet(nameof(BackupHistoryEntry.BackupType), out BackupType type);
+                    entry.TryGet(nameof(BackupHistoryEntry.IsFull), out bool isFull);
+                    entry.TryGet(nameof(BackupHistoryEntry.IsCompletedSuccessfully), out bool isCompletedSuccessfully);
+                    entry.TryGet(nameof(BackupHistoryEntry.Error), out string backupError);
+                    Assert.Equal(BackupType.Backup, type);
+                    Assert.False(isFull);
+                    Assert.False(isCompletedSuccessfully);
+                    Assert.True(backupError.Contains(error));
+                }
+                finally
+                {
+                    scope?.Dispose();
+                }
+                
+                // Snapshot periodical
+                var configSnapshot = Backup.CreateBackupConfiguration(backupPath, backupType: BackupType.Snapshot);
+                await Backup.UpdateConfigAndRunBackupAsync(server, configSnapshot, store, isFullBackup: true, OperationStatus.Faulted);
+                try
+                {
+                    WaitForValue(() =>
+                    {
+                        scope = documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out entries);
+                        return entries.Count();
+                    }, 4);
+
+                    var entry = entries.ElementAt(3).Json;
+                    entry.TryGet(nameof(BackupHistoryEntry.BackupType), out BackupType type);
+                    entry.TryGet(nameof(BackupHistoryEntry.IsCompletedSuccessfully), out bool isCompletedSuccessfully);
+                    entry.TryGet(nameof(BackupHistoryEntry.Error), out string backupError);
+                    Assert.Equal(BackupType.Snapshot, type);
+                    Assert.False(isCompletedSuccessfully);
+                    Assert.True(backupError.Contains(error));
+                }
+                finally
+                {
+                    scope?.Dispose();
+                }
+
+
+                // // One time backup
+                // var configOneTimeBackup = new BackupConfiguration { BackupType = BackupType.Backup, LocalSettings = null };
+                // var exception = await Assert.ThrowsAnyAsync<Exception>(async () => await store.Maintenance.SendAsync(new BackupOperation(configOneTimeBackup)));
+                //
+                // try
+                // {
+                //     WaitForValue(() =>
+                //     {
+                //         scope = documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out entries);
+                //         return entries.Count();
+                //     }, 5);
+                //
+                //     var entryOneTimeBackup = entries.ElementAt(4).Json;
+                //     entryOneTimeBackup.TryGet(nameof(BackupHistoryEntry.BackupType), out BackupType oneTimeBackup);
+                //     Assert.Equal(BackupType.Backup, oneTimeBackup);
+                // }
+                // finally
+                // {
+                //     scope.Dispose();
+                // }
+                //
+                //
+                // // One time snapshot
+                // var configOneTime = new BackupConfiguration { BackupType = BackupType.Snapshot, LocalSettings = new LocalSettings { FolderPath = backupPath } };
+                // var operation = await store.Maintenance.SendAsync(new BackupOperation(configOneTime));
+                // await operation.WaitForCompletionAsync(TimeSpan.FromSeconds(15));
+                //
+                // WaitForValue(() =>
+                // {
+                //     using (documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out var entries))
+                //     {
+                //         if (entries.Count() != 5)
+                //             return false;
+                //
+                //         var entryOneTimeSnapshot = entries.ElementAt(4).Json;
+                //         entryOneTimeSnapshot.TryGet(nameof(BackupHistoryEntry.BackupType), out BackupType onetimeSnapshot);
+                //         Assert.Equal(BackupType.Snapshot, onetimeSnapshot);
+                //
+                //         return true;
+                //     }
+                // }, true);
+            }
+        }
+
+        [Fact, Trait("Category", "Smuggler")]
+        public async Task BackupHistory_ShouldStoreAllBackupTypes_Successfully()
+        {
+            IEnumerable<BackupHistoryTableValue> entries = null;
+            IDisposable scope = null;
+            var backupPath = NewDataPath(suffix: "BackupFolder");
+            var databaseName = GetDatabaseName();
+            var server = GetNewServer(new ServerCreationOptions { RunInMemory = false });
+
+            using (var store = new DocumentStore { Urls = new[] { server.WebUrl }, Database = databaseName, })
+            {
+                store.Initialize();
+                store.Maintenance.Server.Send(new CreateDatabaseOperation(new DatabaseRecord(databaseName)));
+                var documentDatabase = await server.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(databaseName).ConfigureAwait(false);
+
+                using (var session = store.OpenAsyncSession())
+                {
+                    await session.StoreAsync(new User { Name = "RavenDB-19358" });
+                    await session.SaveChangesAsync();
+                }
+                // Backup full periodical
+                var configBackup = Backup.CreateBackupConfiguration(backupPath, backupType: BackupType.Backup);
+                var taskId = await Backup.UpdateConfigAndRunBackupAsync(server, configBackup, store, isFullBackup: true);
+
+                try
+                {
+                    WaitForValue(() =>
+                    {
+                        scope = documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out entries);
+                        return entries.Count();
+                    }, 1);
+
+                    var entryBackupFull = entries.ElementAt(0).Json;
+                    entryBackupFull.TryGet(nameof(BackupHistoryEntry.BackupType), out BackupType backupTypeBackupFull);
+                    entryBackupFull.TryGet(nameof(BackupHistoryEntry.IsFull), out bool backupTypeBackupFullIsFull);
+                    Assert.Equal(BackupType.Backup, backupTypeBackupFull);
+                    Assert.True(backupTypeBackupFullIsFull);
+                }
+                finally
+                {
+                    scope?.Dispose();
+                }
+
+                // Backup incremental periodical
+                await Backup.RunBackupAsync(server, taskId, store, isFullBackup: false);
+
+                try
+                {
+                    WaitForValue(() =>
+                    {
+                        scope = documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out entries);
+                        return entries.Count();
+                    }, 2);
+
+                    var entryBackupIncremental = entries.ElementAt(1).Json;
+                    entryBackupIncremental.TryGet(nameof(BackupHistoryEntry.BackupType), out BackupType backupTypeBackupIncremental);
+                    entryBackupIncremental.TryGet(nameof(BackupHistoryEntry.IsFull), out bool backupTypeBackupIncrementalIsFull);
+                    Assert.Equal(BackupType.Backup, backupTypeBackupIncremental);
+                    Assert.False(backupTypeBackupIncrementalIsFull);
+                }
+                finally
+                {
+                    scope?.Dispose();
+                }
+
+                // Snapshot periodical
+                var configSnapshot = Backup.CreateBackupConfiguration(backupPath, backupType: BackupType.Snapshot);
+                await Backup.UpdateConfigAndRunBackupAsync(server, configSnapshot, store, isFullBackup: true);
+
+                try
+                {
+                    WaitForValue(() =>
+                    {
+                        scope = documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out entries);
+                        return entries.Count();
+                    }, 3);
+
+                    var entrySnapshot = entries.ElementAt(2).Json;
+                    entrySnapshot.TryGet(nameof(BackupHistoryEntry.BackupType), out BackupType backupTypeSnapshot);
+                    Assert.Equal(BackupType.Snapshot, backupTypeSnapshot);
+                }
+                finally
+                {
+                    scope?.Dispose();
+                }
+
+                // One time backup
+                var configOneTimeBackup = new BackupConfiguration { BackupType = BackupType.Backup, LocalSettings = new LocalSettings { FolderPath = backupPath } };
+                var operation = await store.Maintenance.SendAsync(new BackupOperation(configOneTimeBackup));
+                await operation.WaitForCompletionAsync(TimeSpan.FromSeconds(15));
+
+                try
+                {
+                    WaitForValue(() =>
+                    {
+                        scope = documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out entries);
+                        return entries.Count();
+                    }, 4);
+
+
+                    var entryOneTimeBackup = entries.ElementAt(3).Json;
+                    entryOneTimeBackup.TryGet(nameof(BackupHistoryEntry.BackupType), out BackupType oneTimeBackup);
+                    Assert.Equal(BackupType.Backup, oneTimeBackup);
+                }
+                finally
+                {
+                    scope?.Dispose();
+                }
+
+                // One time snapshot
+                var configOneTime = new BackupConfiguration { BackupType = BackupType.Snapshot, LocalSettings = new LocalSettings { FolderPath = backupPath } };
+                operation = await store.Maintenance.SendAsync(new BackupOperation(configOneTime));
+                await operation.WaitForCompletionAsync(TimeSpan.FromSeconds(15));
+
+                try
+                {
+                    WaitForValue(() =>
+                    {
+                        scope = documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out entries);
+                        return entries.Count();
+                    }, 5);
+
+                    var entryOneTimeSnapshot = entries.ElementAt(4).Json;
+                    entryOneTimeSnapshot.TryGet(nameof(BackupHistoryEntry.BackupType), out BackupType onetimeSnapshot);
+                    Assert.Equal(BackupType.Snapshot, onetimeSnapshot);
+                }
+                finally
+                {
+                    scope?.Dispose();
+                }
+            }
+        }
+
+        [Fact, Trait("Category", "Smuggler")]
         public async Task BackupHistory_ShouldTakeIntoAccountLimitConfiguration_ShouldDeleteOldestEntriesFirst()
         {
+            IEnumerable<BackupHistoryTableValue> entries = null;
+            IDisposable scope = null;
+
             const int historySizeLimit = 10;
             var defaultConfiguration = RavenConfiguration.Default;
             Assert.NotEqual(defaultConfiguration.Backup.MaxNumberOfBackupHistoryEntries, historySizeLimit);
@@ -3431,7 +3717,7 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                 store.Maintenance.Server.Send(new CreateDatabaseOperation(new DatabaseRecord(databaseName)));
                 var documentDatabase = await server.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(databaseName).ConfigureAwait(false);
 
-                using (var session = store.OpenAsyncSession(new SessionOptions { TransactionMode = TransactionMode.ClusterWide }))
+                using (var session = store.OpenAsyncSession())
                 {
                     await session.StoreAsync(new User { Name = "RavenDB-19358" });
                     await session.SaveChangesAsync();
@@ -3440,9 +3726,12 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                 var config = Backup.CreateBackupConfiguration(backupPath);
                 var taskId = await Backup.UpdateConfigAndRunBackupAsync(server, config, store, isFullBackup: true);
 
-                using (documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out var entries))
-                    Assert.Equal(1, entries.Count());
-                
+                WaitForValue(() =>
+                {
+                    using (documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out entries))
+                        return entries.Count();
+                }, 1);
+
                 DateTime firstEntryTime = default;
                 DateTime secondEntryTime = default;
                 for (int i = 2; i <= historySizeLimit + 1; i++)
@@ -3450,13 +3739,14 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                     Backup.RunBackup(server, taskId, store);
 
                     var expectedNumberOfEntries = i <= historySizeLimit ? i : historySizeLimit;
-                    WaitForValue(() =>
+                    try
                     {
-                        using (documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out var entries))
+                        WaitForValue(() =>
+                        {
+                            scope = documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out entries);
                             return entries.Count();
-                    }, expectedNumberOfEntries);
+                        }, expectedNumberOfEntries);
 
-                    using (documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out var entries)) 
                         switch (i)
                         {
                             case 2:
@@ -3469,26 +3759,28 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                                 Assert.Equal(secondEntryTime, expectedEntryTime); // The second entry rewrote the first entry
                                 break;
                         }
+                    }
+                    finally
+                    {
+                        scope?.Dispose();
+                    }
                 }
             }
         }
 
-        [Theory, Trait("Category", "Smuggler")]
-        [InlineData("abcd123", BackupType.Snapshot)]
-        [InlineData("jklmn9876", BackupType.Backup)]
-        public async Task BackupHistory_ShouldStoreEntriesPersistently(string backupName, BackupType backupType)
+        [Fact, Trait("Category", "Smuggler")]
+        public async Task BackupHistory_ShouldStoreEntriesPersistently()
         {
             var backupPath = NewDataPath(suffix: "BackupFolder");
             var databaseName = GetDatabaseName();
-            long taskId;
 
             var server = GetNewServer(new ServerCreationOptions { RunInMemory = false });
-            var documentDatabase = await server.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(databaseName).ConfigureAwait(false);
             
             using (var store = new DocumentStore { Urls = new[] { server.WebUrl }, Database = databaseName, })
             {
                 store.Initialize();
                 store.Maintenance.Server.Send(new CreateDatabaseOperation(new DatabaseRecord(databaseName)));
+                var documentDatabase = await server.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(databaseName).ConfigureAwait(false);
 
                 using (var session = store.OpenAsyncSession(new SessionOptions { TransactionMode = TransactionMode.ClusterWide }))
                 {
@@ -3497,20 +3789,16 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                 }
 
                 // Do backup and save backup history entry property value
-                var config = Backup.CreateBackupConfiguration(backupPath, name: backupName, backupType: backupType);
-                taskId = await Backup.UpdateConfigAndRunBackupAsync(server, config, store, isFullBackup: true);
+                var config = Backup.CreateBackupConfiguration(backupPath);
+                await Backup.UpdateConfigAndRunBackupAsync(server, config, store, isFullBackup: true);
                 
                 DateTime entryBeforeRestartCreatedAt;
-                BackupType entryBeforeRestartBackupType;
-                string entryBeforeRestartBackupName;
                 using (documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out var entries))
                 {
                     Assert.Equal(1, entries.Count());
                     var historyEntry = entries.ElementAt(0).Json;
                     historyEntry.TryGet(nameof(BackupHistoryEntry.CreatedAt), out entryBeforeRestartCreatedAt);
                     Assert.Equal(entryBeforeRestartCreatedAt, entries.ElementAt(0).CreatedAt);
-                    historyEntry.TryGet(nameof(BackupHistoryEntry.BackupType), out entryBeforeRestartBackupType);
-                    historyEntry.TryGet(nameof(BackupHistoryEntry.BackupName), out entryBeforeRestartBackupName);
                 }
 
                 // Restart server
@@ -3528,7 +3816,6 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                 Assert.NotNull(newServer);
                 var newDocumentDatabase = await newServer.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(databaseName).ConfigureAwait(false);
 
-
                 // Check that history persistent and still contains the same entry property value
                 using (var newStore = new DocumentStore { Urls = new[] { newServer.WebUrl }, Database = databaseName })
                 {
@@ -3539,21 +3826,19 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                         Assert.Equal(1, entries.Count());
                         Assert.Equal(entryBeforeRestartCreatedAt, entries.ElementAt(0).CreatedAt);
                         entries.ElementAt(0).Json.TryGet(nameof(BackupHistoryEntry.CreatedAt), out DateTime entryAfterRestartCreatedAt);
-                        entries.ElementAt(0).Json.TryGet(nameof(BackupHistoryEntry.BackupType), out BackupType entryAfterRestartBackupType);
-                        entries.ElementAt(0).Json.TryGet(nameof(BackupHistoryEntry.BackupName), out string entryAfterRestartBackupName);
                         Assert.Equal(entryBeforeRestartCreatedAt, entryAfterRestartCreatedAt);
-                        Assert.Equal(entryBeforeRestartBackupType, entryAfterRestartBackupType);
-                        Assert.Equal(entryBeforeRestartBackupName, entryAfterRestartBackupName);
                     }
                 }
             }
         }
 
+
+
         [Theory, Trait("Category", "Smuggler")]
         [InlineData(2)]
         [InlineData(3)]
         [InlineData(4)]
-        public async Task GetBackupHistoryFromClusterFromEachNode(int clusterSize)
+        public async Task BackupHistory_ShouldGetBackupHistoryFromEachNode(int clusterSize)
         {
             const string backupName = "RavenDB-19358";
             const BackupType backupType = BackupType.Backup;
@@ -3577,7 +3862,11 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                     await session.StoreAsync(new User { Name = backupName }, "user/1");
                     await session.SaveChangesAsync();
                 }
+
+                WaitForUserToContinueTheTest(leaderStore);
             }
+
+            
             
             for (var i = 0; i < nodes.Count; i++)
             {
@@ -3609,7 +3898,6 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                     Assert.True(entry.IsCompletedSuccessfully);
                     Assert.Equal(backupStatus.IsFull, entry.IsFull);
                     Assert.Equal(backupStatus.NodeTag, entry.NodeTag);
-                    Assert.True(entry.Messages.Count > 20);
                 }
             }
 

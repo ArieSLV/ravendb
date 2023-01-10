@@ -354,7 +354,7 @@ namespace Raven.Server.Web.System
                     BackupConfigurationHelper.UpdateLocalPathIfNeeded(configuration, ServerStore);
                     BackupConfigurationHelper.AssertBackupConfiguration(configuration);
                     BackupConfigurationHelper.AssertDestinationAndRegionAreAllowed(configuration, ServerStore);
-
+                    
                     readerObject = context.ReadObject(configuration.ToJson(), "updated-backup-configuration");
                 },
                 fillJson: (json, readerObject, index) =>

@@ -106,6 +106,11 @@ namespace Raven.Server.Web.System
             using (ServerStore.ContextPool.AllocateOperationContext(out JsonOperationContext context))
             await using (var writer = new AsyncBlittableJsonTextWriter(context, ResponseBodyStream()))
             {
+                writer.WriteStartObject();
+                writer.WritePropertyName("Result");
+
+                writer.WriteStartArray();
+
                 if (string.IsNullOrEmpty(dest))
                 {
                     foreach (var node in topology.AllNodes)
@@ -118,11 +123,7 @@ namespace Raven.Server.Web.System
                     var url = topology.GetUrlFromTag(dest);
                     tasks.Add(GetNodeBackupHistory(url ?? dest, writer));
                 }
-
-                writer.WriteStartObject();
-                writer.WritePropertyName("Result");
                 
-                writer.WriteStartArray();
                 while (tasks.Count > 0)
                 {
                     var task = await Task.WhenAny(tasks);

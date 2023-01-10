@@ -41,16 +41,16 @@ namespace Raven.Client.ServerWide.Commands
 
     public class BackupHistoryEntry
     {
+
         public string BackupName { get; set; }
         public BackupType? BackupType { get; set; }
         public DateTime CreatedAt { get; private set; }
         public string DatabaseName { get; set; }
         public long? DurationInMs { get; set; }
-        public string Error { get; set; } //todo: to string
+        public string Error { get; set; } 
         public bool IsCompletedSuccessfully { get; set; }
         public bool? IsFull { get; set; }
         public string NodeTag { get; set; }
-        public IReadOnlyList<string> Messages { get; set; }
 
         public BackupHistoryEntry()
         {
@@ -70,8 +70,14 @@ namespace Raven.Client.ServerWide.Commands
                 [nameof(IsCompletedSuccessfully)] = IsCompletedSuccessfully,
                 [nameof(IsFull)] = IsFull,
                 [nameof(NodeTag)] = NodeTag,
-                [nameof(Messages)] = Messages,
             };
+        }
+
+        public static string Prefix => "backup-history/";
+
+        public static string GenerateItemName(string databaseName, long? id)
+        {
+            return $"values/{databaseName}/{Prefix}{id}";
         }
     }
 

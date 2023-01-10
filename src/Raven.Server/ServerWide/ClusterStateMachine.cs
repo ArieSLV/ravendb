@@ -39,6 +39,7 @@ using Raven.Server.Config.Categories;
 using Raven.Server.Documents;
 using Raven.Server.Integrations.PostgreSQL.Commands;
 using Raven.Server.Json;
+using Raven.Server.Monitoring.Snmp.Objects.Database;
 using Raven.Server.NotificationCenter.Notifications;
 using Raven.Server.NotificationCenter.Notifications.Details;
 using Raven.Server.Rachis;
@@ -480,7 +481,6 @@ namespace Raven.Server.ServerWide
 
                     case nameof(AcknowledgeSubscriptionBatchCommand):
                     case nameof(RecordBatchSubscriptionDocumentsCommand):
-                    case nameof(UpdatePeriodicBackupStatusCommand):
                     case nameof(UpdateExternalReplicationStateCommand):
                     case nameof(PutSubscriptionCommand):
                     case nameof(DeleteSubscriptionCommand):
@@ -491,6 +491,12 @@ namespace Raven.Server.ServerWide
                     case nameof(RemoveEtlProcessStateCommand):
                     case nameof(DelayBackupCommand):
                         SetValueForTypedDatabaseCommand(context, type, cmd, index, leader, out _);
+                        break;
+
+                    case nameof(UpdatePeriodicBackupStatusCommand):
+                        var command = (UpdatePeriodicBackupStatusCommand)SetValueForTypedDatabaseCommand(context, type, cmd, index, leader, out result);
+                        UpdateBackupHistory(context, type, index, command);
+
                         break;
 
                     case nameof(AddOrUpdateCompareExchangeCommand):
@@ -716,6 +722,65 @@ namespace Raven.Server.ServerWide
                     }
                 }, null);
             }
+        }
+
+        private unsafe void UpdateBackupHistory(ClusterOperationContext context, string type, long index, UpdatePeriodicBackupStatusCommand command)
+        {
+            var backupHistoryEntry = new BackupHistoryEntry
+            {
+                // BackupName = backupName,
+                BackupType = command.PeriodicBackupStatus.BackupType,
+                DatabaseName = command.DatabaseName,
+                DurationInMs = command.PeriodicBackupStatus.DurationInMs,
+                Error = command.PeriodicBackupStatus.Error?.Exception,
+                // IsCompletedSuccessfully = task.IsCompletedSuccessfully,
+                IsFull = command.PeriodicBackupStatus.IsFull,
+                NodeTag = command.PeriodicBackupStatus.NodeTag
+            };
+
+            BlittableJsonReaderObject itemBlittable = context.ReadObject(backupHistoryEntry.ToJson(), nameof(BackupHistoryEntry), BlittableJsonDocumentBuilder.UsageMode.ToDisk);
+            var itemKey = BackupHistoryEntry.GenerateItemName(command.DatabaseName, command.PeriodicBackupStatus.TaskId);
+            var items = context.Transaction.InnerTransaction.OpenTable(ItemsSchema, Items);
+
+            using (Slice.From(context.Allocator, itemKey, out Slice valueName))
+            using (Slice.From(context.Allocator, itemKey.ToLowerInvariant(), out Slice valueNameLowered))
+            {
+                BlittableJsonReaderObject blittable;
+                if (items.ReadByKey(valueNameLowered, out var tvr))
+                {
+                    var ptr = tvr.Read(2, out int size);
+                    blittable = new BlittableJsonReaderObject(ptr, size, context);
+                }
+                else
+                {
+                    blittable = context.ReadObject(new DynamicJsonValue(), "");
+                }
+
+                if (blittable.TryGet("History", out BlittableJsonReaderArray array) == false)
+                {
+
+                }
+
+                /*array.Modifications.Add();
+                array.Length
+                while (array. < 30)
+                {
+
+                }*/
+
+                UpdateValue(index, items, valueNameLowered, valueName, blittable);
+            }
+
+            using (Slice.From(context.Allocator, itemKey, out Slice valueName))
+            using (Slice.From(context.Allocator, itemKey.ToLowerInvariant(), out Slice valueNameLower))
+            {
+                
+            }
+
+
+
+            
+            
         }
 
         private void ExecutePutSubscriptionBatch(ClusterOperationContext context, BlittableJsonReaderObject cmd, long index, string type)
@@ -1377,11 +1442,12 @@ namespace Raven.Server.ServerWide
             return true;
         }
 
-        private void SetValueForTypedDatabaseCommand(ClusterOperationContext context, string type, BlittableJsonReaderObject cmd, long index, Leader leader, out object result)
+        private UpdateValueForDatabaseCommand SetValueForTypedDatabaseCommand(ClusterOperationContext context, string type, BlittableJsonReaderObject cmd, long index, Leader leader, out object result)
         {
             result = null;
             UpdateValueForDatabaseCommand updateCommand = null;
             Exception exception = null;
+
             try
             {
                 var items = context.Transaction.InnerTransaction.OpenTable(ItemsSchema, Items);
@@ -1395,6 +1461,8 @@ namespace Raven.Server.ServerWide
 
                     updateCommand.Execute(context, items, index, databaseRecord, _parent.CurrentState, out result);
                 }
+
+                return updateCommand;
             }
             catch (Exception e)
             {
