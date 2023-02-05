@@ -27,7 +27,7 @@ public static class Program
                 using (var testOutputHelper = new ConsoleTestOutputHelper())
                 using (var test = new PeriodicBackupTestsSlow(testOutputHelper))
                 {
-                    await test.BackupHistory_ShouldGetBackupHistoryFromEachNode(3);
+                    await test.BackupHistory_ShouldStoreEntriesPersistently();
                 }
             }
             catch (Exception e)

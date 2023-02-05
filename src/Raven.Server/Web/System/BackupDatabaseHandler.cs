@@ -1,17 +1,18 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
 using System.Threading.Tasks;
-using Raven.Client.Documents.Conventions;
+using Raven.Client;
 using Raven.Client.Documents.Operations.Backups;
 using Raven.Client.Documents.Operations.OngoingTasks;
-using Raven.Client.Http;
 using Raven.Client.ServerWide.Commands;
 using Raven.Server.Documents;
 using Raven.Server.Documents.PeriodicBackup;
 using Raven.Server.Routing;
 using Raven.Server.ServerWide.Context;
-using Sparrow;
 using Sparrow.Json;
+using Sparrow.Json.Parsing;
 
 namespace Raven.Server.Web.System
 {
@@ -96,94 +97,189 @@ namespace Raven.Server.Web.System
             }
         }
 
-        [RavenAction("/admin/backup-history", "GET", AuthorizationStatus.Operator)]
+        [RavenAction("/backup-history", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public async Task GetBackupHistory()
         {
-            var dest = GetStringQueryString("url", false) ?? GetStringQueryString("node", false);
-            var topology = ServerStore.GetClusterTopology();
-            var tasks = new List<Task>();
+            var name = GetQueryStringValueAndAssertIfSingleAndNotEmpty("database");
+            var taskIdFromRequest = GetLongQueryString("taskId", required: false);
+            var nodeTagFromRequest = GetStringValuesQueryString("nodeTag", required: false);
 
-            using (ServerStore.ContextPool.AllocateOperationContext(out JsonOperationContext context))
+            var currentNodeTag = ServerStore.NodeTag;
+            var documentDatabase = await ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(name);
+
+            using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
+            using (context.OpenReadTransaction())
             await using (var writer = new AsyncBlittableJsonTextWriter(context, ResponseBodyStream()))
             {
-                writer.WriteStartObject();
-                writer.WritePropertyName("Result");
+                var isFirst = true;
 
+                writer.WriteStartObject();
+                writer.WritePropertyName(nameof(BackupHistory));
                 writer.WriteStartArray();
 
-                if (string.IsNullOrEmpty(dest))
+                // Let's get all backup history entries from cluster storage for current database.
+                var prefix = BackupHistoryEntry.GenerateItemPrefix(name);
+                var itemsFromClusterStorage = ServerStore.Cluster
+                    .ItemsStartingWith(context, prefix, 0, long.MaxValue)
+                    .Select(x => x.Value);
+
+                var clusterEntriesCreationDateTimes = new HashSet<DateTime>();
+                var ecsDictionary = new Dictionary<(string, long), List<BlittableJsonReaderObject>>();
+                foreach (var entryCs in itemsFromClusterStorage)
                 {
-                    foreach (var node in topology.AllNodes)
+                    entryCs.TryGet(nameof(BackupHistory), out BlittableJsonReaderArray entriesFromClusterStorage);
+                    foreach (BlittableJsonReaderObject ecs in entriesFromClusterStorage)
                     {
-                        await GetNodeBackupHistory(node.Value, writer);
+                        ecs.TryGet(nameof(BackupHistory.BackupHistoryItem.FullBackup), out BlittableJsonReaderObject ecsFullBackup);
+                        ecsFullBackup.TryGet(nameof(BackupHistoryEntry.TaskId), out long ecsTaskId);
+                        ecsFullBackup.TryGet(nameof(BackupHistoryEntry.NodeTag), out string ecsNodeTag);
+                        
+                        if (ecsDictionary.TryGetValue((ecsNodeTag, ecsTaskId), out List<BlittableJsonReaderObject> entries))
+                            entries.Add(ecs);
+                        else
+                            ecsDictionary.Add((ecsNodeTag, ecsTaskId), new List<BlittableJsonReaderObject> { ecs });
+
+                        // In case of unstable cluster operation, it is possible to find a backup entry both in the cluster and in the temporary storage at the same time.
+                        // We need to keep track of the uniqueness of the entry to avoid duplicating them in the response.
+                        if (ecsNodeTag != currentNodeTag) continue;
+                        ecsFullBackup.TryGet(nameof(BackupHistoryEntry.CreatedAt), out DateTime ecsFullBackupCreation);
+                        clusterEntriesCreationDateTimes.Add(ecsFullBackupCreation);
+
+                        ecs.TryGet(nameof(BackupHistory.BackupHistoryItem.IncrementalBackups), out BlittableJsonReaderArray ecsIncrements);
+                        foreach (BlittableJsonReaderObject increment in ecsIncrements)
+                        {
+                            increment.TryGet(nameof(BackupHistoryEntry.CreatedAt), out DateTime ecsIncrementCreation);
+                            clusterEntriesCreationDateTimes.Add(ecsIncrementCreation);
+                        }
                     }
                 }
-                else
-                {
-                    var url = topology.GetUrlFromTag(dest);
-                    tasks.Add(GetNodeBackupHistory(url ?? dest, writer));
-                }
-                
-                while (tasks.Count > 0)
-                {
-                    var task = await Task.WhenAny(tasks);
-                    tasks.Remove(task);
 
-                    if (tasks.Count > 0)
+                var etsDictionary = new Dictionary<long, List<BlittableJsonReaderObject>>();
+                using (documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadTemporaryStoredBackupHistoryItems(out var entriesFromTemporaryStorage))
+                {
+                    if (string.IsNullOrWhiteSpace(nodeTagFromRequest) || nodeTagFromRequest == currentNodeTag)
+                        foreach (BlittableJsonReaderObject ets in entriesFromTemporaryStorage)
+                        {
+                            ets.TryGet(nameof(BackupHistoryEntry.TaskId), out long etsTaskId);
+
+                            if (taskIdFromRequest.HasValue && taskIdFromRequest.Value != etsTaskId)
+                                continue;
+
+                            if (etsDictionary.TryGetValue(etsTaskId, out List<BlittableJsonReaderObject> entries))
+                                entries.Add(ets);
+                            else
+                                etsDictionary.Add(etsTaskId, new List<BlittableJsonReaderObject> { ets });
+                        }
+
+                    foreach (var ecsWithSpecificTaskIdAndNodeTag in ecsDictionary)
                     {
-                        writer.WriteComma();
+                        (string NodeTag, long TaskId) ecsKey = ecsWithSpecificTaskIdAndNodeTag.Key;
+
+                        if (taskIdFromRequest.HasValue && taskIdFromRequest.Value != ecsKey.TaskId)
+                            continue;
+
+                        if (string.IsNullOrWhiteSpace(nodeTagFromRequest) == false && nodeTagFromRequest != ecsKey.NodeTag)
+                            continue;
+
+                        for (int i = 0; i < ecsWithSpecificTaskIdAndNodeTag.Value.Count; i++)
+                        {
+                            var entryCs = ecsWithSpecificTaskIdAndNodeTag.Value[i];
+
+                            if (ecsKey.NodeTag != currentNodeTag)
+                            {
+                                // Current entry from cluster storage refers to backup history entry from another node.
+                                // We can't have anything in temporary storage for this entry. Let's write it.
+                                WriteObject(entryCs);
+                                continue;
+                            }
+
+                            // If we have problems with the cluster, we need to pick up entries from temporary storage.
+                            if (etsDictionary.TryGetValue(ecsKey.TaskId, out var etsWithSpecificTaskId) == false)
+                            {
+                                // We have no entries for this TaskID in temporary storage, so let's write a current entry.
+                                WriteObject(entryCs);
+                                continue;
+                            }
+
+                            if (i != ecsWithSpecificTaskIdAndNodeTag.Value.Count - 1)
+                            {
+                                // We will write all occurrences from the Cluster Storage except the last one. 
+                                WriteObject(entryCs);
+                                continue;
+                            }
+
+                            // This is the last entry from Cluster Storage for this TaskID.
+                            // Perhaps there are temporary storage entries worth appending to increments of this backup history entry.
+                            AppendLastEntriesAndWrite(etsWithSpecificTaskId, entryCs);
+                        }
                     }
 
-                    await writer.MaybeFlushAsync();
+                    // If we have entries in the temporary storage that did not belong to any TaskID, we should also show them in the response
+                    if (string.IsNullOrWhiteSpace(nodeTagFromRequest) || nodeTagFromRequest == currentNodeTag)
+                    {
+                        var oddments = etsDictionary
+                            .Where(odd => taskIdFromRequest.HasValue == false || taskIdFromRequest.Value == odd.Key);
+                        
+                        foreach (var oddment in oddments)
+                            AppendLastEntriesAndWrite(oddment.Value);
+                    }
                 }
 
                 writer.WriteEndArray();
                 writer.WriteEndObject();
-            }
 
-            async Task GetNodeBackupHistory(string url, AbstractBlittableJsonTextWriter writer)
-            {
-                var first = true;
-                if (ServerStore.GetNodeHttpServerUrl() == url)
+                void WriteObject(BlittableJsonReaderObject obj)
                 {
-                    foreach ((var name, Task<DocumentDatabase> task) in ServerStore.DatabasesLandlord.DatabasesCache)
-                    {
-                        if (task.Status != TaskStatus.RanToCompletion)
-                            continue;
+                    if (isFirst == false)
+                        writer.WriteComma();
 
-                        var database = await task;
-                        using (database.ConfigurationStorage.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out var entries))
+                    writer.WriteObject(obj);
+                    isFirst = false;
+                }
+
+                void AppendLastEntriesAndWrite(List<BlittableJsonReaderObject> entriesToAdd, BlittableJsonReaderObject lastEntry = null)
+                {
+                    foreach (var entryToAdd in entriesToAdd)
+                    {
+                        entryToAdd.TryGet(nameof(BackupHistoryEntry.CreatedAt), out DateTime entryCreatedAt);
+                        if (clusterEntriesCreationDateTimes.Contains(entryCreatedAt)) continue;
+                        
+                        entryToAdd.TryGet(nameof(BackupHistoryEntry.IsFull), out bool entryIsFull);
+
+                        if (entryIsFull)
                         {
-                            foreach (var entry in entries)
+                            if (lastEntry != null)
+                                WriteObject(lastEntry);
+
+                            var newEntry = new DynamicJsonValue
                             {
-                                if (first == false)
-                                    writer.WriteComma();
+                                [nameof(BackupHistory.BackupHistoryItem.FullBackup)] = entryToAdd,
+                                [nameof(BackupHistory.BackupHistoryItem.IncrementalBackups)] = new DynamicJsonArray()
+                            };
 
-                                first = false;
-                                writer.WriteObject(entry.Json);
-                            }
+                            lastEntry = context.ReadObject(newEntry, null);
                         }
-                    }
-                }
-                else
-                {
-                    using (var requestExecutor = ClusterRequestExecutor.CreateForSingleNode(url, ServerStore.Engine.ClusterCertificate, DocumentConventions.DefaultForServer))
-                    using (requestExecutor.ContextPool.AllocateOperationContext(out var context))
-                    {
-                        var command = new GetBackupHistoryNodeCommand();
-                        await requestExecutor.ExecuteAsync(command, context);
-
-                        foreach (var entry in command.Result.Result)
+                        else
                         {
-                            if (first == false)
-                                writer.WriteComma();
+                            lastEntry.TryGet(nameof(BackupHistory.BackupHistoryItem.FullBackup), out BlittableJsonReaderObject lastEntryFullBackup);
+                            lastEntryFullBackup.TryGet(nameof(BackupHistoryEntry.LastFullBackup), out DateTime? lastEntryLastFullBackup);
+                            entryToAdd.TryGet(nameof(BackupHistoryEntry.LastFullBackup), out DateTime? entryToAddLastFullBackup);
 
-                            first = false;
-                            context.Write(writer, entry.ToJson());
+                            if (entryToAddLastFullBackup != lastEntryLastFullBackup) continue;
+
+                            lastEntry.TryGet(nameof(BackupHistory.BackupHistoryItem.IncrementalBackups), out BlittableJsonReaderArray increments);
+                            increments.Modifications ??= new DynamicJsonArray();
+                            increments.Modifications.Add(entryToAdd);
+
+                            lastEntry = context.ReadObject(lastEntry, null);
                         }
                     }
-                }
 
+                    WriteObject(lastEntry);
+
+                    entriesToAdd[0].TryGet(nameof(BackupHistoryEntry.TaskId), out long taskId);
+                    etsDictionary.Remove(taskId);
+                }
             }
         }
 

@@ -7,6 +7,7 @@ using System.Linq;
 using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
+using System.Runtime.InteropServices.ComTypes;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
@@ -25,6 +26,7 @@ using Raven.Client.Exceptions;
 using Raven.Client.Exceptions.Database;
 using Raven.Client.Exceptions.Documents.Subscriptions;
 using Raven.Client.Exceptions.Security;
+using Raven.Client.Extensions;
 using Raven.Client.Http;
 using Raven.Client.ServerWide;
 using Raven.Client.ServerWide.Commands;
@@ -37,6 +39,7 @@ using Raven.Server.Commercial;
 using Raven.Server.Config;
 using Raven.Server.Config.Categories;
 using Raven.Server.Documents;
+using Raven.Server.Documents.PeriodicBackup.BackupHistory;
 using Raven.Server.Integrations.PostgreSQL.Commands;
 using Raven.Server.Json;
 using Raven.Server.Monitoring.Snmp.Objects.Database;
@@ -68,6 +71,7 @@ using Voron.Data;
 using Voron.Data.BTrees;
 using Voron.Data.Tables;
 using Voron.Impl;
+using Voron.Impl.Backup;
 using Constants = Raven.Client.Constants;
 
 namespace Raven.Server.ServerWide
@@ -138,7 +142,7 @@ namespace Raven.Server.ServerWide
             // Database SEP SubscriptionId SEP type SEP key
             // type is Revision or Document
             // key is lowered docId for document or current change vector for revision
-            Key, 
+            Key,
             ChangeVector,
             BatchId,
         }
@@ -195,65 +199,37 @@ namespace Raven.Server.ServerWide
                 Slice.From(ctx, "SubscriptionState", out SubscriptionState);
                 Slice.From(ctx, "SubscriptionStateKey", out SubscriptionStateKeySlice);
                 Slice.From(ctx, "SubscriptionStateByBatchId", out SubscriptionStateByBatchIdSlice);
-
             }
 
             ItemsSchema = new TableSchema();
 
             // We use the follow format for the items data
             // { lowered key, key, data, etag }
-            ItemsSchema.DefineKey(new TableSchema.SchemaIndexDef
-            {
-                StartIndex = 0,
-                Count = 1
-            });
+            ItemsSchema.DefineKey(new TableSchema.SchemaIndexDef { StartIndex = 0, Count = 1 });
 
             IdentitiesSchema = new TableSchema();
-            IdentitiesSchema.DefineKey(new TableSchema.SchemaIndexDef
-            {
-                StartIndex = (int)IdentitiesTable.Key,
-                Count = 1
-            });
-            IdentitiesSchema.DefineIndex(new TableSchema.SchemaIndexDef
-            {
-                StartIndex = (int)IdentitiesTable.KeyIndex,
-                Count = 1,
-                IsGlobal = true,
-                Name = IdentitiesIndex
-            });
+            IdentitiesSchema.DefineKey(new TableSchema.SchemaIndexDef { StartIndex = (int)IdentitiesTable.Key, Count = 1 });
+            IdentitiesSchema.DefineIndex(
+                new TableSchema.SchemaIndexDef { StartIndex = (int)IdentitiesTable.KeyIndex, Count = 1, IsGlobal = true, Name = IdentitiesIndex });
 
             CompareExchangeSchema = new TableSchema();
-            CompareExchangeSchema.DefineKey(new TableSchema.SchemaIndexDef
-            {
-                StartIndex = (int)CompareExchangeTable.Key,
-                Count = 1
-            });
+            CompareExchangeSchema.DefineKey(new TableSchema.SchemaIndexDef { StartIndex = (int)CompareExchangeTable.Key, Count = 1 });
             CompareExchangeSchema.DefineIndex(new TableSchema.SchemaIndexDef
             {
-                StartIndex = (int)CompareExchangeTable.PrefixIndex,
-                Count = 1,
-                Name = CompareExchangeIndex
+                StartIndex = (int)CompareExchangeTable.PrefixIndex, Count = 1, Name = CompareExchangeIndex
             });
 
             CompareExchangeTombstoneSchema = new TableSchema();
-            CompareExchangeTombstoneSchema.DefineKey(new TableSchema.SchemaIndexDef
-            {
-                StartIndex = (int)CompareExchangeTombstoneTable.Key,
-                Count = 1
-            });
+            CompareExchangeTombstoneSchema.DefineKey(new TableSchema.SchemaIndexDef { StartIndex = (int)CompareExchangeTombstoneTable.Key, Count = 1 });
             CompareExchangeTombstoneSchema.DefineIndex(new TableSchema.SchemaIndexDef
             {
-                StartIndex = (int)CompareExchangeTombstoneTable.PrefixIndex,
-                Count = 1,
-                IsGlobal = true,
-                Name = CompareExchangeTombstoneIndex
+                StartIndex = (int)CompareExchangeTombstoneTable.PrefixIndex, Count = 1, IsGlobal = true, Name = CompareExchangeTombstoneIndex
             });
 
             TransactionCommandsSchema = new TableSchema();
             TransactionCommandsSchema.DefineKey(new TableSchema.SchemaIndexDef()
             {
-                StartIndex = 0,
-                Count = 1, // Database, Separator, Commands count
+                StartIndex = 0, Count = 1, // Database, Separator, Commands count
             });
 
             // We use the follow format for the certificates data
@@ -261,17 +237,11 @@ namespace Raven.Server.ServerWide
             CertificatesSchema = new TableSchema();
             CertificatesSchema.DefineKey(new TableSchema.SchemaIndexDef()
             {
-                StartIndex = (int)CertificatesTable.Thumbprint,
-                Count = 1,
-                IsGlobal = false,
-                Name = CertificatesSlice
+                StartIndex = (int)CertificatesTable.Thumbprint, Count = 1, IsGlobal = false, Name = CertificatesSlice
             });
             CertificatesSchema.DefineIndex(new TableSchema.SchemaIndexDef
             {
-                StartIndex = (int)CertificatesTable.PublicKeyHash,
-                Count = 1,
-                IsGlobal = false,
-                Name = CertificatesHashSlice
+                StartIndex = (int)CertificatesTable.PublicKeyHash, Count = 1, IsGlobal = false, Name = CertificatesHashSlice
             });
 
             // We use the follow format for the replication certificates data
@@ -279,33 +249,21 @@ namespace Raven.Server.ServerWide
             ReplicationCertificatesSchema = new TableSchema();
             ReplicationCertificatesSchema.DefineKey(new TableSchema.SchemaIndexDef()
             {
-                StartIndex = (int)ReplicationCertificatesTable.Thumbprint,
-                Count = 1,
-                IsGlobal = false,
-                Name = ReplicationCertificatesSlice
+                StartIndex = (int)ReplicationCertificatesTable.Thumbprint, Count = 1, IsGlobal = false, Name = ReplicationCertificatesSlice
             });
             ReplicationCertificatesSchema.DefineIndex(new TableSchema.SchemaIndexDef
             {
-                StartIndex = (int)ReplicationCertificatesTable.PublicKeyHash,
-                Count = 1,
-                IsGlobal = false,
-                Name = ReplicationCertificatesHashSlice
+                StartIndex = (int)ReplicationCertificatesTable.PublicKeyHash, Count = 1, IsGlobal = false, Name = ReplicationCertificatesHashSlice
             });
 
             SubscriptionStateSchema = new TableSchema();
             SubscriptionStateSchema.DefineKey(new TableSchema.SchemaIndexDef
             {
-                StartIndex = (int)SubscriptionStateTable.Key,
-                Count =  1,
-                IsGlobal = false,
-                Name = SubscriptionStateKeySlice
+                StartIndex = (int)SubscriptionStateTable.Key, Count = 1, IsGlobal = false, Name = SubscriptionStateKeySlice
             });
             SubscriptionStateSchema.DefineIndex(new TableSchema.SchemaIndexDef
             {
-                StartIndex = (int)SubscriptionStateTable.BatchId,
-                Count = 1,
-                IsGlobal = false,
-                Name = SubscriptionStateByBatchIdSlice
+                StartIndex = (int)SubscriptionStateTable.BatchId, Count = 1, IsGlobal = false, Name = SubscriptionStateByBatchIdSlice
             });
         }
 
@@ -342,6 +300,7 @@ namespace Raven.Server.ServerWide
                             result = errors;
                             leader?.SetStateOf(index, errors);
                         }
+
                         break;
 
                     case nameof(CleanUpClusterStateCommand):
@@ -396,7 +355,8 @@ namespace Raven.Server.ServerWide
                         break;
 
                     case nameof(IncrementClusterIdentityCommand):
-                        if (ValidatePropertyExistence(cmd, nameof(IncrementClusterIdentityCommand), nameof(IncrementClusterIdentityCommand.Prefix), out errorMessage) == false)
+                        if (ValidatePropertyExistence(cmd, nameof(IncrementClusterIdentityCommand), nameof(IncrementClusterIdentityCommand.Prefix), out errorMessage) ==
+                            false)
                             throw new RachisApplyException(errorMessage);
                         SetValueForTypedDatabaseCommand(context, type, cmd, index, leader, out result);
                         leader?.SetStateOf(index, result);
@@ -404,7 +364,8 @@ namespace Raven.Server.ServerWide
                         break;
 
                     case nameof(IncrementClusterIdentitiesBatchCommand):
-                        if (ValidatePropertyExistence(cmd, nameof(IncrementClusterIdentitiesBatchCommand), nameof(IncrementClusterIdentitiesBatchCommand.DatabaseName), out errorMessage) == false)
+                        if (ValidatePropertyExistence(cmd, nameof(IncrementClusterIdentitiesBatchCommand), nameof(IncrementClusterIdentitiesBatchCommand.DatabaseName),
+                                out errorMessage) == false)
                             throw new RachisApplyException(errorMessage);
                         SetValueForTypedDatabaseCommand(context, type, cmd, index, leader, out result);
                         leader?.SetStateOf(index, result);
@@ -412,7 +373,8 @@ namespace Raven.Server.ServerWide
                         break;
 
                     case nameof(UpdateClusterIdentityCommand):
-                        if (ValidatePropertyExistence(cmd, nameof(UpdateClusterIdentityCommand), nameof(UpdateClusterIdentityCommand.Identities), out errorMessage) == false)
+                        if (ValidatePropertyExistence(cmd, nameof(UpdateClusterIdentityCommand), nameof(UpdateClusterIdentityCommand.Identities), out errorMessage) ==
+                            false)
                             throw new RachisApplyException(errorMessage);
                         SetValueForTypedDatabaseCommand(context, type, cmd, index, leader, out result);
                         leader?.SetStateOf(index, result);
@@ -464,7 +426,7 @@ namespace Raven.Server.ServerWide
                     case nameof(PutQueueConnectionStringCommand):
                     case nameof(RemoveRavenConnectionStringCommand):
                     case nameof(RemoveSqlConnectionStringCommand):
-                    case nameof(RemoveOlapConnectionStringCommand): 
+                    case nameof(RemoveOlapConnectionStringCommand):
                     case nameof(RemoveElasticSearchConnectionStringCommand):
                     case nameof(RemoveQueueConnectionStringCommand):
                     case nameof(UpdatePullReplicationAsHubCommand):
@@ -495,7 +457,7 @@ namespace Raven.Server.ServerWide
 
                     case nameof(UpdatePeriodicBackupStatusCommand):
                         var command = (UpdatePeriodicBackupStatusCommand)SetValueForTypedDatabaseCommand(context, type, cmd, index, leader, out result);
-                        UpdateBackupHistory(context, type, index, command);
+                        UpdateBackupHistory(context, index, command, serverStore);
 
                         break;
 
@@ -631,11 +593,13 @@ namespace Raven.Server.ServerWide
                             result = addedNodes;
                             leader?.SetStateOf(index, addedNodes);
                         }
+
                         break;
 
                     default:
-                        var massage = $"The command '{type}' is unknown and cannot be executed on server with version '{ServerVersion.FullVersion}'.{Environment.NewLine}" +
-                                      "Updating this node version to match the rest should resolve this issue.";
+                        var massage =
+                            $"The command '{type}' is unknown and cannot be executed on server with version '{ServerVersion.FullVersion}'.{Environment.NewLine}" +
+                            "Updating this node version to match the rest should resolve this issue.";
                         throw new UnknownClusterCommandException(massage);
                 }
 
@@ -692,7 +656,8 @@ namespace Raven.Server.ServerWide
             {
                 try
                 {
-                    serverStore.NotificationCenter.Dismiss(AlertRaised.GetKey(AlertType.UnrecoverableClusterError, $"{_parent.CurrentTerm}/{index}"), context.Transaction, sendNotificationEvenIfDoesntExist: false);
+                    serverStore.NotificationCenter.Dismiss(AlertRaised.GetKey(AlertType.UnrecoverableClusterError, $"{_parent.CurrentTerm}/{index}"), context.Transaction,
+                        sendNotificationEvenIfDoesntExist: false);
                 }
                 catch
                 {
@@ -724,64 +689,141 @@ namespace Raven.Server.ServerWide
             }
         }
 
-        private unsafe void UpdateBackupHistory(ClusterOperationContext context, string type, long index, UpdatePeriodicBackupStatusCommand command)
+        private unsafe void UpdateBackupHistory(ClusterOperationContext context, long index, UpdatePeriodicBackupStatusCommand command, ServerStore serverStore)
         {
-            var backupHistoryEntry = new BackupHistoryEntry
-            {
-                // BackupName = backupName,
-                BackupType = command.PeriodicBackupStatus.BackupType,
-                DatabaseName = command.DatabaseName,
-                DurationInMs = command.PeriodicBackupStatus.DurationInMs,
-                Error = command.PeriodicBackupStatus.Error?.Exception,
-                // IsCompletedSuccessfully = task.IsCompletedSuccessfully,
-                IsFull = command.PeriodicBackupStatus.IsFull,
-                NodeTag = command.PeriodicBackupStatus.NodeTag
-            };
-
-            BlittableJsonReaderObject itemBlittable = context.ReadObject(backupHistoryEntry.ToJson(), nameof(BackupHistoryEntry), BlittableJsonDocumentBuilder.UsageMode.ToDisk);
-            var itemKey = BackupHistoryEntry.GenerateItemName(command.DatabaseName, command.PeriodicBackupStatus.TaskId);
             var items = context.Transaction.InnerTransaction.OpenTable(ItemsSchema, Items);
 
-            using (Slice.From(context.Allocator, itemKey, out Slice valueName))
-            using (Slice.From(context.Allocator, itemKey.ToLowerInvariant(), out Slice valueNameLowered))
+            command.GetCommandEntries().ForEach(StoreEntry);
+
+            void StoreEntry(BackupHistoryEntry backupHistoryEntryToAdd)
             {
-                BlittableJsonReaderObject blittable;
-                if (items.ReadByKey(valueNameLowered, out var tvr))
+                var itemKey = backupHistoryEntryToAdd.GenerateItemKey();
+
+                // We use the follow structure for the backup history data
+                // Each Full backup + all increments are one Backup entry: { FullBackup: {}, Increments: [] }
+                using (Slice.From(context.Allocator, itemKey, out Slice valueName))
+                using (Slice.From(context.Allocator, itemKey.ToLowerInvariant(), out Slice valueNameLowered))
                 {
-                    var ptr = tvr.Read(2, out int size);
-                    blittable = new BlittableJsonReaderObject(ptr, size, context);
+                    BlittableJsonReaderObject blittable;
+                    if (items.ReadByKey(valueNameLowered, out var tvr) == false)
+                    {
+                        // This is the first backup history entry for such TaskId on that Node.Let's create a new entry.
+                        // It should be taken into account that if the incremental backup is completed first after implementing the functionality on the current server instance,
+                        // we should correctly handle this case. We'll define a fake backup entry with a minimal creation date as a full backup entry.
+                        var fullBackup = backupHistoryEntryToAdd.IsFull ? backupHistoryEntryToAdd.ToJson() : new DynamicJsonValue
+                            {
+                                [nameof(BackupHistoryEntry.BackupType)] = backupHistoryEntryToAdd.BackupType,
+                                [nameof(BackupHistoryEntry.CreatedAt)] = DateTime.MinValue,
+                                [nameof(BackupHistoryEntry.DatabaseName)] = backupHistoryEntryToAdd.DatabaseName,
+                                [nameof(BackupHistoryEntry.DurationInMs)] = 0,
+                                [nameof(BackupHistoryEntry.Error)] = null,
+                                [nameof(BackupHistoryEntry.IsFull)] = true,
+                                [nameof(BackupHistoryEntry.NodeTag)] = backupHistoryEntryToAdd.NodeTag,
+                                [nameof(BackupHistoryEntry.LastFullBackup)] = backupHistoryEntryToAdd.LastFullBackup,
+                                [nameof(BackupHistoryEntry.TaskId)] = backupHistoryEntryToAdd.TaskId,
+                            };
+
+                        var increments = backupHistoryEntryToAdd.IsFull ? new DynamicJsonArray() : new DynamicJsonArray { backupHistoryEntryToAdd.ToJson() };
+
+                        var backupHistoryJsonValue = new DynamicJsonValue
+                        {
+                            [nameof(BackupHistory)] = new DynamicJsonArray
+                            {
+                                new DynamicJsonValue
+                                {
+                                    [nameof(BackupHistory.BackupHistoryItem.FullBackup)] = fullBackup,
+                                    [nameof(BackupHistory.BackupHistoryItem.IncrementalBackups)] = increments
+                                }
+                            }
+                        };
+
+                        blittable = context.ReadObject(backupHistoryJsonValue, itemKey);
+                    }
+                    else
+                    {
+                        // We are already have history entries. We'll add a new value according to the given structure.
+                        var ptr = tvr.Read(2, out int size);
+                        blittable = new BlittableJsonReaderObject(ptr, size, context);
+
+                        blittable.TryGet(nameof(BackupHistory), out BlittableJsonReaderArray backupHistoryEntries);
+
+                        if (backupHistoryEntryToAdd.IsFull)
+                        {
+                            // It's a full backup. Let's add a new backup history entry if it's unique.
+                            var isUnique = true;
+                            foreach (BlittableJsonReaderObject entry in backupHistoryEntries)
+                            {
+                                entry.TryGet(nameof(BackupHistory.BackupHistoryItem.FullBackup), out BlittableJsonReaderObject fullBackup);
+                                fullBackup.TryGet(nameof(BackupHistoryEntry.CreatedAt), out DateTime entryCreatedAt);
+
+                                if (entryCreatedAt != backupHistoryEntryToAdd.CreatedAt) 
+                                    continue;
+
+                                isUnique = false;
+                                break;
+                            }
+
+                            if (isUnique)
+                            {
+                                backupHistoryEntries.Modifications ??= new DynamicJsonArray();
+                                backupHistoryEntries.Modifications.Add(new DynamicJsonValue
+                                {
+                                    [nameof(BackupHistory.BackupHistoryItem.FullBackup)] = backupHistoryEntryToAdd.ToJson(),
+                                    [nameof(BackupHistory.BackupHistoryItem.IncrementalBackups)] = new DynamicJsonArray()
+                                });
+                            }
+                        }
+                        else
+                        {
+                            // It's an incremental backup.
+                            for (int i = backupHistoryEntries.Length - 1; i >= 0; i--)
+                            {
+                                // We'll find (starting from the end) which full backup we are incrementing.
+                                BlittableJsonReaderObject entry = (BlittableJsonReaderObject)backupHistoryEntries[i];
+
+                                if (entry.TryGet(nameof(BackupHistory.BackupHistoryItem.FullBackup), out BlittableJsonReaderObject fullBackup) == false ||
+                                    fullBackup.TryGet(nameof(BackupHistoryEntry.LastFullBackup), out DateTime lastFullBackup) == false ||
+                                    backupHistoryEntryToAdd.LastFullBackup != lastFullBackup)
+                                    continue;
+
+                                // We found which full backup was incremented; now we'll append new entry.
+                                entry.TryGet(nameof(BackupHistory.BackupHistoryItem.IncrementalBackups), out BlittableJsonReaderArray increments);
+                                increments.Modifications ??= new DynamicJsonArray();
+                                if (increments.Length == 0)
+                                {
+                                    increments.Modifications.Add(backupHistoryEntryToAdd.ToJson());
+                                    break;
+                                }
+
+                                var lastIncremental = (BlittableJsonReaderObject)increments[^1];
+                                lastIncremental.TryGet(nameof(BackupHistoryEntry.CreatedAt), out DateTime lastIncrementalCreatedAt);
+
+                                if (lastIncrementalCreatedAt < backupHistoryEntryToAdd.CreatedAt)
+                                    increments.Modifications.Add(backupHistoryEntryToAdd.ToJson());
+                            }
+                        }
+                        
+                        var extra = backupHistoryEntries.Length + backupHistoryEntries.Modifications?.Items.Count -
+                                      serverStore.Configuration.Backup.MaxNumberOfFullBackupsInBackupHistory;
+                        if (extra > 0)
+                        {
+                            backupHistoryEntries.Modifications.Removals ??= new List<int>();
+                            for (int i = 0; i < extra; i++)
+                            {
+                                backupHistoryEntries.Modifications.Removals.Add(i);
+                            }
+                        }
+
+                        blittable = context.ReadObject(blittable, itemKey);
+                    }
+
+                    UpdateValue(index, items, valueNameLowered, valueName, blittable);
                 }
-                else
-                {
-                    blittable = context.ReadObject(new DynamicJsonValue(), "");
-                }
-
-                if (blittable.TryGet("History", out BlittableJsonReaderArray array) == false)
-                {
-
-                }
-
-                /*array.Modifications.Add();
-                array.Length
-                while (array. < 30)
-                {
-
-                }*/
-
-                UpdateValue(index, items, valueNameLowered, valueName, blittable);
             }
 
-            using (Slice.From(context.Allocator, itemKey, out Slice valueName))
-            using (Slice.From(context.Allocator, itemKey.ToLowerInvariant(), out Slice valueNameLower))
-            {
-                
-            }
-
-
-
-            
-            
+            //todo: delete items on database delete?
         }
+
 
         private void ExecutePutSubscriptionBatch(ClusterOperationContext context, BlittableJsonReaderObject cmd, long index, string type)
         {
@@ -1653,7 +1695,7 @@ namespace Raven.Server.ServerWide
                     {
                         if (databaseExists == false && addDatabaseCommand.RaftCommandIndex != 0)
                             throw new RachisConcurrencyException("Concurrency violation, the database " + addDatabaseCommand.Name +
-                                                           " does not exist, but had a non zero etag");
+                                                                 " does not exist, but had a non zero etag");
 
                         var actualEtag = Bits.SwapBytes(*(long*)reader.Read(3, out int size));
                         Debug.Assert(size == sizeof(long));
@@ -1792,8 +1834,8 @@ namespace Raven.Server.ServerWide
             {
                 addDatabaseCommand.Record.Topology.Stamp = new LeaderStamp
                 {
-                    Index = index,
-                    LeadersTicks = -2,
+                    Index = index, 
+                    LeadersTicks = -2, 
                     Term = _parent.CurrentTerm
                 };
                 hasChanges = true;
@@ -1899,7 +1941,7 @@ namespace Raven.Server.ServerWide
                 return hasNewConfiguration;
 
             var hasOldConfiguration = oldDatabaseRecord.TryGet(clientPropName, out BlittableJsonReaderObject oldDbClientConfig)
-                && oldDbClientConfig != null;
+                                      && oldDbClientConfig != null;
 
             if (hasNewConfiguration != hasOldConfiguration)
                 return true;
@@ -2275,7 +2317,7 @@ namespace Raven.Server.ServerWide
         {
             using (Slice.From(context.Allocator, (command.Database + "/" + command.HubName + "/" + command.CertificateThumbprint).ToLowerInvariant(), out var keySlice))
             using (Slice.From(context.Allocator, (command.Database + "/" + command.HubName + "/" + command.CertificatePublicKeyHash).ToLowerInvariant(),
-                out var publicKeySlice))
+                       out var publicKeySlice))
             using (var obj = context.ReadObject(command.PrepareForStorage(), "inner-val"))
             {
                 if (_clusterAuditLog.IsInfoEnabled)
@@ -2302,9 +2344,11 @@ namespace Raven.Server.ServerWide
 
                 // here we'll clear the old values
                 var samePublicKeyHash = new SortedList<DateTime, long>();
-                foreach (var result in certs.SeekForwardFromPrefix(ReplicationCertificatesSchema.Indexes[ReplicationCertificatesHashSlice], publicKeySlice, publicKeySlice, 0))
+                foreach (var result in certs.SeekForwardFromPrefix(ReplicationCertificatesSchema.Indexes[ReplicationCertificatesHashSlice], publicKeySlice,
+                             publicKeySlice, 0))
                 {
-                    using var accessBlittable = new BlittableJsonReaderObject(result.Result.Reader.Read((int)ReplicationCertificatesTable.Access, out var size), size, context);
+                    using var accessBlittable =
+                        new BlittableJsonReaderObject(result.Result.Reader.Read((int)ReplicationCertificatesTable.Access, out var size), size, context);
 
                     accessBlittable.TryGet(nameof(command.NotAfter), out DateTime notAfter);
 
@@ -2326,13 +2370,15 @@ namespace Raven.Server.ServerWide
             {
                 var certs = context.Transaction.InnerTransaction.OpenTable(ReplicationCertificatesSchema, ReplicationCertificatesSlice);
 
-                using (Slice.From(context.Allocator, (command.Database + "/" + command.HubName + "/" + command.CertificateThumbprint).ToLowerInvariant(), out var keySlice))
+                using (Slice.From(context.Allocator, (command.Database + "/" + command.HubName + "/" + command.CertificateThumbprint).ToLowerInvariant(),
+                           out var keySlice))
                 {
                     if (certs.DeleteByKey(keySlice) == false)
                         return;
 
                     if (_clusterAuditLog.IsInfoEnabled)
-                        _clusterAuditLog.Info($"Removed replication certificate '{command.CertificateThumbprint}' for replication in {command.Database} using {command.HubName}.");
+                        _clusterAuditLog.Info(
+                            $"Removed replication certificate '{command.CertificateThumbprint}' for replication in {command.Database} using {command.HubName}.");
                 }
             }
             finally
@@ -2360,17 +2406,15 @@ namespace Raven.Server.ServerWide
             finally
             {
                 if (_clusterAuditLog.IsInfoEnabled)
-                    _clusterAuditLog.Info($"After allowing a connection based on Public Key Pinning Hash, deleting the following old certificates from the cluster: {string.Join(", ", thumbprintsToDelete)}");
+                    _clusterAuditLog.Info(
+                        $"After allowing a connection based on Public Key Pinning Hash, deleting the following old certificates from the cluster: {string.Join(", ", thumbprintsToDelete)}");
                 NotifyValueChanged(context, type, index);
             }
         }
 
         public override void EnsureNodeRemovalOnDeletion(ClusterOperationContext context, long term, string nodeTag)
         {
-            var djv = new RemoveNodeFromClusterCommand(RaftIdGenerator.NewId())
-            {
-                RemovedNode = nodeTag
-            }.ToJson(context);
+            var djv = new RemoveNodeFromClusterCommand(RaftIdGenerator.NewId()) { RemovedNode = nodeTag }.ToJson(context);
 
             _parent.InsertToLeaderLog(context, term, context.ReadObject(djv, "remove"), RachisEntryFlags.StateMachineCommand);
         }
@@ -2389,9 +2433,11 @@ namespace Raven.Server.ServerWide
             };
         }
 
-        private void NotifyDatabaseAboutChanged(ClusterOperationContext context, string databaseName, long index, string type, DatabasesLandlord.ClusterDatabaseChangeType change, object changeState)
+        private void NotifyDatabaseAboutChanged(ClusterOperationContext context, string databaseName, long index, string type,
+            DatabasesLandlord.ClusterDatabaseChangeType change, object changeState)
         {
-            Debug.Assert(changeState.ContainsBlittableObject() == false, "You cannot use a blittable in the command state, since this is handled outside of the transaction");
+            Debug.Assert(changeState.ContainsBlittableObject() == false,
+                "You cannot use a blittable in the command state, since this is handled outside of the transaction");
 
             context.Transaction.InnerTransaction.LowLevelTransaction.AfterCommitWhenNewTransactionsPrevented += _ =>
             {
@@ -2583,15 +2629,13 @@ namespace Raven.Server.ServerWide
         private readonly (ByteString Name, int Version, SnapshotEntryType Type)[] _snapshotEntries =
         {
             (Items.Content, ClusterCommandsVersionManager.Base40CommandsVersion, SnapshotEntryType.Command),
-            (CompareExchange.Content, ClusterCommandsVersionManager.Base40CommandsVersion,SnapshotEntryType.Command),
-            (Identities.Content, ClusterCommandsVersionManager.Base40CommandsVersion,SnapshotEntryType.Command),
-
-            (TransactionCommands.Content, ClusterCommandsVersionManager.Base41CommandsVersion,SnapshotEntryType.Command),
-            (TransactionCommandsCountPerDatabase.Content, ClusterCommandsVersionManager.Base41CommandsVersion,SnapshotEntryType.Command),
-
-            (CompareExchangeTombstones.Content, ClusterCommandsVersionManager.Base42CommandsVersion,SnapshotEntryType.Command),
-            (CertificatesSlice.Content, ClusterCommandsVersionManager.Base42CommandsVersion,SnapshotEntryType.Command),
-            (RachisLogHistory.LogHistorySlice.Content, 42_000,SnapshotEntryType.Core),
+            (CompareExchange.Content, ClusterCommandsVersionManager.Base40CommandsVersion, SnapshotEntryType.Command),
+            (Identities.Content, ClusterCommandsVersionManager.Base40CommandsVersion, SnapshotEntryType.Command),
+            (TransactionCommands.Content, ClusterCommandsVersionManager.Base41CommandsVersion, SnapshotEntryType.Command),
+            (TransactionCommandsCountPerDatabase.Content, ClusterCommandsVersionManager.Base41CommandsVersion, SnapshotEntryType.Command),
+            (CompareExchangeTombstones.Content, ClusterCommandsVersionManager.Base42CommandsVersion, SnapshotEntryType.Command),
+            (CertificatesSlice.Content, ClusterCommandsVersionManager.Base42CommandsVersion, SnapshotEntryType.Command),
+            (RachisLogHistory.LogHistorySlice.Content, 42_000, SnapshotEntryType.Core),
             (CompareExchangeExpirationStorage.CompareExchangeByExpiration.Content, 51_000, SnapshotEntryType.Command),
             (SubscriptionState.Content, 53_000, SnapshotEntryType.Command)
         };
@@ -2671,13 +2715,7 @@ namespace Raven.Server.ServerWide
             if (licenseLimits.NodeLicenseDetails.TryGetValue(_parent.Tag, out var details) == false)
                 return;
 
-            var newLimits = new LicenseLimits
-            {
-                NodeLicenseDetails = new Dictionary<string, DetailsPerNode>
-                {
-                    [tag] = details
-                }
-            };
+            var newLimits = new LicenseLimits { NodeLicenseDetails = new Dictionary<string, DetailsPerNode> { [tag] = details } };
 
             var value = context.ReadObject(newLimits.ToJson(), "overwrite-license-limits");
             PutValueDirectly(context, ServerStore.LicenseLimitsStorageKey, value, index);
@@ -2689,10 +2727,7 @@ namespace Raven.Server.ServerWide
 
             var topology = new ClusterTopology(
                 clusterTopology.TopologyId,
-                new Dictionary<string, string>
-                {
-                    [newTag] = clusterTopology.GetUrlFromTag(newTag)
-                },
+                new Dictionary<string, string> { [newTag] = clusterTopology.GetUrlFromTag(newTag) },
                 new Dictionary<string, string>(),
                 new Dictionary<string, string>(),
                 newTag,
@@ -2744,10 +2779,7 @@ namespace Raven.Server.ServerWide
             }
 
             var items = context.Transaction.InnerTransaction.OpenTable(ItemsSchema, Items);
-            var cmd = new DynamicJsonValue
-            {
-                ["Type"] = "Switch to single leader"
-            };
+            var cmd = new DynamicJsonValue { ["Type"] = "Switch to single leader" };
 
             var index = _parent.InsertToLeaderLog(context, _parent.CurrentTerm, context.ReadObject(cmd, "single-leader"), RachisEntryFlags.Noop);
 
@@ -2768,12 +2800,7 @@ namespace Raven.Server.ServerWide
 
             foreach (var record in toShrink)
             {
-                record.Topology.Stamp = new LeaderStamp
-                {
-                    Index = index,
-                    LeadersTicks = 0,
-                    Term = _parent.CurrentTerm
-                };
+                record.Topology.Stamp = new LeaderStamp { Index = index, LeadersTicks = 0, Term = _parent.CurrentTerm };
 
                 var dbKey = "db/" + record.DatabaseName;
                 using (Slice.From(context.Allocator, dbKey, out Slice valueName))
@@ -2789,7 +2816,8 @@ namespace Raven.Server.ServerWide
             ExecuteManyOnDispose(context, index, type, tasks);
         }
 
-        public unsafe void PutLocalState(TransactionOperationContext context, string thumbprint, BlittableJsonReaderObject value, CertificateDefinition certificateDefinition)
+        public unsafe void PutLocalState(TransactionOperationContext context, string thumbprint, BlittableJsonReaderObject value,
+            CertificateDefinition certificateDefinition)
         {
             PutCertificateCommand.ValidateCertificateDefinition(certificateDefinition);
 
@@ -2869,7 +2897,8 @@ namespace Raven.Server.ServerWide
             return GetCertificate(context, reader.Base, reader.Length, treeIterator.CurrentKey.ToString());
         }
 
-        public static IEnumerable<(string Thumbprint, BlittableJsonReaderObject Certificate)> GetAllCertificatesFromCluster(TransactionOperationContext context, long start, long take)
+        public static IEnumerable<(string Thumbprint, BlittableJsonReaderObject Certificate)> GetAllCertificatesFromCluster(TransactionOperationContext context,
+            long start, long take)
         {
             var certTable = context.Transaction.InnerTransaction.OpenTable(CertificatesSchema, CertificatesSlice);
 
@@ -2893,7 +2922,8 @@ namespace Raven.Server.ServerWide
             }
         }
 
-        public IEnumerable<(string ItemName, long Index, BlittableJsonReaderObject Value)> ItemsStartingWith<TTransaction>(TransactionOperationContext<TTransaction> context, string prefix, long start, long take)
+        public IEnumerable<(string ItemName, long Index, BlittableJsonReaderObject Value)> ItemsStartingWith<TTransaction>(
+            TransactionOperationContext<TTransaction> context, string prefix, long start, long take)
             where TTransaction : RavenTransaction
         {
             var items = context.Transaction.InnerTransaction.OpenTable(ItemsSchema, Items);
@@ -2971,7 +3001,8 @@ namespace Raven.Server.ServerWide
             return GetCompareExchangeValue(context, key, items);
         }
 
-        public static (long Index, BlittableJsonReaderObject Value) GetCompareExchangeValue<TTransaction>(TransactionOperationContext<TTransaction> context, Slice key, Table items)
+        public static (long Index, BlittableJsonReaderObject Value) GetCompareExchangeValue<TTransaction>(TransactionOperationContext<TTransaction> context, Slice key,
+            Table items)
             where TTransaction : RavenTransaction
         {
             if (items.ReadByKey(key, out var reader))
@@ -3004,7 +3035,8 @@ namespace Raven.Server.ServerWide
             }
         }
 
-        public IEnumerable<(CompareExchangeKey Key, long Index, BlittableJsonReaderObject Value)> GetCompareExchangeFromPrefix(TransactionOperationContext context, string dbName, long fromIndex, long take)
+        public IEnumerable<(CompareExchangeKey Key, long Index, BlittableJsonReaderObject Value)> GetCompareExchangeFromPrefix(TransactionOperationContext context,
+            string dbName, long fromIndex, long take)
         {
             using (CompareExchangeCommandBase.GetPrefixIndexSlices(context.Allocator, dbName, fromIndex, out var buffer))
             {
@@ -3086,7 +3118,8 @@ namespace Raven.Server.ServerWide
             }
         }
 
-        internal bool HasCompareExchangeTombstonesWithEtagGreaterThanStartAndLowerThanOrEqualToEnd(TransactionOperationContext context, string databaseName, long start, long end)
+        internal bool HasCompareExchangeTombstonesWithEtagGreaterThanStartAndLowerThanOrEqualToEnd(TransactionOperationContext context, string databaseName, long start,
+            long end)
         {
             if (start >= end)
                 return false;
@@ -3117,10 +3150,12 @@ namespace Raven.Server.ServerWide
             try
             {
                 if (cmd.TryGet(nameof(DeleteExpiredCompareExchangeCommand.Ticks), out long ticks) == false)
-                    throw new RachisApplyException($"{nameof(DeleteExpiredCompareExchangeCommand)} must contain a {nameof(DeleteExpiredCompareExchangeCommand.Ticks)} property");
+                    throw new RachisApplyException(
+                        $"{nameof(DeleteExpiredCompareExchangeCommand)} must contain a {nameof(DeleteExpiredCompareExchangeCommand.Ticks)} property");
 
                 if (cmd.TryGet(nameof(CleanCompareExchangeTombstonesCommand.Take), out long take) == false)
-                    throw new RachisApplyException($"{nameof(DeleteExpiredCompareExchangeCommand)} must contain a {nameof(DeleteExpiredCompareExchangeCommand.Take)} property");
+                    throw new RachisApplyException(
+                        $"{nameof(DeleteExpiredCompareExchangeCommand)} must contain a {nameof(DeleteExpiredCompareExchangeCommand.Take)} property");
 
                 var items = context.Transaction.InnerTransaction.OpenTable(CompareExchangeSchema, CompareExchange);
 
@@ -3269,7 +3304,8 @@ namespace Raven.Server.ServerWide
             return Encoding.UTF8.GetString(result.Reader.Read(1, out int size), size);
         }
 
-        private static unsafe (string Key, long Index, BlittableJsonReaderObject Value) GetCurrentItem<TTransaction>(TransactionOperationContext<TTransaction> context, Table.TableValueHolder result)
+        private static unsafe (string Key, long Index, BlittableJsonReaderObject Value) GetCurrentItem<TTransaction>(TransactionOperationContext<TTransaction> context,
+            Table.TableValueHolder result)
             where TTransaction : RavenTransaction
         {
             var ptr = result.Reader.Read(2, out int size);
@@ -3295,7 +3331,8 @@ namespace Raven.Server.ServerWide
             }
         }
 
-        private static unsafe (string Key, BlittableJsonReaderObject Cert) GetCertificate<TTransaction>(TransactionOperationContext<TTransaction> context, Table.TableValueHolder result)
+        private static unsafe (string Key, BlittableJsonReaderObject Cert) GetCertificate<TTransaction>(TransactionOperationContext<TTransaction> context,
+            Table.TableValueHolder result)
             where TTransaction : RavenTransaction
         {
             var ptr = result.Reader.Read((int)CertificatesTable.Data, out var dataSize);
@@ -3304,7 +3341,8 @@ namespace Raven.Server.ServerWide
             return GetCertificate(context, ptr, dataSize, key);
         }
 
-        private static unsafe (string Key, BlittableJsonReaderObject Cert) GetCertificate<TTransaction>(TransactionOperationContext<TTransaction> context, byte* ptr, int size, string key)
+        private static unsafe (string Key, BlittableJsonReaderObject Cert) GetCertificate<TTransaction>(TransactionOperationContext<TTransaction> context, byte* ptr,
+            int size, string key)
             where TTransaction : RavenTransaction
         {
             var doc = new BlittableJsonReaderObject(ptr, size, context);
@@ -3408,7 +3446,8 @@ namespace Raven.Server.ServerWide
             }
         }
 
-        public bool TryReadPullReplicationDefinition(string database, string definitionName, TransactionOperationContext context, out PullReplicationDefinition pullReplication)
+        public bool TryReadPullReplicationDefinition(string database, string definitionName, TransactionOperationContext context,
+            out PullReplicationDefinition pullReplication)
         {
             pullReplication = null;
             try
@@ -3594,7 +3633,8 @@ namespace Raven.Server.ServerWide
             return doc;
         }
 
-        public static IEnumerable<(Slice Key, BlittableJsonReaderObject Value)> ReadValuesStartingWith<TTransaction>(TransactionOperationContext<TTransaction> context, string startsWithKey)
+        public static IEnumerable<(Slice Key, BlittableJsonReaderObject Value)> ReadValuesStartingWith<TTransaction>(TransactionOperationContext<TTransaction> context,
+            string startsWithKey)
             where TTransaction : RavenTransaction
         {
             var startsWithKeyLower = startsWithKey.ToLowerInvariant();
@@ -3613,7 +3653,8 @@ namespace Raven.Server.ServerWide
             }
         }
 
-        private static unsafe int GetDataAndEtagTupleFromReader<TTransaction>(TransactionOperationContext<TTransaction> context, TableValueReader reader, out BlittableJsonReaderObject doc, out long etag)
+        private static unsafe int GetDataAndEtagTupleFromReader<TTransaction>(TransactionOperationContext<TTransaction> context, TableValueReader reader,
+            out BlittableJsonReaderObject doc, out long etag)
             where TTransaction : RavenTransaction
         {
             var ptr = reader.Read(2, out int size);
@@ -3625,7 +3666,8 @@ namespace Raven.Server.ServerWide
             return size;
         }
 
-        private async ValueTask<TcpConnectionHeaderMessage.NegotiationResponse> ClusterReadResponseAndGetVersion(JsonOperationContext ctx, AsyncBlittableJsonTextWriter writer, Stream stream, string url)
+        private async ValueTask<TcpConnectionHeaderMessage.NegotiationResponse> ClusterReadResponseAndGetVersion(JsonOperationContext ctx,
+            AsyncBlittableJsonTextWriter writer, Stream stream, string url)
         {
             using (var response = await ctx.ReadForMemoryAsync(stream, "cluster-ConnectToPeer-header-response"))
             {
@@ -3633,30 +3675,25 @@ namespace Raven.Server.ServerWide
                 switch (reply.Status)
                 {
                     case TcpConnectionStatus.Ok:
-                        return new TcpConnectionHeaderMessage.NegotiationResponse
-                        {
-                            Version = reply.Version,
-                            LicensedFeatures = reply.LicensedFeatures
-                        };
+                        return new TcpConnectionHeaderMessage.NegotiationResponse { Version = reply.Version, LicensedFeatures = reply.LicensedFeatures };
                     case TcpConnectionStatus.AuthorizationFailed:
                         throw new AuthorizationException($"Unable to access  {url} because {reply.Message}");
                     case TcpConnectionStatus.TcpVersionMismatch:
                         if (reply.Version != TcpNegotiation.OutOfRangeStatus)
                         {
-                            return new TcpConnectionHeaderMessage.NegotiationResponse
-                            {
-                                Version = reply.Version,
-                                LicensedFeatures = reply.LicensedFeatures
-                            };
+                            return new TcpConnectionHeaderMessage.NegotiationResponse { Version = reply.Version, LicensedFeatures = reply.LicensedFeatures };
                         }
+
                         //Kindly request the server to drop the connection
-                        ctx.Write(writer, new DynamicJsonValue
-                        {
-                            [nameof(TcpConnectionHeaderMessage.DatabaseName)] = null,
-                            [nameof(TcpConnectionHeaderMessage.Operation)] = TcpConnectionHeaderMessage.OperationTypes.Drop,
-                            [nameof(TcpConnectionHeaderMessage.OperationVersion)] = TcpConnectionHeaderMessage.ClusterTcpVersion,
-                            [nameof(TcpConnectionHeaderMessage.Info)] = $"Couldn't agree on cluster tcp version ours:{TcpConnectionHeaderMessage.ClusterTcpVersion} theirs:{reply.Version}"
-                        });
+                        ctx.Write(writer,
+                            new DynamicJsonValue
+                            {
+                                [nameof(TcpConnectionHeaderMessage.DatabaseName)] = null,
+                                [nameof(TcpConnectionHeaderMessage.Operation)] = TcpConnectionHeaderMessage.OperationTypes.Drop,
+                                [nameof(TcpConnectionHeaderMessage.OperationVersion)] = TcpConnectionHeaderMessage.ClusterTcpVersion,
+                                [nameof(TcpConnectionHeaderMessage.Info)] =
+                                    $"Couldn't agree on cluster tcp version ours:{TcpConnectionHeaderMessage.ClusterTcpVersion} theirs:{reply.Version}"
+                            });
                         throw new InvalidOperationException($"Unable to access  {url} because {reply.Message}");
                     case TcpConnectionStatus.InvalidNetworkTopology:
                         throw new InvalidNetworkTopologyException($"Unable to access {url} because {reply.Message}");
@@ -3682,7 +3719,7 @@ namespace Raven.Server.ServerWide
 
                 info = await ReplicationUtils.GetTcpInfoAsync(url, null, "Cluster", certificate, cts.Token);
             }
-            
+
             TcpClient tcpClient = null;
             Stream stream = null;
             try
@@ -3691,9 +3728,17 @@ namespace Raven.Server.ServerWide
                 using (ContextPoolForReadOnlyOperations.AllocateOperationContext(out JsonOperationContext context))
                 {
                     var result = await TcpUtils.ConnectSecuredTcpSocket(info, _parent.ClusterCertificate, _parent.CipherSuitesPolicy,
-                        TcpConnectionHeaderMessage.OperationTypes.Cluster, 
-                        (string destUrl, TcpConnectionInfo tcpInfo, Stream conn, JsonOperationContext ctx, List<string> _) => NegotiateProtocolVersionAsyncForCluster(destUrl, tcpInfo, conn, ctx, tag), 
+                        TcpConnectionHeaderMessage.OperationTypes.Cluster,
+                        (string destUrl, TcpConnectionInfo tcpInfo, Stream conn, JsonOperationContext ctx, List<string> _) =>
+                            NegotiateProtocolVersionAsyncForCluster(destUrl, tcpInfo, conn, ctx, tag),
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
                         context, _parent.TcpConnectionTimeout, null, token); 
+=======
+=======
+>>>>>>> Stashed changes
+                        context, _parent.TcpConnectionTimeout, null, token);
+>>>>>>> Stashed changes
 
                     tcpClient = result.TcpClient;
                     stream = result.Stream;
@@ -3739,11 +3784,13 @@ namespace Raven.Server.ServerWide
                 await using (stream)
                 {
                 }
+
                 throw;
             }
         }
 
-        private async Task<TcpConnectionHeaderMessage.SupportedFeatures> NegotiateProtocolVersionAsyncForCluster(string url, TcpConnectionInfo info, Stream stream, JsonOperationContext ctx, string tag)
+        private async Task<TcpConnectionHeaderMessage.SupportedFeatures> NegotiateProtocolVersionAsyncForCluster(string url, TcpConnectionInfo info, Stream stream,
+            JsonOperationContext ctx, string tag)
         {
             bool compressionSupport = false;
             var version = TcpConnectionHeaderMessage.ClusterTcpVersion;
@@ -3796,10 +3843,7 @@ namespace Raven.Server.ServerWide
                             if (rawDatabaseRecord.IsDisabled == command.Value.Disable)
                                 continue;
 
-                            oldDatabaseRecord.Modifications = new DynamicJsonValue(oldDatabaseRecord)
-                            {
-                                [nameof(DatabaseRecord.Disabled)] = command.Value.Disable
-                            };
+                            oldDatabaseRecord.Modifications = new DynamicJsonValue(oldDatabaseRecord) { [nameof(DatabaseRecord.Disabled)] = command.Value.Disable };
 
                             break;
 
@@ -3825,7 +3869,8 @@ namespace Raven.Server.ServerWide
                         case ToggleDatabasesStateCommand.Parameters.ToggleType.DynamicDatabaseDistribution:
                             if (rawDatabaseRecord.IsEncrypted)
                             {
-                                throw new RachisInvalidOperationException($"Cannot toggle '{nameof(DatabaseTopology.DynamicNodesDistribution)}' for encrypted database: {databaseName}");
+                                throw new RachisInvalidOperationException(
+                                    $"Cannot toggle '{nameof(DatabaseTopology.DynamicNodesDistribution)}' for encrypted database: {databaseName}");
                             }
 
                             var topology = rawDatabaseRecord.Topology;
@@ -3838,10 +3883,7 @@ namespace Raven.Server.ServerWide
 
                             topology.DynamicNodesDistribution = enable;
 
-                            oldDatabaseRecord.Modifications = new DynamicJsonValue(oldDatabaseRecord)
-                            {
-                                [nameof(DatabaseRecord.Topology)] = topology.ToJson()
-                            };
+                            oldDatabaseRecord.Modifications = new DynamicJsonValue(oldDatabaseRecord) { [nameof(DatabaseRecord.Topology)] = topology.ToJson() };
 
                             break;
 
@@ -3861,7 +3903,8 @@ namespace Raven.Server.ServerWide
             ApplyDatabaseRecordUpdates(toUpdate, type, index, index, items, context);
         }
 
-        private void UpdateDatabasesWithServerWideBackupConfiguration(ClusterOperationContext context, string type, ServerWideBackupConfiguration serverWideBackupConfiguration, long index)
+        private void UpdateDatabasesWithServerWideBackupConfiguration(ClusterOperationContext context, string type,
+            ServerWideBackupConfiguration serverWideBackupConfiguration, long index)
         {
             if (serverWideBackupConfiguration == null)
                 throw new RachisInvalidOperationException($"Server-wide backup configuration is null for command type: {type}");
@@ -3921,10 +3964,7 @@ namespace Raven.Server.ServerWide
 
                     using (oldDatabaseRecord)
                     {
-                        oldDatabaseRecord.Modifications = new DynamicJsonValue(oldDatabaseRecord)
-                        {
-                            [nameof(DatabaseRecord.PeriodicBackups)] = newBackups
-                        };
+                        oldDatabaseRecord.Modifications = new DynamicJsonValue(oldDatabaseRecord) { [nameof(DatabaseRecord.PeriodicBackups)] = newBackups };
 
                         var updatedDatabaseRecord = context.ReadObject(oldDatabaseRecord, "updated-database-record");
                         toUpdate.Add((Key: key, DatabaseRecord: updatedDatabaseRecord, DatabaseName: databaseName));
@@ -3945,7 +3985,8 @@ namespace Raven.Server.ServerWide
                 allServerWideTasksNames);
         }
 
-        private static bool IsServerWideExternalReplicationToEdit(BlittableJsonReaderObject databaseTask, string serverWideTaskName, HashSet<string> allServerWideTasksNames)
+        private static bool IsServerWideExternalReplicationToEdit(BlittableJsonReaderObject databaseTask, string serverWideTaskName,
+            HashSet<string> allServerWideTasksNames)
         {
             return IsServerWideTaskToEdit(
                 databaseTask,
@@ -4003,7 +4044,8 @@ namespace Raven.Server.ServerWide
             }
         }
 
-        private void UpdateDatabasesWithExternalReplication(ClusterOperationContext context, string type, ServerWideExternalReplication serverWideExternalReplication, long index)
+        private void UpdateDatabasesWithExternalReplication(ClusterOperationContext context, string type, ServerWideExternalReplication serverWideExternalReplication,
+            long index)
         {
             if (serverWideExternalReplication == null)
                 throw new RachisInvalidOperationException($"Server-wide external replication is null for command type: {type}");
@@ -4032,7 +4074,8 @@ namespace Raven.Server.ServerWide
 
                     var externalReplication = JsonDeserializationCluster.ExternalReplication(serverWideBlittable);
                     var databaseName = key.Substring(dbKey.Length);
-                    var ravenConnectionString = PutServerWideExternalReplicationCommand.UpdateExternalReplicationTemplateForDatabase(externalReplication, databaseName, topologyDiscoveryUrls);
+                    var ravenConnectionString =
+                        PutServerWideExternalReplicationCommand.UpdateExternalReplicationTemplateForDatabase(externalReplication, databaseName, topologyDiscoveryUrls);
 
                     var updatedExternalReplications = new DynamicJsonArray();
                     if (oldDatabaseRecord.TryGet(nameof(DatabaseRecord.ExternalReplications), out BlittableJsonReaderArray databaseExternalReplications))
@@ -4056,7 +4099,8 @@ namespace Raven.Server.ServerWide
                         }
                     }
 
-                    var hasConnectionStrings = oldDatabaseRecord.TryGet(nameof(DatabaseRecord.RavenConnectionStrings), out BlittableJsonReaderObject ravenConnectionStrings);
+                    var hasConnectionStrings =
+                        oldDatabaseRecord.TryGet(nameof(DatabaseRecord.RavenConnectionStrings), out BlittableJsonReaderObject ravenConnectionStrings);
 
                     if (serverWideExternalReplication.IsExcluded(databaseName) == false)
                     {
@@ -4065,19 +4109,13 @@ namespace Raven.Server.ServerWide
                         if (hasConnectionStrings)
                         {
                             ravenConnectionStrings.Modifications ??= new DynamicJsonValue();
-                            ravenConnectionStrings.Modifications = new DynamicJsonValue
-                            {
-                                [ravenConnectionString.Name] = ravenConnectionString.ToJson()
-                            };
+                            ravenConnectionStrings.Modifications = new DynamicJsonValue { [ravenConnectionString.Name] = ravenConnectionString.ToJson() };
 
                             ravenConnectionStrings = context.ReadObject(ravenConnectionStrings, nameof(DatabaseRecord.RavenConnectionStrings));
                         }
                         else
                         {
-                            var djv = new DynamicJsonValue
-                            {
-                                [ravenConnectionString.Name] = ravenConnectionString.ToJson()
-                            };
+                            var djv = new DynamicJsonValue { [ravenConnectionString.Name] = ravenConnectionString.ToJson() };
 
                             ravenConnectionStrings = context.ReadObject(djv, nameof(DatabaseRecord.RavenConnectionStrings));
                         }
@@ -4089,10 +4127,7 @@ namespace Raven.Server.ServerWide
                         if (propertyIndex != -1)
                         {
                             ravenConnectionStrings.Modifications ??= new DynamicJsonValue();
-                            ravenConnectionStrings.Modifications.Removals = new HashSet<int>
-                            {
-                                propertyIndex
-                            };
+                            ravenConnectionStrings.Modifications.Removals = new HashSet<int> { propertyIndex };
 
                             ravenConnectionStrings = context.ReadObject(ravenConnectionStrings, nameof(DatabaseRecord.RavenConnectionStrings));
                         }
@@ -4141,11 +4176,12 @@ namespace Raven.Server.ServerWide
             }
         }
 
-        private void DeleteServerWideBackupConfigurationFromAllDatabases(DeleteServerWideTaskCommand.DeleteConfiguration deleteConfiguration, ClusterOperationContext context, string type, long index)
+        private void DeleteServerWideBackupConfigurationFromAllDatabases(DeleteServerWideTaskCommand.DeleteConfiguration deleteConfiguration,
+            ClusterOperationContext context, string type, long index)
         {
             if (deleteConfiguration == null)
                 throw new RachisInvalidOperationException($"No configuration was supplied to {type}: raftIndex {index}");
-            
+
             if (string.IsNullOrWhiteSpace(deleteConfiguration.TaskName))
                 throw new RachisInvalidOperationException($"Task name to delete cannot be null or white space for command type {type} : raftIndex {index}");
 
@@ -4181,10 +4217,7 @@ namespace Raven.Server.ServerWide
                                 updatedBackups.Add(backup);
                             }
 
-                            oldDatabaseRecord.Modifications = new DynamicJsonValue(oldDatabaseRecord)
-                            {
-                                [nameof(DatabaseRecord.PeriodicBackups)] = updatedBackups
-                            };
+                            oldDatabaseRecord.Modifications = new DynamicJsonValue(oldDatabaseRecord) { [nameof(DatabaseRecord.PeriodicBackups)] = updatedBackups };
 
                             break;
 
@@ -4211,10 +4244,7 @@ namespace Raven.Server.ServerWide
                                 if (propertyIndex != -1)
                                 {
                                     ravenConnectionStrings.Modifications ??= new DynamicJsonValue();
-                                    ravenConnectionStrings.Modifications.Removals = new HashSet<int>
-                                    {
-                                        propertyIndex
-                                    };
+                                    ravenConnectionStrings.Modifications.Removals = new HashSet<int> { propertyIndex };
 
                                     ravenConnectionStrings = context.ReadObject(ravenConnectionStrings, nameof(DatabaseRecord.RavenConnectionStrings));
                                 }
@@ -4249,7 +4279,8 @@ namespace Raven.Server.ServerWide
             ApplyDatabaseRecordUpdates(toUpdate, type, index, index, items, context);
         }
 
-        private void ToggleServerWideTaskState(BlittableJsonReaderObject cmd, ToggleServerWideTaskStateCommand.Parameters parameters, ClusterOperationContext context, string type, long index)
+        private void ToggleServerWideTaskState(BlittableJsonReaderObject cmd, ToggleServerWideTaskStateCommand.Parameters parameters, ClusterOperationContext context,
+            string type, long index)
         {
             if (cmd.TryGet(nameof(ToggleServerWideTaskStateCommand.Name), out string name) == false)
                 throw new RachisApplyException($"Failed to get configuration key name for command type '{type}'");
@@ -4285,7 +4316,8 @@ namespace Raven.Server.ServerWide
                    taskNameToFind.Equals(foundTaskName, StringComparison.OrdinalIgnoreCase);
         }
 
-        private void ApplyDatabaseRecordUpdates(List<(string Key, BlittableJsonReaderObject DatabaseRecord, string DatabaseName)> toUpdate, string type, long indexForValueChanges, long index, Table items, ClusterOperationContext context)
+        private void ApplyDatabaseRecordUpdates(List<(string Key, BlittableJsonReaderObject DatabaseRecord, string DatabaseName)> toUpdate, string type,
+            long indexForValueChanges, long index, Table items, ClusterOperationContext context)
         {
             var tasks = new List<Func<Task>> { () => Changes.OnValueChanges(indexForValueChanges, type) };
 
@@ -4331,9 +4363,9 @@ namespace Raven.Server.ServerWide
                     {
                         var db = databases[index];
                         tasks[index] = Task.Run(async () =>
-                                {
-                                    await Changes.OnDatabaseChanges(db, lastIncludedIndex, SnapshotInstalled, DatabasesLandlord.ClusterDatabaseChangeType.RecordChanged, null);
-                                }, token);
+                        {
+                            await Changes.OnDatabaseChanges(db, lastIncludedIndex, SnapshotInstalled, DatabasesLandlord.ClusterDatabaseChangeType.RecordChanged, null);
+                        }, token);
                     }
 
                     tasks[databases.Length] = Task.Run(async () =>
@@ -4347,20 +4379,20 @@ namespace Raven.Server.ServerWide
                     });
 
                     Task.WhenAll(tasks).ContinueWith(task =>
+                    {
+                        if (task.IsCompletedSuccessfully)
                         {
-                            if (task.IsCompletedSuccessfully)
-                            {
-                                tcs.TrySetResult(null);
-                            }
-                            else if (task.IsCanceled)
-                            {
-                                tcs.TrySetCanceled();
-                            }
-                            else
-                            {
-                                tcs.TrySetException(task.Exception!);
-                            }
-                        }, token);
+                            tcs.TrySetResult(null);
+                        }
+                        else if (task.IsCanceled)
+                        {
+                            tcs.TrySetCanceled();
+                        }
+                        else
+                        {
+                            tcs.TrySetException(task.Exception!);
+                        }
+                    }, token);
                 }
                 else
                 {
@@ -4396,7 +4428,8 @@ namespace Raven.Server.ServerWide
             return new ClusterValidator();
         }
 
-        public IEnumerable<BlittableJsonReaderObject> GetReplicationHubCertificateByHub(TransactionOperationContext context, string database, string hub, string filter, int start, int pageSize)
+        public IEnumerable<BlittableJsonReaderObject> GetReplicationHubCertificateByHub(TransactionOperationContext context, string database, string hub, string filter,
+            int start, int pageSize)
         {
             using var certs = context.Transaction.InnerTransaction.OpenTable(ReplicationCertificatesSchema, ReplicationCertificatesSlice);
 
@@ -4424,8 +4457,7 @@ namespace Raven.Server.ServerWide
 
                 blittable.Modifications = new DynamicJsonValue(blittable)
                 {
-                    [nameof(DetailedReplicationHubAccess.Certificate)] = GetCertificateAsBase64(val),
-                    [nameof(DetailedReplicationHubAccess.Thumbprint)] = thumbprint
+                    [nameof(DetailedReplicationHubAccess.Certificate)] = GetCertificateAsBase64(val), [nameof(DetailedReplicationHubAccess.Thumbprint)] = thumbprint
                 };
 
                 using (blittable)
@@ -4473,7 +4505,8 @@ namespace Raven.Server.ServerWide
             return new BlittableJsonReaderObject(reader.Read((int)ReplicationCertificatesTable.Access, out var size), size, context);
         }
 
-        public bool IsReplicationCertificate(TransactionOperationContext context, string database, string hub, X509Certificate2 userCert, out DetailedReplicationHubAccess access)
+        public bool IsReplicationCertificate(TransactionOperationContext context, string database, string hub, X509Certificate2 userCert,
+            out DetailedReplicationHubAccess access)
         {
             using var certs = context.Transaction.InnerTransaction.OpenTable(ReplicationCertificatesSchema, ReplicationCertificatesSlice);
 
@@ -4491,7 +4524,8 @@ namespace Raven.Server.ServerWide
             return false;
         }
 
-        public unsafe bool IsReplicationCertificateByPublicKeyPinningHash(TransactionOperationContext context, string database, string hub, X509Certificate2 userCert, SecurityConfiguration securityConfiguration, out DetailedReplicationHubAccess access)
+        public unsafe bool IsReplicationCertificateByPublicKeyPinningHash(TransactionOperationContext context, string database, string hub, X509Certificate2 userCert,
+            SecurityConfiguration securityConfiguration, out DetailedReplicationHubAccess access)
         {
             using var certs = context.Transaction.InnerTransaction.OpenTable(ReplicationCertificatesSchema, ReplicationCertificatesSlice);
             // maybe we need to check by public key hash?
@@ -4538,6 +4572,7 @@ namespace Raven.Server.ServerWide
         public readonly Queue<RecentLogIndexNotification> RecentNotifications = new Queue<RecentLogIndexNotification>();
         internal Logger Log;
         private SingleUseFlag _isDisposed = new SingleUseFlag();
+
         private class ErrorHolder
         {
             public long Index;
@@ -4676,8 +4711,8 @@ namespace Raven.Server.ServerWide
                   PrintLastNotifications();
 
             throw new OperationCanceledException(openingString +
-                                       $"Last commit index is: {lastModifiedIndex}. " +
-                                       $"Number of errors is: {_numberOfErrors}." + closingString);
+                                                 $"Last commit index is: {lastModifiedIndex}. " +
+                                                 $"Number of errors is: {_numberOfErrors}." + closingString);
         }
 
         private void ThrowTimeoutException(TimeSpan value, long index, long lastModifiedIndex, bool isExecution = false)
@@ -4724,6 +4759,7 @@ namespace Raven.Server.ServerWide
                     .Append(notification.Exception)
                     .AppendLine();
             }
+
             return builder.ToString();
         }
 
@@ -4738,11 +4774,7 @@ namespace Raven.Server.ServerWide
         {
             if (e != null)
             {
-                _errors.Enqueue(new ErrorHolder
-                {
-                    Index = index,
-                    Exception = ExceptionDispatchInfo.Capture(e)
-                });
+                _errors.Enqueue(new ErrorHolder { Index = index, Exception = ExceptionDispatchInfo.Capture(e) });
 
                 if (Interlocked.Increment(ref _numberOfErrors) > 25)
                 {
@@ -4802,3 +4834,4 @@ namespace Raven.Server.ServerWide
         public Exception Exception;
     }
 }
+

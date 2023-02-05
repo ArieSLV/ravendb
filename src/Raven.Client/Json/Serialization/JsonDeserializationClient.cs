@@ -263,7 +263,9 @@ namespace Raven.Client.Json.Serialization
         public static readonly Func<BlittableJsonReaderObject, PutTrafficWatchConfigurationOperation.Parameters> GetTrafficWatchConfigurationResult = GenerateJsonDeserializationRoutine<PutTrafficWatchConfigurationOperation.Parameters>();
 
         internal static readonly Func<BlittableJsonReaderObject, ConfigurePostgreSqlOperationResult> ConfigurePostgreSqlOperationResult = GenerateJsonDeserializationRoutine<ConfigurePostgreSqlOperationResult>();
-
+        
         internal static readonly Func<BlittableJsonReaderObject, NodeBackupHistoryResult> NodeBackupHistoryResult = GenerateJsonDeserializationRoutine<NodeBackupHistoryResult>();
+
+        internal static readonly Func<BlittableJsonReaderObject, BackupHistoryEntry> BackupHistoryEntry = GenerateJsonDeserializationRoutine<BackupHistoryEntry>();
     }
 }

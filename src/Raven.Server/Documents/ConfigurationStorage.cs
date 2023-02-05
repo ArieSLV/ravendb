@@ -77,7 +77,7 @@ namespace Raven.Server.Documents
 
             ContextPool = new TransactionContextPool(Environment, db.Configuration.Memory.MaxContextSizeToKeep);
 
-            BackupHistoryStorage = new BackupHistoryStorage(db.Configuration.Backup.MaxNumberOfBackupHistoryEntries);
+            BackupHistoryStorage = new BackupHistoryStorage(db.Name);
         }
 
         public void Initialize()

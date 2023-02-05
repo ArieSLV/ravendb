@@ -115,9 +115,16 @@ namespace StressTests.Corax
             longList.Sort(CompareDescending);
             using var searcher = new IndexSearcher(Env);
             {
-                //var match = searcher.Or(searcher.Boost(searcher.GreaterThan(searcher.AllEntries(), Content1, 2137), 1000),
-                //    searcher.LessThan(searcher.AllEntries(), Content1, 99L));
+                //var match = searcher.Or(searcher.Boost(searcher.GreaterThan(searcher.GetCommandEntries(), Content1, 2137), 1000),
+                //    searcher.LessThan(searcher.GetCommandEntries(), Content1, 99L));
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
                 var match = searcher.Boost(searcher.UnaryQuery(searcher.AllEntries(), searcher.FieldMetadataBuilder("Content1", Content1), 2137, UnaryMatchOperation.GreaterThanOrEqual), 1000);
+=======
+=======
+>>>>>>> Stashed changes
+                var match = searcher.Boost(searcher.UnaryQuery(searcher.AllEntries(), Content1, 2137, UnaryMatchOperation.GreaterThanOrEqual), 1000);
+>>>>>>> Stashed changes
                 var sorted = SortingMultiMatch.Create(searcher, match, default(BoostingComparer),
                     new AscendingMatchComparer(searcher, new OrderMetadata(searcher.FieldMetadataBuilder("Id", IndexId), true, MatchCompareFieldType.Sequence)));
                 var read = sorted.Fill(_buffer);

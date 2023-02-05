@@ -1,21 +1,26 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Threading;
+using Nest;
 using Raven.Client;
 using Raven.Client.Documents.Operations;
 using Raven.Client.Documents.Operations.Backups;
 using Raven.Client.Documents.Smuggler;
-using Raven.Client.Extensions;
+using Raven.Client.Json.Serialization;
+using Raven.Client.ServerWide.Commands;
 using Raven.Client.ServerWide.Operations.Configuration;
 using Raven.Client.Util;
 using Raven.Server.Config.Settings;
+using Raven.Server.Documents.PeriodicBackup.BackupHistory;
 using Raven.Server.Documents.PeriodicBackup.Restore;
 using Raven.Server.Documents.PeriodicBackup.Retention;
 using Raven.Server.Json;
+using Raven.Server.Monitoring.Snmp.Objects.Database;
 using Raven.Server.NotificationCenter.Notifications;
 using Raven.Server.NotificationCenter.Notifications.Details;
 using Raven.Server.Rachis;
@@ -28,6 +33,7 @@ using Raven.Server.Smuggler.Documents;
 using Raven.Server.Smuggler.Documents.Data;
 using Raven.Server.Utils;
 using Sparrow.Json;
+using Sparrow.Json.Parsing;
 using Sparrow.Logging;
 using Sparrow.Server.Json.Sync;
 using DatabaseSmuggler = Raven.Server.Smuggler.Documents.DatabaseSmuggler;
@@ -858,13 +864,14 @@ namespace Raven.Server.Documents.PeriodicBackup
 
         public static void SaveBackupStatus(PeriodicBackupStatus status, DocumentDatabase documentDatabase, Logger logger, BackupResult backupResult, PeriodicBackupRunner.TestingStuff forTestingPurposes = null)
         {
+            var command = new UpdatePeriodicBackupStatusCommand(documentDatabase.Name, RaftIdGenerator.NewId())
+            {
+                PeriodicBackupStatus = status,
+                BackupHistoryEntries = documentDatabase.ConfigurationStorage.BackupHistoryStorage.RetractTemporaryStoredBackupHistoryEntries().ToList()
+            };
+            
             try
             {
-                var command = new UpdatePeriodicBackupStatusCommand(documentDatabase.Name, RaftIdGenerator.NewId())
-                {
-                    PeriodicBackupStatus = status
-                };
-
                 var result = AsyncHelpers.RunSync(() => documentDatabase.ServerStore.SendToLeaderAsync(command));
                 AsyncHelpers.RunSync(() => documentDatabase.ServerStore.WaitForCommitIndexChange(RachisConsensus.CommitIndexModification.GreaterOrEqual, result.Index));
 
@@ -879,7 +886,12 @@ namespace Raven.Server.Documents.PeriodicBackup
                     logger.Operations(message, e);
 
                 backupResult?.AddError($"{message}{Environment.NewLine}{e}");
+
+                documentDatabase.ConfigurationStorage.BackupHistoryStorage.TemporaryStoreBackupHistoryEntries(command);
             }
+
+            documentDatabase.ConfigurationStorage.BackupHistoryStorage.StoreBackupDetails(backupResult, status);
+
         }
 
         public static string GetDateTimeFormat(string fileName)

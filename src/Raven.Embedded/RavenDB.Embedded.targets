@@ -11,7 +11,7 @@
   </PropertyGroup>
   <Target Name="CopyRavenDBServer" DependsOnTargets="CopyFilesToOutputDirectory">
     <Copy SourceFiles="@(RavenDBServer)" DestinationFiles="@(RavenDBServer->'$(OutDir)\%(TargetPath)\%(RecursiveDir)\%(Filename)%(Extension)')">
-      <Output TaskParameter="DestinationFiles" ItemName="FileWrites" />
+      <Output TaskParameter="DestinationFiles" ParameterName="FileWrites" />
     </Copy>
   </Target>
 </Project>

@@ -1,63 +1,43 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Threading.Tasks;
-using Raven.Client.Documents.Operations;
+using System.Diagnostics;
+using System.Text;
 using Raven.Client.Documents.Operations.Backups;
+using Raven.Client.Json.Serialization;
 using Raven.Client.ServerWide.Commands;
+using Raven.Server.ServerWide;
+using Raven.Server.ServerWide.Commands.PeriodicBackup;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.Utils;
-using Sparrow.Binary;
 using Sparrow.Json;
+using Sparrow.Json.Parsing;
 using Sparrow.Logging;
-using Sparrow.Server;
 using Voron;
 using Voron.Data.Tables;
+using Voron.Impl;
+using static Raven.Server.Documents.TransactionCommands.JsonPatchCommand;
 
 namespace Raven.Server.Documents.PeriodicBackup.BackupHistory;
 
 public unsafe class BackupHistoryStorage
 {
+    private readonly string _databaseName;
     private StorageEnvironment _environment;
     private TransactionContextPool _contextPool;
-    private readonly int _backupHistoryEntriesCountLimit;
 
     protected readonly Logger Logger;
+    
+    private readonly TableSchema _backupHistorySchema = new();
 
-    private static readonly Slice ByCreatedAt;
-    private static readonly Slice ByCreatedAtFixedSizeIndex;
-
-    private readonly TableSchema _entriesSchema = new();
-
-    static BackupHistoryStorage()
+    public BackupHistoryStorage(string databaseName)
     {
-        using (StorageEnvironment.GetStaticContext(out var ctx))
-        {
-            Slice.From(ctx, nameof(ByCreatedAtFixedSizeIndex), ByteStringType.Immutable, out ByCreatedAtFixedSizeIndex);
-            Slice.From(ctx, nameof(ByCreatedAt), ByteStringType.Immutable, out ByCreatedAt);
-        }
-    }
-
-    public BackupHistoryStorage(int backupMaxNumberOfBackupHistoryEntries)
-    {
-        _backupHistoryEntriesCountLimit = backupMaxNumberOfBackupHistoryEntries;
+        _databaseName = databaseName;
         Logger = LoggingSource.Instance.GetLogger<BackupHistoryStorage>("Server");
-
-        _entriesSchema.DefineKey(new TableSchema.SchemaIndexDef
+        
+        _backupHistorySchema.DefineKey(new TableSchema.SchemaIndexDef
         {
-            StartIndex = BackupHistorySchema.BackupHistoryTable.CreatedAtIndex, 
+            StartIndex = BackupHistorySchema.BackupHistoryTable.ItemKey,
             Count = 1
-        }); 
-
-        _entriesSchema.DefineIndex(new TableSchema.SchemaIndexDef
-        {
-            StartIndex = BackupHistorySchema.BackupHistoryTable.CreatedAtIndex, 
-            Name = ByCreatedAt
-        });
-
-        _entriesSchema.DefineFixedSizeIndex(new TableSchema.FixedSizeSchemaIndexDef()
-        {
-            StartIndex = BackupHistorySchema.BackupHistoryTable.CreatedAtIndex,
-            Name = ByCreatedAtFixedSizeIndex
         });
     }
 
@@ -69,109 +49,238 @@ public unsafe class BackupHistoryStorage
         using (_contextPool.AllocateOperationContext(out TransactionOperationContext context))
         using (var tx = _environment.WriteTransaction(context.PersistentContext))
         {
-            _entriesSchema.Create(tx, BackupHistorySchema.BackupHistoryTree, 16);
+            _backupHistorySchema.Create(tx, BackupHistorySchema.BackupHistory, 16);
             tx.Commit();
         }
     }
 
-    public void Store(string backupName, string databaseName, Task<IOperationResult> task, PeriodicBackupStatus periodicBackupStatus)
-    {
-        var backupHistoryEntry = new BackupHistoryEntry
-        {
-            BackupName = backupName,
-            BackupType = periodicBackupStatus?.BackupType,
-            DatabaseName = databaseName,
-            DurationInMs = periodicBackupStatus?.DurationInMs,
-            Error = periodicBackupStatus?.Error?.Exception,
-            IsCompletedSuccessfully = task.IsCompletedSuccessfully,
-            IsFull = periodicBackupStatus?.IsFull,
-            NodeTag = periodicBackupStatus?.NodeTag
-        };
-
-        Store(backupHistoryEntry);
-    }
-
-    public void Store(BackupHistoryEntry backupHistoryEntry)
+    public void TemporaryStoreBackupHistoryEntries(UpdatePeriodicBackupStatusCommand command)
     {
         using (_contextPool.AllocateOperationContext(out TransactionOperationContext context))
+        using (var tx = context.OpenWriteTransaction())
         {
-            if (Logger.IsInfoEnabled)
-                Logger.Info($"Saving information about backup of `{backupHistoryEntry.DatabaseName}` ({backupHistoryEntry.BackupName}) to backup history.");
-
-            using (var json = context.ReadObject(backupHistoryEntry.ToJson(), nameof(BackupHistoryEntry), BlittableJsonDocumentBuilder.UsageMode.ToDisk))
-            using (var tx = context.OpenWriteTransaction())
+            foreach (var entry in command.GetCommandEntries())
             {
-                var table = context.Transaction.InnerTransaction.OpenTable(_entriesSchema, BackupHistorySchema.BackupHistoryTree);
-                var createdAtTicks = Bits.SwapBytes(backupHistoryEntry.CreatedAt.Ticks);
+                var key = BackupHistoryTableValue.GenerateKey(entry);
 
-                using (table.Allocate(out TableValueBuilder tvb))
-                {
-                    tvb.Add((byte*)&createdAtTicks, sizeof(long));
-                    tvb.Add(json.BasePointer, json.Size);
+                if (Logger.IsInfoEnabled)
+                    Logger.Info($"Saving to {nameof(BackupHistoryStorage)} {nameof(BackupHistoryItemType.HistoryEntry)} with `{nameof(BackupHistoryTableValue.Key)}`: `{key}`.");
 
-                    table.Set(tvb);
-                }
+                StoreInternal(key, entry.ToJson(), tx, context);
+            }
 
-                var extra = table.NumberOfEntries - _backupHistoryEntriesCountLimit;
-                
-                if (extra > 0)
-                    table.DeleteBackwardFrom(_entriesSchema.FixedSizeIndexes[ByCreatedAtFixedSizeIndex], DateTime.MaxValue.Ticks, extra);
+            tx.Commit();
+        }
+    }
 
-                tx.Commit();
+    private void StoreInternal(string key, DynamicJsonValue value, RavenTransaction transaction = null, TransactionOperationContext context = null)
+    {
+        if (transaction == null && context == null)
+        {
+            using (_contextPool.AllocateOperationContext(out context))
+            using (transaction = context.OpenWriteTransaction())
+            {
+                Store(transaction, context);
+                transaction.Commit();
+            }
+        }
+        else
+        {
+            Store(transaction, context);
+        }
+
+        void Store(RavenTransaction tx, TransactionOperationContext ctx)
+        {
+            var table = tx.InnerTransaction.OpenTable(_backupHistorySchema, BackupHistorySchema.BackupHistory);
+            
+            var lsKey = ctx.GetLazyString(key);
+            using (var json = ctx.ReadObject(value, nameof(BackupHistorySchema.BackupHistory), BlittableJsonDocumentBuilder.UsageMode.ToDisk))
+            using (table.Allocate(out TableValueBuilder tvb))
+            {
+                tvb.Add(lsKey.Buffer, lsKey.Size);
+                tvb.Add(json.BasePointer, json.Size);
+
+                table.Set(tvb);
             }
         }
     }
 
-    public IDisposable ReadEntriesOrderedByCreationDate(out IEnumerable<BackupHistoryTableValue> entries)
+
+    public void StoreBackupDetails(BackupResult result, PeriodicBackupStatus status)
+    {
+        var key = BackupHistoryTableValue.GenerateKey(_databaseName, status, BackupHistoryItemType.Details);
+
+        if (Logger.IsInfoEnabled)
+            Logger.Info($"Saving to {nameof(BackupHistoryStorage)} {nameof(BackupHistoryItemType.Details)} with `{nameof(BackupHistoryTableValue.Key)}`: `{key}`.");
+
+        StoreInternal(key, result.ToJson());
+    }
+
+    public List<BlittableJsonReaderObject> ReadTemporaryStoredBackupHistoryEntries(TransactionOperationContext context)
+    {
+        var prefix = $"values/{_databaseName}/backup-history/{BackupHistoryItemType.HistoryEntry}/";
+        
+        using (Slice.From(context.Allocator, prefix, out Slice slice))
+        {
+            var items = context.Transaction.InnerTransaction.OpenTable(_backupHistorySchema, BackupHistorySchema.BackupHistory);
+            var list = new List<BlittableJsonReaderObject>();
+            foreach (var result in items.SeekByPrimaryKeyPrefix(slice, Slices.Empty, 0))
+            {
+                var entry = GetCurrentHistoryEntryBlittable(context, result.Value);
+                list.Add(entry);
+            }
+
+            return list;
+        }
+    }
+
+    public IDisposable ReadTemporaryStoredBackupHistoryItems(out List<BlittableJsonReaderObject> entries)
     {
         using (var scope = new DisposableScope())
         {
             scope.EnsureDispose(_contextPool.AllocateOperationContext(out TransactionOperationContext context));
             scope.EnsureDispose(context.OpenReadTransaction());
 
-            entries = ReadEntries(context);
+            entries = ReadTemporaryStoredBackupHistoryEntries(context);
 
             return scope.Delay();
         }
     }
 
-    private IEnumerable<BackupHistoryTableValue> ReadEntries(TransactionOperationContext context)
+    private static BlittableJsonReaderObject GetCurrentHistoryEntryBlittable(TransactionOperationContext context, Table.TableValueHolder result)
     {
-        var table = context.Transaction.InnerTransaction.OpenTable(_entriesSchema, BackupHistorySchema.BackupHistoryTree);
+        var ptr = result.Reader.Read(1, out int size);
+        var doc = new BlittableJsonReaderObject(ptr, size, context);
+        // var key = Encoding.UTF8.GetString(result.Reader.Read(0, out size), size);
 
-        foreach (var tvr in table.SeekForwardFrom(_entriesSchema.Indexes[ByCreatedAt], Slices.BeforeAllKeys,  0))
-        {
-            yield return Read(context, ref tvr.Result.Reader);
-        }
+        return doc; //(key, doc);
     }
 
-    private BackupHistoryTableValue Read(TransactionOperationContext context, ref TableValueReader resultReader)
-    {
-        var createdAt = new DateTime(Bits.SwapBytes(*(long*)resultReader.Read(BackupHistorySchema.BackupHistoryTable.CreatedAtIndex, out int size)));
-        var jsonPointer = resultReader.Read(BackupHistorySchema.BackupHistoryTable.JsonIndex, out size);
 
-        return new BackupHistoryTableValue
+    public IEnumerable<BackupHistoryEntry> RetractTemporaryStoredBackupHistoryEntries()
+    {
+        var prefix = $"values/{_databaseName}/backup-history/{BackupHistoryItemType.HistoryEntry}/";
+
+        using (_contextPool.AllocateOperationContext(out TransactionOperationContext context))
+        using (var tx = context.OpenWriteTransaction())
+        using (Slice.From(context.Allocator, prefix, out Slice loweredPrefix))
         {
-            CreatedAt = createdAt,
-            Json = new BlittableJsonReaderObject(jsonPointer, size, context)
-        };
+            var items = context.Transaction.InnerTransaction.OpenTable(_backupHistorySchema, BackupHistorySchema.BackupHistory);
+
+            foreach (var result in items.SeekByPrimaryKeyPrefix(loweredPrefix, Slices.Empty, 0))
+            {
+                var entry = GetCurrentHistoryEntry(context, result.Value);
+                using (Slice.From(tx.InnerTransaction.Allocator, entry.Key, out Slice slice))
+                {
+                    items.DeleteByKey(slice);
+                }
+
+                yield return entry.Entry;
+            }
+            
+            tx.Commit();
+        }
+    }
+    
+    private static (string Key, BackupHistoryEntry Entry) GetCurrentHistoryEntry(TransactionOperationContext context, Table.TableValueHolder result)
+    {
+        var ptr = result.Reader.Read(1, out int size);
+        var doc = new BlittableJsonReaderObject(ptr, size, context);
+        var key = Encoding.UTF8.GetString(result.Reader.Read(0, out size), size);
+        
+        Transaction.DebugDisposeReaderAfterTransaction(context.Transaction.InnerTransaction, doc);
+        return (key, JsonDeserializationClient.BackupHistoryEntry(doc));
+    }
+
+    
+
+    public IDisposable ReadBackupHistoryItem(string id, out BackupHistoryTableValue entry)
+    {
+        using (var scope = new DisposableScope())
+        {
+            RavenTransaction tx;
+            scope.EnsureDispose(_contextPool.AllocateOperationContext(out TransactionOperationContext context));
+            scope.EnsureDispose(tx = context.OpenReadTransaction());
+    
+            entry = GetBackupHistoryItem(id, context, tx);
+    
+            return scope.Delay();
+        }
+    }
+    
+    private BackupHistoryTableValue GetBackupHistoryItem(string id, TransactionOperationContext context, RavenTransaction tx)
+    {
+        var table = tx.InnerTransaction.OpenTable(_backupHistorySchema, BackupHistorySchema.BackupHistory);
+        using (Slice.From(tx.InnerTransaction.Allocator, id, out Slice slice))
+        {
+            if (table.ReadByKey(slice, out TableValueReader tvr) == false)
+                return null;
+
+            var key = tvr.ReadString(BackupHistorySchema.BackupHistoryTable.ItemKey);
+            var jsonPointer = tvr.Read(BackupHistorySchema.BackupHistoryTable.ItemJsonIndex, out var size);
+            var json = new BlittableJsonReaderObject(jsonPointer, size, context);
+
+            return new BackupHistoryTableValue(key, json);
+        }
     }
 
     public static class BackupHistorySchema
     {
-        public const string BackupHistoryTree = nameof(BackupHistory);
+        public const string BackupHistory = nameof(BackupHistoryTable);
 
         public static class BackupHistoryTable
         {
-            public const int CreatedAtIndex = 0;
-            public const int JsonIndex = 1;
+            public const int ItemKey = 0;
+            public const int ItemJsonIndex = 1;
         }
     }
 }
 
-public class BackupHistoryTableValue
+public class BackupHistoryTableValue : IDynamicJsonValueConvertible
 {
-    public DateTime CreatedAt;
+    public string Key;
+    public BlittableJsonReaderObject Value;
 
-    public BlittableJsonReaderObject Json;
+    public BackupHistoryTableValue()
+    {
+        
+    }
+
+    public BackupHistoryTableValue(string key, BlittableJsonReaderObject value)
+    {
+        Key = key;
+        Value = value;
+    }
+
+    public static string GenerateKey(BackupHistoryEntry entry)
+    {
+        return GenerateKey(entry.DatabaseName, entry.TaskId, entry.NodeTag, entry.CreatedAt, BackupHistoryItemType.HistoryEntry);
+    }
+
+    public static string GenerateKey(string databaseName, PeriodicBackupStatus status, BackupHistoryItemType type)
+    {
+        var createdAt = status.IsFull ? status.LastFullBackup.Value : status.LastIncrementalBackup.Value;
+
+        return GenerateKey(databaseName, status.TaskId, status.NodeTag, createdAt, type);
+    }
+
+    public static string GenerateKey(string databaseName, long taskId, string nodeTag, DateTime createdAt, BackupHistoryItemType type)
+    {
+        return $"values/{databaseName}/backup-history/{type}/{taskId}/{nodeTag}/{createdAt.Ticks}";
+    }
+
+    public DynamicJsonValue ToJson()
+    {
+        return new DynamicJsonValue
+        {
+            [nameof(Key)] = Key,
+            [nameof(Value)] = Value
+        };
+    }
+}
+
+public enum BackupHistoryItemType
+{
+    Details,
+    HistoryEntry
 }

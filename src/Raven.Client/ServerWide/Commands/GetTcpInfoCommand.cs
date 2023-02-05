@@ -1,10 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Net.Http;
+using System.Text;
 using Raven.Client.Documents.Operations.Backups;
 using Raven.Client.Http;
 using Raven.Client.Json.Serialization;
-using Raven.Client.Util;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 
@@ -33,53 +33,65 @@ namespace Raven.Client.ServerWide.Commands
     public class NodeBackupHistoryResult
     {
         public List<BackupHistoryEntry> Result;
-
     }
 
 
-
-
-    public class BackupHistoryEntry
+    public class BackupHistoryEntry : IDynamicJsonValueConvertible
     {
-
-        public string BackupName { get; set; }
-        public BackupType? BackupType { get; set; }
-        public DateTime CreatedAt { get; private set; }
+        public BackupType BackupType { get; set; }
+        public DateTime CreatedAt { get; set; }
         public string DatabaseName { get; set; }
         public long? DurationInMs { get; set; }
         public string Error { get; set; } 
-        public bool IsCompletedSuccessfully { get; set; }
-        public bool? IsFull { get; set; }
+        public bool IsFull { get; set; }
         public string NodeTag { get; set; }
+        public DateTime? LastFullBackup { get; set; }
+        public long TaskId { get; set; }
+
 
         public BackupHistoryEntry()
         {
-            CreatedAt = SystemTime.UtcNow;
         }
+
 
         public DynamicJsonValue ToJson()
         {
             return new DynamicJsonValue
             {
-                [nameof(BackupName)] = BackupName,
                 [nameof(BackupType)] = BackupType,
                 [nameof(CreatedAt)] = CreatedAt,
                 [nameof(DatabaseName)] = DatabaseName,
                 [nameof(DurationInMs)] = DurationInMs,
                 [nameof(Error)] = Error,
-                [nameof(IsCompletedSuccessfully)] = IsCompletedSuccessfully,
                 [nameof(IsFull)] = IsFull,
                 [nameof(NodeTag)] = NodeTag,
+                [nameof(LastFullBackup)] = LastFullBackup,
+                [nameof(TaskId)] = TaskId,
             };
         }
+        
+        
+        public string GenerateItemKey() => $"values/{DatabaseName}/backup-history/{TaskId}";
 
-        public static string Prefix => "backup-history/";
-
-        public static string GenerateItemName(string databaseName, long? id)
+        public static string GenerateItemPrefix(string databaseName)
         {
-            return $"values/{databaseName}/{Prefix}{id}";
+            return $"values/{databaseName}/backup-history/";
         }
     }
+
+
+    public class BackupHistory
+    {
+        public IEnumerable<BackupHistoryItem> Items;
+
+        public class BackupHistoryItem
+        {
+            public BlittableJsonReaderObject FullBackup;
+            public BlittableJsonReaderArray IncrementalBackups;
+        }
+    }
+
+
 
 
 

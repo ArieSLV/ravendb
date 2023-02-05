@@ -59,9 +59,9 @@ namespace Raven.Server.Config.Categories
         public TimeSetting CloudStorageOperationTimeout { get; set; }
 
         [Description("Maximum number of last backup history entries to save.")]
-        [DefaultValue(50)]
-        [ConfigurationEntry("Backup.CloudStorageOperationTimeoutInMin", ConfigurationEntryScope.ServerWideOnly)]
-        public int MaxNumberOfBackupHistoryEntries { get; set; }
+        [DefaultValue(30)]
+        [ConfigurationEntry("Backup.MaxNumberOfFullBackupsInBackupHistory", ConfigurationEntryScope.ServerWideOrPerDatabase)]
+        public int MaxNumberOfFullBackupsInBackupHistory { get; set; }
         
         [Description("EXPERT: Indicates which library to use when doing Azure backups.")]
         [DefaultValue(false)]
