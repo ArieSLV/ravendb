@@ -1,14 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 using System.Threading.Tasks;
-using Raven.Client;
 using Raven.Client.Documents.Operations.Backups;
 using Raven.Client.Documents.Operations.OngoingTasks;
 using Raven.Client.ServerWide.Commands;
 using Raven.Server.Documents;
 using Raven.Server.Documents.PeriodicBackup;
+using Raven.Server.Documents.PeriodicBackup.BackupHistory;
 using Raven.Server.Routing;
 using Raven.Server.ServerWide.Context;
 using Sparrow.Json;
@@ -94,6 +93,37 @@ namespace Raven.Server.Web.System
                 }
 
                 WriteEndOfTimers(writer, count);
+            }
+        }
+
+        [RavenAction("/backup-history-details", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
+        public async Task GetBackupHistoryDetails()
+        {
+            var name = GetQueryStringValueAndAssertIfSingleAndNotEmpty("database");
+            var taskId = GetLongQueryString("taskId");
+            var createdAtTicksAsId = GetLongQueryString("id");
+            var nodeTag = GetStringValuesQueryString("nodeTag");
+
+            var currentNodeTag = ServerStore.NodeTag;
+            if (nodeTag != currentNodeTag)
+                throw new ArgumentException("wrong node"); //todo: rewrite message or entire functionality
+            var documentDatabase = await ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(name);
+
+            using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
+            using (context.OpenReadTransaction())
+            await using (var writer = new AsyncBlittableJsonTextWriter(context, ResponseBodyStream()))
+            {
+                var key = $"values/{name}/backup-history/{BackupHistoryItemType.Details}/{taskId}/{nodeTag}/{createdAtTicksAsId}";
+
+                writer.WriteStartObject();
+                writer.WritePropertyName(nameof(BackupHistoryItemType.Details));
+
+                using (documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadBackupHistoryDetails(key, out var details))
+                {
+                    writer.WriteObject(details);
+                }
+
+                writer.WriteEndObject();
             }
         }
 

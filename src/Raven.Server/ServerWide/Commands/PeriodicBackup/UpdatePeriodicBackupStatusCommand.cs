@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.Linq;
 using Raven.Client.Documents.Operations.Backups;
 using Raven.Client.ServerWide.Commands;
@@ -41,10 +42,14 @@ namespace Raven.Server.ServerWide.Commands.PeriodicBackup
 
         public List<BackupHistoryEntry> GetCommandEntries()
         {
+            var createdAt = PeriodicBackupStatus.IsFull
+                ? PeriodicBackupStatus.LastFullBackup ?? PeriodicBackupStatus.Error.At
+                : PeriodicBackupStatus.LastIncrementalBackup ?? PeriodicBackupStatus.Error.At;
+
             var entryFromBackupStatus = new BackupHistoryEntry
             {
                 BackupType = PeriodicBackupStatus.BackupType,
-                CreatedAt = PeriodicBackupStatus.IsFull ? PeriodicBackupStatus.LastFullBackup.Value : PeriodicBackupStatus.LastIncrementalBackup.Value,
+                CreatedAt = createdAt,
                 DatabaseName = DatabaseName,
                 DurationInMs = PeriodicBackupStatus.DurationInMs,
                 Error = PeriodicBackupStatus.Error?.Exception,

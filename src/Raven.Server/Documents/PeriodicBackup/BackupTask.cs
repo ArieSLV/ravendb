@@ -11,6 +11,7 @@ using Raven.Client;
 using Raven.Client.Documents.Operations;
 using Raven.Client.Documents.Operations.Backups;
 using Raven.Client.Documents.Smuggler;
+using Raven.Client.Extensions;
 using Raven.Client.Json.Serialization;
 using Raven.Client.ServerWide.Commands;
 using Raven.Client.ServerWide.Operations.Configuration;
@@ -891,7 +892,6 @@ namespace Raven.Server.Documents.PeriodicBackup
             }
 
             documentDatabase.ConfigurationStorage.BackupHistoryStorage.StoreBackupDetails(backupResult, status);
-
         }
 
         public static string GetDateTimeFormat(string fileName)

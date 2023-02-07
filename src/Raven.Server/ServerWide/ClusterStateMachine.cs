@@ -456,8 +456,8 @@ namespace Raven.Server.ServerWide
                         break;
 
                     case nameof(UpdatePeriodicBackupStatusCommand):
-                        var command = (UpdatePeriodicBackupStatusCommand)SetValueForTypedDatabaseCommand(context, type, cmd, index, leader, out result);
-                        UpdateBackupHistory(context, index, command, serverStore);
+                        var command = (UpdatePeriodicBackupStatusCommand)SetValueForTypedDatabaseCommand(context, type, cmd, index, leader, out result, notifyDatabase: false);
+                        UpdateBackupHistory(context, type, index, command, serverStore);
 
                         break;
 
@@ -689,11 +689,15 @@ namespace Raven.Server.ServerWide
             }
         }
 
-        private unsafe void UpdateBackupHistory(ClusterOperationContext context, long index, UpdatePeriodicBackupStatusCommand command, ServerStore serverStore)
+        private unsafe void UpdateBackupHistory(ClusterOperationContext context, string type, long index, UpdatePeriodicBackupStatusCommand command,
+            ServerStore serverStore)
         {
+            List<string> backupDetailsIdsToDelete = null;
             var items = context.Transaction.InnerTransaction.OpenTable(ItemsSchema, Items);
 
             command.GetCommandEntries().ForEach(StoreEntry);
+
+            NotifyDatabaseAboutChanged(context, command.DatabaseName, index, type, DatabasesLandlord.ClusterDatabaseChangeType.ValueChanged, backupDetailsIdsToDelete);
 
             void StoreEntry(BackupHistoryEntry backupHistoryEntryToAdd)
             {
@@ -745,13 +749,13 @@ namespace Raven.Server.ServerWide
                         var ptr = tvr.Read(2, out int size);
                         blittable = new BlittableJsonReaderObject(ptr, size, context);
 
-                        blittable.TryGet(nameof(BackupHistory), out BlittableJsonReaderArray backupHistoryEntries);
+                        blittable.TryGet(nameof(BackupHistory), out BlittableJsonReaderArray backupHistoryItems);
 
                         if (backupHistoryEntryToAdd.IsFull)
                         {
                             // It's a full backup. Let's add a new backup history entry if it's unique.
                             var isUnique = true;
-                            foreach (BlittableJsonReaderObject entry in backupHistoryEntries)
+                            foreach (BlittableJsonReaderObject entry in backupHistoryItems)
                             {
                                 entry.TryGet(nameof(BackupHistory.BackupHistoryItem.FullBackup), out BlittableJsonReaderObject fullBackup);
                                 fullBackup.TryGet(nameof(BackupHistoryEntry.CreatedAt), out DateTime entryCreatedAt);
@@ -765,8 +769,8 @@ namespace Raven.Server.ServerWide
 
                             if (isUnique)
                             {
-                                backupHistoryEntries.Modifications ??= new DynamicJsonArray();
-                                backupHistoryEntries.Modifications.Add(new DynamicJsonValue
+                                backupHistoryItems.Modifications ??= new DynamicJsonArray();
+                                backupHistoryItems.Modifications.Add(new DynamicJsonValue
                                 {
                                     [nameof(BackupHistory.BackupHistoryItem.FullBackup)] = backupHistoryEntryToAdd.ToJson(),
                                     [nameof(BackupHistory.BackupHistoryItem.IncrementalBackups)] = new DynamicJsonArray()
@@ -776,10 +780,10 @@ namespace Raven.Server.ServerWide
                         else
                         {
                             // It's an incremental backup.
-                            for (int i = backupHistoryEntries.Length - 1; i >= 0; i--)
+                            for (int i = backupHistoryItems.Length - 1; i >= 0; i--)
                             {
                                 // We'll find (starting from the end) which full backup we are incrementing.
-                                BlittableJsonReaderObject entry = (BlittableJsonReaderObject)backupHistoryEntries[i];
+                                BlittableJsonReaderObject entry = (BlittableJsonReaderObject)backupHistoryItems[i];
 
                                 if (entry.TryGet(nameof(BackupHistory.BackupHistoryItem.FullBackup), out BlittableJsonReaderObject fullBackup) == false ||
                                     fullBackup.TryGet(nameof(BackupHistoryEntry.LastFullBackup), out DateTime lastFullBackup) == false ||
@@ -803,14 +807,18 @@ namespace Raven.Server.ServerWide
                             }
                         }
                         
-                        var extra = backupHistoryEntries.Length + backupHistoryEntries.Modifications?.Items.Count -
+                        var extra = backupHistoryItems.Length + backupHistoryItems.Modifications?.Items.Count -
                                       serverStore.Configuration.Backup.MaxNumberOfFullBackupsInBackupHistory;
                         if (extra > 0)
                         {
-                            backupHistoryEntries.Modifications.Removals ??= new List<int>();
+                            backupHistoryItems.Modifications.Removals ??= new List<int>();
+                            backupDetailsIdsToDelete ??= new List<string>();
                             for (int i = 0; i < extra; i++)
                             {
-                                backupHistoryEntries.Modifications.Removals.Add(i);
+                                backupHistoryItems.Modifications.Removals.Add(i);
+                                
+                                var itemToDelete = (BlittableJsonReaderObject)backupHistoryItems[i];
+                                backupDetailsIdsToDelete.AddRange(BackupHistoryTableValue.GenerateEntriesKeys(itemToDelete, command.DatabaseName, BackupHistoryItemType.Details));
                             }
                         }
 
@@ -1484,7 +1492,7 @@ namespace Raven.Server.ServerWide
             return true;
         }
 
-        private UpdateValueForDatabaseCommand SetValueForTypedDatabaseCommand(ClusterOperationContext context, string type, BlittableJsonReaderObject cmd, long index, Leader leader, out object result)
+        private UpdateValueForDatabaseCommand SetValueForTypedDatabaseCommand(ClusterOperationContext context, string type, BlittableJsonReaderObject cmd, long index, Leader leader, out object result, bool notifyDatabase = true)
         {
             result = null;
             UpdateValueForDatabaseCommand updateCommand = null;
@@ -1514,7 +1522,9 @@ namespace Raven.Server.ServerWide
             finally
             {
                 LogCommand(type, index, exception, updateCommand);
-                NotifyDatabaseAboutChanged(context, updateCommand?.DatabaseName, index, type, DatabasesLandlord.ClusterDatabaseChangeType.ValueChanged, updateCommand?.GetState());
+                
+                if (notifyDatabase)
+                    NotifyDatabaseAboutChanged(context, updateCommand?.DatabaseName, index, type, DatabasesLandlord.ClusterDatabaseChangeType.ValueChanged, updateCommand?.GetState());
             }
         }
 
@@ -3731,14 +3741,7 @@ namespace Raven.Server.ServerWide
                         TcpConnectionHeaderMessage.OperationTypes.Cluster,
                         (string destUrl, TcpConnectionInfo tcpInfo, Stream conn, JsonOperationContext ctx, List<string> _) =>
                             NegotiateProtocolVersionAsyncForCluster(destUrl, tcpInfo, conn, ctx, tag),
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
-                        context, _parent.TcpConnectionTimeout, null, token); 
-=======
-=======
->>>>>>> Stashed changes
                         context, _parent.TcpConnectionTimeout, null, token);
->>>>>>> Stashed changes
 
                     tcpClient = result.TcpClient;
                     stream = result.Stream;

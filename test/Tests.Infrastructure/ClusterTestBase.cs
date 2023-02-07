@@ -1218,19 +1218,30 @@ namespace Tests.Infrastructure
         public IDisposable CollectBackupHistoryDebugData(RavenServer server, DocumentStore store, DocumentDatabase database,
                     out Dictionary<(DateTime, bool), BlittableJsonReaderObject> fromResponseDictionary,
                     out Dictionary<(DateTime, bool), BlittableJsonReaderObject> entriesFromClusterDictionary,
-                    out Dictionary<(DateTime, bool), BlittableJsonReaderObject> entriesFromTemporaryDictionary)
+                    out Dictionary<(DateTime, bool), BlittableJsonReaderObject> entriesFromTemporaryDictionary,
+                    out Dictionary<string, BlittableJsonReaderObject> detailsFromStorageDictionary)
         {
             using (var scope = new DisposableScope())
             {
                 JsonOperationContext jsonOperationContext;
+                List<BlittableJsonReaderObject> entriesFromTemporaryStorage = null;
+                List<(string, BlittableJsonReaderObject)> details = null;
+
                 scope.EnsureDispose(jsonOperationContext = JsonOperationContext.ShortTermSingleUse());
                 scope.EnsureDispose(server.ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext transactionOperationContext));
                 scope.EnsureDispose(transactionOperationContext.OpenReadTransaction());
-                scope.EnsureDispose(database.ConfigurationStorage.BackupHistoryStorage.ReadTemporaryStoredBackupHistoryItems(out var entriesFromTemporaryStorage));
+
+                if (database != null)
+                {
+                    scope.EnsureDispose(database.ConfigurationStorage.BackupHistoryStorage.ReadTemporaryStoredBackupHistoryItems(out entriesFromTemporaryStorage));
+                    scope.EnsureDispose(database.ConfigurationStorage.BackupHistoryStorage.ReadBackupHistoryDetails(out details));
+                }
 
                 fromResponseDictionary = GetBackupHistoryFromEndpoint(jsonOperationContext, store, database.Name);
                 entriesFromClusterDictionary = GetBackupHistoryFromClusterStorage(transactionOperationContext, server, database.Name);
+                
                 entriesFromTemporaryDictionary = GetBackupHistoryFromTemporaryStorage(entriesFromTemporaryStorage);
+                detailsFromStorageDictionary = details?.ToDictionary(x => x.Item1, x => x.Item2);
 
                 return scope.Delay();
             }
@@ -1287,6 +1298,8 @@ namespace Tests.Infrastructure
             }
             return dict;
         }
+
+
 
         private Dictionary<(DateTime, bool), BlittableJsonReaderObject> GetBackupHistory(IEnumerable<object> blittableJsonReaderArray)
         {

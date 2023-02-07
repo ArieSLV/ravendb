@@ -56,6 +56,7 @@ using Voron.Data.Tables;
 using Voron.Impl.Backup;
 using Xunit;
 using Xunit.Abstractions;
+using Xunit.Sdk;
 using BackupUtils = Raven.Client.Documents.Smuggler.BackupUtils;
 using Constants = Raven.Client.Constants;
 
@@ -3414,374 +3415,297 @@ namespace SlowTests.Server.Documents.PeriodicBackup
         }
 
         [Fact, Trait("Category", "Smuggler")]
-        public async Task BackupHistory_ShouldStoreAllBackupTypes_Faulted()
+        public async Task BackupHistory_AssertEndpointsResponse()
         {
-            string error = new Exception(nameof(DocumentDatabase.PeriodicBackupRunner._forTestingPurposes.SimulateFailedBackup)).ToString();
-            IEnumerable<BackupHistoryTableValue> entries = null;
-            IDisposable scope = null;
-
+            const int clusterSize = 3;
             var backupPath = NewDataPath(suffix: "BackupFolder");
             var databaseName = GetDatabaseName();
-            var server = GetNewServer(new ServerCreationOptions { RunInMemory = false });
 
-            using (var store = new DocumentStore { Urls = new[] { server.WebUrl }, Database = databaseName, })
+            var (_, leaderServer) = await CreateRaftCluster(clusterSize, shouldRunInMemory: false);
+
+            await CreateDatabaseInCluster(databaseName, clusterSize, leaderServer.WebUrl);
+
+            using (var store = new DocumentStore
+                   {
+                       Urls = new[] { leaderServer.WebUrl }, Conventions = new DocumentConventions { DisableTopologyUpdates = true }, Database = databaseName
+                   })
             {
                 store.Initialize();
-                store.Maintenance.Server.Send(new CreateDatabaseOperation(new DatabaseRecord(databaseName)));
-                var documentDatabase = await server.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(databaseName).ConfigureAwait(false);
-                
+                var documentDatabase = await leaderServer.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(databaseName).ConfigureAwait(false);
+
                 using (var session = store.OpenAsyncSession())
                 {
-                    await session.StoreAsync(new User { Name = "RavenDB-19358" });
+                    session.Advanced.WaitForReplicationAfterSaveChanges(replicas: clusterSize - 1);
+
+                    await session.StoreAsync(new User { Name = "RavenDB-19358" }, "user/1");
                     await session.SaveChangesAsync();
                 }
-                // Backup full periodical
-                documentDatabase.PeriodicBackupRunner.ForTestingPurposesOnly().SimulateFailedBackup = true;
 
-                var configBackup = Backup.CreateBackupConfiguration(backupPath, backupType: BackupType.Backup);
-                var taskId = await Backup.UpdateConfigAndRunBackupAsync(server, configBackup, store, isFullBackup: true, OperationStatus.Faulted);
+                var config = Backup.CreateBackupConfiguration(backupPath, fullBackupFrequency: "* * 3 * *", mentorNode: leaderServer.ServerStore.NodeTag, name: "RavenDB-19358");
+                var result = await store.Maintenance.SendAsync(new UpdatePeriodicBackupOperation(config));
+                var taskId = result.TaskId;
 
-                try
+                var backupStatusesList = new List<PeriodicBackupStatus>
                 {
-                    WaitForValue(() =>
+                    await Backup.RunBackupAndReturnStatusAsync(leaderServer, taskId, store, isFullBackup: true),
+                    await Backup.RunBackupAndReturnStatusAsync(leaderServer, taskId, store, isFullBackup: false)
+                };
+
+                using (CollectBackupHistoryDebugData(leaderServer, store, documentDatabase,
+                           out var fromResponseDictionary, out _, out _, out var detailsFromStorageDictionary))
+                {
+                    Assert.Equal(2, fromResponseDictionary.Count);
+                    Assert.Equal(2, detailsFromStorageDictionary.Count);
+
+                    using var context = JsonOperationContext.ShortTermSingleUse();
+                    for (int i = 0; i < 2; i++)
                     {
-                        // scope = documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadBackupDetailsOrderedByCreationDate(out entries);
-                        return entries.Count();
-                    }, 1);
-                
-                    var entry = entries.ElementAt(0).Value;
-                    entry.TryGet(nameof(BackupHistoryEntry.BackupType), out BackupType type);
-                    entry.TryGet(nameof(BackupHistoryEntry.IsFull), out bool isFull);
-                    entry.TryGet(nameof(BackupHistoryEntry.Error), out string backupError);
-                    Assert.Equal(BackupType.Backup, type);
-                    Assert.True(isFull);
-                    Assert.True(backupError.Contains(error));
+                        AssertEntry(fromResponseDictionary.Values.ToList()[i], backupStatusesList[i], context);
+                    }
                 }
-                finally
-                {
-                    scope?.Dispose();
-                }
-                
-                // Backup incremental periodical
-                documentDatabase.PeriodicBackupRunner._forTestingPurposes = null;
-                await Backup.RunBackupAsync(server, taskId, store, isFullBackup: true); // We still need to do one successful full backup to have an opportunity to do an incremental backup.
-                documentDatabase.PeriodicBackupRunner.ForTestingPurposesOnly().SimulateFailedBackup = true;
 
-                await Backup.RunBackupAsync(server, taskId, store, isFullBackup: false, OperationStatus.Faulted);
-                try
+                void AssertEntry(BlittableJsonReaderObject entryFromResponse, PeriodicBackupStatus status, JsonOperationContext context)
                 {
-                    WaitForValue(() =>
+                    entryFromResponse.TryGet(nameof(BackupHistoryEntry.BackupType), out BackupType type);
+                    entryFromResponse.TryGet(nameof(BackupHistoryEntry.CreatedAt), out DateTime createdAt);
+                    entryFromResponse.TryGet(nameof(BackupHistoryEntry.DatabaseName), out string dbName);
+                    entryFromResponse.TryGet(nameof(BackupHistoryEntry.DurationInMs), out long? durationInMs);
+                    entryFromResponse.TryGet(nameof(BackupHistoryEntry.Error), out string error);
+                    entryFromResponse.TryGet(nameof(BackupHistoryEntry.IsFull), out bool isFull);
+                    entryFromResponse.TryGet(nameof(BackupHistoryEntry.NodeTag), out string nodeTag);
+                    entryFromResponse.TryGet(nameof(BackupHistoryEntry.LastFullBackup), out DateTime? lastFullBackup);
+                    entryFromResponse.TryGet(nameof(BackupHistoryEntry.TaskId), out long tId);
+
+                    var expectedCreatedAt = isFull ? status.LastFullBackup.Value : status.LastIncrementalBackup.Value;
+
+                    Assert.Equal(status.BackupType, type);
+                    Assert.Equal(expectedCreatedAt, createdAt);
+                    Assert.Equal(databaseName, dbName);
+                    Assert.Equal(status.DurationInMs, durationInMs);
+                    Assert.Equal(status.Error?.Exception, error);
+                    Assert.Equal(status.IsFull, isFull);
+                    Assert.Equal(status.NodeTag, nodeTag);
+                    Assert.Equal(status.LastFullBackup, lastFullBackup);
+                    Assert.Equal(status.TaskId, tId);
+
+                    var details = GetDetailsFromEndpoint(context, dbName, tId, nodeTag, createdAt.Ticks);
+
+                    details.TryGet(nameof(BackupResult.Documents), out BlittableJsonReaderObject documents);
+                    documents.TryGet(nameof(BackupResult.Documents.Processed), out bool docsProcessed);
+                    documents.TryGet(nameof(BackupResult.Documents.ReadCount), out long docsReadCount);
+
+                    details.TryGet(nameof(BackupResult.LocalBackup), out BlittableJsonReaderObject localBackup);
+                    localBackup.TryGet(nameof(BackupResult.LocalBackup.BackupDirectory), out string backupDirectory);
+                    var expectedBackupDirectory = $"{createdAt.ToLocalTime():yyyy-MM-dd-HH-mm-ss-fffffff}.ravendb-{dbName}-{nodeTag}-{type.ToString().ToLower()}";
+
+                    switch (isFull)
                     {
-                        // scope = documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadBackupDetailsOrderedByCreationDate(out entries);
-                        return entries.Count();
+                        case true:
+                            Assert.True(docsProcessed);
+                            Assert.Equal(1, docsReadCount);
+                            Assert.Equal(expectedBackupDirectory, backupDirectory);
 
-                    }, 3);
-
-                    var entry = entries.ElementAt(2).Value;
-                    entry.TryGet(nameof(BackupHistoryEntry.BackupType), out BackupType type);
-                    entry.TryGet(nameof(BackupHistoryEntry.IsFull), out bool isFull);
-                    entry.TryGet(nameof(BackupHistoryEntry.Error), out string backupError);
-                    Assert.Equal(BackupType.Backup, type);
-                    Assert.False(isFull);
-                    Assert.True(backupError.Contains(error));
+                            break;
+                        case false:
+                            Assert.True(docsProcessed);
+                            Assert.Equal(0, docsReadCount);
+                            Assert.Null(backupDirectory);
+                            break;
+                    }
                 }
-                finally
+
+
+                BlittableJsonReaderObject GetDetailsFromEndpoint(JsonOperationContext context, string dbName,
+                    long tId, string nodeTag, long id)
                 {
-                    scope?.Dispose();
-                }
-                
-                // Snapshot periodical
-                var configSnapshot = Backup.CreateBackupConfiguration(backupPath, backupType: BackupType.Snapshot);
-                await Backup.UpdateConfigAndRunBackupAsync(server, configSnapshot, store, isFullBackup: true, OperationStatus.Faulted);
-                try
-                {
-                    WaitForValue(() =>
-                    {
-                        // scope = documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadBackupDetailsOrderedByCreationDate(out entries);
-                        return entries.Count();
-                    }, 4);
+                    var client = store.GetRequestExecutor().HttpClient;
+                    var response = AsyncHelpers.RunSync(() =>
+                        client.GetAsync($"{store.Urls.First()}/backup-history-details?taskId={tId}&database={databaseName}&nodeTag={nodeTag}&id={id}"));
+                    string result = response.Content.ReadAsStringAsync().Result;
 
-                    var entry = entries.ElementAt(3).Value;
-                    entry.TryGet(nameof(BackupHistoryEntry.BackupType), out BackupType type);
-                    entry.TryGet(nameof(BackupHistoryEntry.Error), out string backupError);
-                    Assert.Equal(BackupType.Snapshot, type);
-                    Assert.True(backupError.Contains(error));
-                }
-                finally
-                {
-                    scope?.Dispose();
-                }
+                    var detailsFromResponse = context.Sync.ReadForMemory(result, "Result");
+                    detailsFromResponse.TryGet(nameof(BackupHistoryItemType.Details), out BlittableJsonReaderObject details);
 
-
-                // // One time backup
-                // var configOneTimeBackup = new BackupConfiguration { BackupType = BackupType.Backup, LocalSettings = null };
-                // var exception = await Assert.ThrowsAnyAsync<Exception>(async () => await store.Maintenance.SendAsync(new BackupOperation(configOneTimeBackup)));
-                //
-                // try
-                // {
-                //     WaitForValue(() =>
-                //     {
-                //         scope = documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out entries);
-                //         return entries.Count();
-                //     }, 5);
-                //
-                //     var entryOneTimeBackup = entries.ElementAt(4).Json;
-                //     entryOneTimeBackup.TryGet(nameof(HistoryEntry.BackupType), out BackupType oneTimeBackup);
-                //     Assert.Equal(BackupType.Backup, oneTimeBackup);
-                // }
-                // finally
-                // {
-                //     scope.Dispose();
-                // }
-                //
-                //
-                // // One time snapshot
-                // var configOneTime = new BackupConfiguration { BackupType = BackupType.Snapshot, LocalSettings = new LocalSettings { FolderPath = backupPath } };
-                // var operation = await store.Maintenance.SendAsync(new BackupOperation(configOneTime));
-                // await operation.WaitForCompletionAsync(TimeSpan.FromSeconds(15));
-                //
-                // WaitForValue(() =>
-                // {
-                //     using (documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadEntriesOrderedByCreationDate(out var entries))
-                //     {
-                //         if (entries.Count() != 5)
-                //             return false;
-                //
-                //         var entryOneTimeSnapshot = entries.ElementAt(4).Json;
-                //         entryOneTimeSnapshot.TryGet(nameof(HistoryEntry.BackupType), out BackupType onetimeSnapshot);
-                //         Assert.Equal(BackupType.Snapshot, onetimeSnapshot);
-                //
-                //         return true;
-                //     }
-                // }, true);
+                    return details;
+                }
             }
         }
 
         [Fact, Trait("Category", "Smuggler")]
-        public async Task BackupHistory_ShouldStoreAllBackupTypes_Successfully()
+        public async Task BackupHistory_ShouldStoreFaultedBackups()
         {
-            IEnumerable<BackupHistoryTableValue> entries = null;
-            IDisposable scope = null;
+            const int clusterSize = 3;
             var backupPath = NewDataPath(suffix: "BackupFolder");
             var databaseName = GetDatabaseName();
-            var server = GetNewServer(new ServerCreationOptions { RunInMemory = false });
+            var expectedError = new Exception(nameof(DocumentDatabase.PeriodicBackupRunner._forTestingPurposes.SimulateFailedBackup)).ToString();
 
-            using (var store = new DocumentStore { Urls = new[] { server.WebUrl }, Database = databaseName, })
+            var (_, leaderServer) = await CreateRaftCluster(clusterSize, shouldRunInMemory: false);
+
+            await CreateDatabaseInCluster(databaseName, clusterSize, leaderServer.WebUrl);
+
+            using (var store = new DocumentStore
+            {
+                Urls = new[] { leaderServer.WebUrl },
+                Conventions = new DocumentConventions { DisableTopologyUpdates = true },
+                Database = databaseName
+            })
             {
                 store.Initialize();
-                store.Maintenance.Server.Send(new CreateDatabaseOperation(new DatabaseRecord(databaseName)));
-                var documentDatabase = await server.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(databaseName).ConfigureAwait(false);
+                var documentDatabase = await leaderServer.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(databaseName).ConfigureAwait(false);
 
                 using (var session = store.OpenAsyncSession())
                 {
-                    await session.StoreAsync(new User { Name = "RavenDB-19358" });
+                    session.Advanced.WaitForReplicationAfterSaveChanges(replicas: clusterSize - 1);
+
+                    await session.StoreAsync(new User { Name = "RavenDB-19358" }, "user/1");
                     await session.SaveChangesAsync();
                 }
-                // Backup full periodical
-                var configBackup = Backup.CreateBackupConfiguration(backupPath, backupType: BackupType.Backup);
-                var taskId = await Backup.UpdateConfigAndRunBackupAsync(server, configBackup, store, isFullBackup: true);
 
-                try
+                var config = Backup.CreateBackupConfiguration(backupPath, fullBackupFrequency: "* * 3 * *", mentorNode: leaderServer.ServerStore.NodeTag, name: "RavenDB-19358");
+                var result = await store.Maintenance.SendAsync(new UpdatePeriodicBackupOperation(config));
+                var taskId = result.TaskId;
+                documentDatabase.PeriodicBackupRunner.ForTestingPurposesOnly().SimulateFailedBackup = true;
+
+                await Backup.RunBackupAsync(leaderServer, taskId, store, isFullBackup: true, OperationStatus.Faulted); 
+
+                IDisposable scope = null;
+                Dictionary<(DateTime, bool IsFull), BlittableJsonReaderObject> fromResponseDictionary = default;
+                Dictionary<string, BlittableJsonReaderObject> details = default;
+                WaitForValue(() =>
                 {
-                    WaitForValue(() =>
-                    {
-                        // scope = documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadBackupDetailsOrderedByCreationDate(out entries);
-                        return entries.Count();
-                    }, 1);
+                    scope = CollectBackupHistoryDebugData(leaderServer, store, documentDatabase,
+                        out fromResponseDictionary, out _, out _, out details);
 
-                    var entryBackupFull = entries.ElementAt(0).Value;
-                    entryBackupFull.TryGet(nameof(BackupHistoryEntry.BackupType), out BackupType backupTypeBackupFull);
-                    entryBackupFull.TryGet(nameof(BackupHistoryEntry.IsFull), out bool backupTypeBackupFullIsFull);
-                    Assert.Equal(BackupType.Backup, backupTypeBackupFull);
-                    Assert.True(backupTypeBackupFullIsFull);
-                }
-                finally
-                {
-                    scope?.Dispose();
-                }
+                    return fromResponseDictionary.Count;
+                }, 1);
 
-                // Backup incremental periodical
-                await Backup.RunBackupAsync(server, taskId, store, isFullBackup: false);
-
-                try
-                {
-                    WaitForValue(() =>
-                    {
-                        // scope = documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadBackupDetailsOrderedByCreationDate(out entries);
-                        return entries.Count();
-                    }, 2);
-
-                    var entryBackupIncremental = entries.ElementAt(1).Value;
-                    entryBackupIncremental.TryGet(nameof(BackupHistoryEntry.BackupType), out BackupType backupTypeBackupIncremental);
-                    entryBackupIncremental.TryGet(nameof(BackupHistoryEntry.IsFull), out bool backupTypeBackupIncrementalIsFull);
-                    Assert.Equal(BackupType.Backup, backupTypeBackupIncremental);
-                    Assert.False(backupTypeBackupIncrementalIsFull);
-                }
-                finally
-                {
-                    scope?.Dispose();
-                }
-
-                // Snapshot periodical
-                var configSnapshot = Backup.CreateBackupConfiguration(backupPath, backupType: BackupType.Snapshot);
-                await Backup.UpdateConfigAndRunBackupAsync(server, configSnapshot, store, isFullBackup: true);
-
-                try
-                {
-                    WaitForValue(() =>
-                    {
-                        // scope = documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadBackupDetailsOrderedByCreationDate(out entries);
-                        return entries.Count();
-                    }, 3);
-
-                    var entrySnapshot = entries.ElementAt(2).Value;
-                    entrySnapshot.TryGet(nameof(BackupHistoryEntry.BackupType), out BackupType backupTypeSnapshot);
-                    Assert.Equal(BackupType.Snapshot, backupTypeSnapshot);
-                }
-                finally
-                {
-                    scope?.Dispose();
-                }
-
-                // One time backup
-                var configOneTimeBackup = new BackupConfiguration { BackupType = BackupType.Backup, LocalSettings = new LocalSettings { FolderPath = backupPath } };
-                var operation = await store.Maintenance.SendAsync(new BackupOperation(configOneTimeBackup));
-                await operation.WaitForCompletionAsync(TimeSpan.FromSeconds(15));
-
-                try
-                {
-                    WaitForValue(() =>
-                    {
-                        // scope = documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadBackupDetailsOrderedByCreationDate(out entries);
-                        return entries.Count();
-                    }, 4);
-
-
-                    var entryOneTimeBackup = entries.ElementAt(3).Value;
-                    entryOneTimeBackup.TryGet(nameof(BackupHistoryEntry.BackupType), out BackupType oneTimeBackup);
-                    Assert.Equal(BackupType.Backup, oneTimeBackup);
-                }
-                finally
-                {
-                    scope?.Dispose();
-                }
-
-                // One time snapshot
-                var configOneTime = new BackupConfiguration { BackupType = BackupType.Snapshot, LocalSettings = new LocalSettings { FolderPath = backupPath } };
-                operation = await store.Maintenance.SendAsync(new BackupOperation(configOneTime));
-                await operation.WaitForCompletionAsync(TimeSpan.FromSeconds(15));
-
-                try
-                {
-                    WaitForValue(() =>
-                    {
-                        // scope = documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadBackupDetailsOrderedByCreationDate(out entries);
-                        return entries.Count();
-                    }, 5);
-
-                    var entryOneTimeSnapshot = entries.ElementAt(4).Value;
-                    entryOneTimeSnapshot.TryGet(nameof(BackupHistoryEntry.BackupType), out BackupType onetimeSnapshot);
-                    Assert.Equal(BackupType.Snapshot, onetimeSnapshot);
-                }
-                finally
-                {
-                    scope?.Dispose();
-                }
+                var entryPeriodical = fromResponseDictionary.Single();
+                entryPeriodical.Value.TryGet(nameof(BackupHistoryEntry.BackupType), out BackupType type);
+                entryPeriodical.Value.TryGet(nameof(BackupHistoryEntry.Error), out string error);
+                Assert.Equal(BackupType.Backup, type);
+                Assert.True(entryPeriodical.Key.IsFull);
+                Assert.True(error.Contains(expectedError));
+                Assert.Equal(1, details.Count);
+                scope.Dispose();
             }
         }
 
         [Fact, Trait("Category", "Smuggler")]
         public async Task BackupHistory_ShouldTakeIntoAccountLimitConfiguration_ShouldDeleteOldestEntriesFirst()
         {
-            IEnumerable<BackupHistoryTableValue> entries = null;
-            IDisposable scope = null;
-
-            const int historySizeLimit = 10;
-            var defaultConfiguration = RavenConfiguration.Default;
-            Assert.NotEqual(defaultConfiguration.Backup.MaxNumberOfFullBackupsInBackupHistory, historySizeLimit);
-
+            const int historySizeLimit = 1;
+            const int clusterSize = 3;
             var backupPath = NewDataPath(suffix: "BackupFolder");
             var databaseName = GetDatabaseName();
-            var server = GetNewServer(new ServerCreationOptions
+
+            var (_, leaderServer) = await CreateRaftCluster(clusterSize, shouldRunInMemory: false, customSettings: new Dictionary<string, string>
             {
-                RunInMemory = false,
-                CustomSettings = new Dictionary<string, string>
-                {
-                    [RavenConfiguration.GetKey(x => x.Backup.MaxNumberOfFullBackupsInBackupHistory)] = historySizeLimit.ToString()
-                }
+                [RavenConfiguration.GetKey(x => x.Backup.MaxNumberOfFullBackupsInBackupHistory)] = historySizeLimit.ToString()
             });
 
-            using (var store = new DocumentStore { Urls = new[] { server.WebUrl }, Database = databaseName, })
+            await CreateDatabaseInCluster(databaseName, clusterSize, leaderServer.WebUrl);
+
+            using (var store = new DocumentStore
+                   {
+                       Urls = new[] { leaderServer.WebUrl }, Conventions = new DocumentConventions { DisableTopologyUpdates = true }, Database = databaseName
+                   })
             {
                 store.Initialize();
-                store.Maintenance.Server.Send(new CreateDatabaseOperation(new DatabaseRecord(databaseName)));
-                var documentDatabase = await server.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(databaseName).ConfigureAwait(false);
+                var documentDatabase = await leaderServer.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(databaseName).ConfigureAwait(false);
 
                 using (var session = store.OpenAsyncSession())
                 {
-                    await session.StoreAsync(new User { Name = "RavenDB-19358" });
+                    session.Advanced.WaitForReplicationAfterSaveChanges(replicas: clusterSize - 1);
+
+                    await session.StoreAsync(new User { Name = "RavenDB-19358" }, "user/1");
                     await session.SaveChangesAsync();
                 }
 
-                var config = Backup.CreateBackupConfiguration(backupPath);
-                var taskId = await Backup.UpdateConfigAndRunBackupAsync(server, config, store, isFullBackup: true);
+                var config = Backup.CreateBackupConfiguration(backupPath, fullBackupFrequency: "* * 3 * *", mentorNode: leaderServer.ServerStore.NodeTag, name: "RavenDB-19358");
+                var result = await store.Maintenance.SendAsync(new UpdatePeriodicBackupOperation(config));
+                var taskId = result.TaskId;
 
-                WaitForValue(() =>
+                (DateTime, bool IsFull) entryKeyToRemove = default;
+                var detailsKeysToRemove = new List<string>();
+                for (int i = 1; i <= historySizeLimit + 1; i++)
                 {
-                    // using (documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadBackupDetailsOrderedByCreationDate(out entries))
-                        return entries.Count();
-                }, 1);
+                    Dictionary<(DateTime, bool IsFull), BlittableJsonReaderObject> fromResponseDictionary = default;
+                    Dictionary<string, BlittableJsonReaderObject> details = default;
+                    
+                    int actualFullBackupsCount;
+                    var backupPlan = new[] { true, false };
+                    var countFullBackups = backupPlan.Count(isFull => isFull);
+                    var expectedFullBackupCount = countFullBackups <= historySizeLimit ? countFullBackups : historySizeLimit;
 
-                DateTime firstEntryTime = default;
-                DateTime secondEntryTime = default;
-                for (int i = 2; i <= historySizeLimit + 1; i++)
-                {
-                    Backup.RunBackup(server, taskId, store);
+                    await RunBackupsAccordingPlan(backupPlan, leaderServer, taskId, store);
 
-                    var expectedNumberOfEntries = i <= historySizeLimit ? i : historySizeLimit;
-                    try
+                    switch (i)
                     {
-                        WaitForValue(() =>
-                        {
-                            // scope = documentDatabase.ConfigurationStorage.BackupHistoryStorage.ReadBackupDetailsOrderedByCreationDate(out entries);
-                            return entries.Count();
-                        }, expectedNumberOfEntries);
+                        case 1:
+                            WaitForValue(() =>
+                            {
+                                using (CollectBackupHistoryDebugData(leaderServer, store, documentDatabase,
+                                           out fromResponseDictionary, out _, out _, out details))
+                                {
+                                    return fromResponseDictionary.Count;
+                                }
+                            }, backupPlan.Length);
+                            actualFullBackupsCount = fromResponseDictionary.Count(entry => entry.Key.IsFull);
+                            Assert.Equal(expectedFullBackupCount, actualFullBackupsCount);
+                            
+                            entryKeyToRemove = fromResponseDictionary.First().Key;
+                            Assert.True(entryKeyToRemove.IsFull);
 
-                        switch (i)
-                        {
-                            case 2:
-                                // firstEntryTime = entries.ElementAt(0).CreatedAt;
-                                // secondEntryTime = entries.ElementAt(1).CreatedAt;
-                                break;
-                            case historySizeLimit + 1: // The first attempt to raise the limit will remove the oldest element 
-                                // var expectedEntryTime = entries.ElementAt(0).CreatedAt; // Get the creation time of the new entry in the list
-                                // Assert.NotEqual(firstEntryTime, expectedEntryTime); // The first entry was rewritten
-                                // Assert.Equal(secondEntryTime, expectedEntryTime); // The second entry rewrote the first entry
-                                break;
-                        }
-                    }
-                    finally
-                    {
-                        scope?.Dispose();
+                            Assert.Equal(backupPlan.Length, details.Count);
+                            detailsKeysToRemove.AddRange(details.Keys);
+                            break;
+                        case historySizeLimit + 1:
+                            WaitForValue(() =>
+                            {
+                                using (CollectBackupHistoryDebugData(leaderServer, store, documentDatabase,
+                                           out fromResponseDictionary, out _, out _, out details))
+                                {
+                                    return fromResponseDictionary.Count;
+                                }
+                            }, historySizeLimit * backupPlan.Length);
+
+                            actualFullBackupsCount = fromResponseDictionary.Count(entry => entry.Key.IsFull);
+
+                            Assert.Equal(historySizeLimit, actualFullBackupsCount);
+                            Assert.False(fromResponseDictionary.ContainsKey(entryKeyToRemove));
+
+                            detailsKeysToRemove.ForEach(key => Assert.False(details.ContainsKey(key)));
+                            Assert.Equal(historySizeLimit * backupPlan.Length, details.Count);
+                            break;
+                        default:
+                            WaitForValue(() =>
+                            {
+                                using (CollectBackupHistoryDebugData(leaderServer, store, documentDatabase,
+                                           out fromResponseDictionary, out _, out _, out details))
+                                {
+                                    return fromResponseDictionary.Count;
+                                }
+                            }, i * backupPlan.Length);
+
+                            actualFullBackupsCount = fromResponseDictionary.Count(entry => entry.Key.IsFull);
+                            Assert.Equal(i, actualFullBackupsCount);
+                            Assert.Equal(i * backupPlan.Length, details.Count);
+                            break;
                     }
                 }
             }
         }
 
         [Fact, Trait("Category", "Smuggler")]
-        public async Task BackupHistory_ShouldStoreEntriesPersistently()
+        public async Task BackupHistory_ShouldStorePersistently_BackupHistoryEntriesInTemporaryStorageAndDetails()
         {
             const int clusterSize = 3;
-
             var backupPath = NewDataPath(suffix: "BackupFolder");
             var databaseName = GetDatabaseName();
 
             var (nodes, leaderServer) = await CreateRaftCluster(clusterSize, shouldRunInMemory: false);
             await CreateDatabaseInCluster(databaseName, clusterSize, leaderServer.WebUrl);
-
-            var notLeaderServer1 = nodes.First(x => x != leaderServer);
-            var notLeaderServer2 = nodes.Single(x => x != leaderServer && x != notLeaderServer1);
-
+            
             using (var leaderStore = new DocumentStore
                    {
                        Urls = new[] { leaderServer.WebUrl }, Conventions = new DocumentConventions { DisableTopologyUpdates = true }, Database = databaseName
@@ -3801,21 +3725,46 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                 var taskId = await Backup.UpdateConfigAndRunBackupAsync(leaderServer, config, leaderStore);
                 
                 // Simulate cluster down state
-                (string DataDirectory, string Url, string NodeTag) disposeResultNotLeader1 = await DisposeServerAndWaitForFinishOfDisposalAsync(notLeaderServer1);
-                var disposeResultNotLeader2 = await DisposeServerAndWaitForFinishOfDisposalAsync(notLeaderServer2);
+                var listOfNodeDisposeResults = new List<(string, string, string)>();
+                foreach (var node in nodes.Where(x => x != leaderServer))
+                    listOfNodeDisposeResults.Add(await DisposeServerAndWaitForFinishOfDisposalAsync(node));
 
-               // In the current state backup history entry will be stored in the temporary storage
+                // In the current state backup history entry will be stored in the temporary storage
                 await Backup.RunBackupAndReturnStatusAsync(leaderServer, taskId, leaderStore, isFullBackup: false);
                 await Task.Delay(5_000);
 
+                // Restart leader server and restore other nodes
                 var leaderDisposingResult = await DisposeServerAndWaitForFinishOfDisposalAsync(leaderServer);
-
-                var newNotLeaderServer1 = CreateServerFromDisposeResult(disposeResultNotLeader1);
-                var newNotLeaderServer2 = CreateServerFromDisposeResult(disposeResultNotLeader2);
                 var newLeaderServer = CreateServerFromDisposeResult(leaderDisposingResult);
+                listOfNodeDisposeResults.ForEach(disposeResult => CreateServerFromDisposeResult(disposeResult));
 
+                using (var store = new DocumentStore
+                       {
+                           Urls = new[] { newLeaderServer.WebUrl }, Conventions = new DocumentConventions { DisableTopologyUpdates = true }, Database = databaseName
+                       })
+                {
+                    store.Initialize();
+                    
+                    DocumentDatabase database = null;
+                    await WaitForValueAsync(async () =>
+                    {
+                        database = await newLeaderServer.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(databaseName).ConfigureAwait(false);
+                        using (database.ConfigurationStorage.BackupHistoryStorage.ReadTemporaryStoredBackupHistoryItems(out var entriesFromTemporaryStorage))
+                            return entriesFromTemporaryStorage != null;
+                    }, true);
 
-
+                    // Assertion
+                    using (CollectBackupHistoryDebugData(newLeaderServer, store, database,
+                               out var fromResponseDictionary,
+                               out var entriesFromClusterDictionary,
+                               out var entriesFromTemporaryDictionary, out var details))
+                    {
+                        Assert.Equal(1, entriesFromClusterDictionary.Count);
+                        Assert.Equal(1, entriesFromTemporaryDictionary.Count);
+                        Assert.Equal(2, fromResponseDictionary.Count);
+                        Assert.Equal(2, details.Count);
+                    }
+                }
 
                 RavenServer CreateServerFromDisposeResult((string DataDirectory, string Url, string NodeTag) disposeResult)
                 {
@@ -3828,55 +3777,6 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                     });
                     Assert.NotNull(newServer);
                     return newServer;
-                }
-
-                using (var store = new DocumentStore
-                       {
-                           Urls = new[] { newLeaderServer.WebUrl }, Conventions = new DocumentConventions { DisableTopologyUpdates = true }, Database = databaseName
-                       })
-                {
-                    store.Initialize();
-                    DocumentDatabase database = null;
-
-                    // WaitForUserToContinueTheTest(store);
-                    await WaitForValueAsync(async () =>
-                    {
-                        database = await newLeaderServer.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(databaseName).ConfigureAwait(false);
-                        try
-                        {
-                            using (database.ConfigurationStorage.BackupHistoryStorage.ReadTemporaryStoredBackupHistoryItems(out var entriesFromTemporaryStorage))
-                            {
-                                
-                            }
-
-                            
-                        }
-                        catch (Exception )
-                        {
-                            return false;
-                        }
-                        return true;
-                    }, true);
-
-                    using (CollectBackupHistoryDebugData(newLeaderServer, store, database,
-                               out var fromResponseDictionary,
-                               out var entriesFromClusterDictionary,
-                               out var entriesFromTemporaryDictionary))
-                    {
-                        try
-                        {
-                            Assert.Equal(1, entriesFromClusterDictionary.Count);
-                            Assert.Equal(1, entriesFromTemporaryDictionary.Count, tolerance: 1);
-                            Assert.NotEqual(0, entriesFromTemporaryDictionary.Count);
-                            Assert.Equal(2, fromResponseDictionary.Count);
-                        }
-                        catch (Exception e)
-                        {
-                            Console.WriteLine(e);
-                            throw;
-                        }
-
-                    }
                 }
             }
         }
@@ -3943,33 +3843,36 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                 store.Initialize();
                 var database = await node.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(databaseName).ConfigureAwait(false);
 
+                IDisposable scope = null;
+                Dictionary<(DateTime, bool), BlittableJsonReaderObject> fromResponseDictionary = default;
+                Dictionary<(DateTime, bool), BlittableJsonReaderObject> entriesFromClusterDictionary = default;
+                Dictionary<string, BlittableJsonReaderObject> details = default;
+
                 WaitForValue(() =>
                 {
-                    using (CollectBackupHistoryDebugData(node, store, database, out var fromResponseDictionary, out var entriesFromClusterDictionary, out _))
-                        return fromResponseDictionary.Count == expectedCountOfBackupEntries && entriesFromClusterDictionary.Count == expectedCountOfBackupEntries;
+                    scope = CollectBackupHistoryDebugData(node, store, database, out fromResponseDictionary, out entriesFromClusterDictionary, out _,
+                        out details);
+
+                    return fromResponseDictionary.Count == expectedCountOfBackupEntries && entriesFromClusterDictionary.Count == expectedCountOfBackupEntries;
                 }, true);
 
-                using (CollectBackupHistoryDebugData(node, store, database,
-                           out var fromResponseDictionary,
-                           out var entriesFromClusterDictionary,
-                           out _))
+                for (int i = 0; i < expectedCountOfBackupEntries; i++)
                 {
-                    for (int i = 0; i < expectedCountOfBackupEntries; i++)
-                    {
-                        var index = (int)Math.Ceiling((double)(i + 1) / backupPlan.Length) - 1;
-                        var expectedNodeTag = expectedNodeTagOrder[index];
+                    var index = (int)Math.Ceiling((double)(i + 1) / backupPlan.Length) - 1;
+                    var expectedNodeTag = expectedNodeTagOrder[index];
 
-                        fromResponseDictionary.Values.ToList()[i].TryGet(nameof(BackupHistoryEntry.NodeTag), out string responseNodeTag);
-                        entriesFromClusterDictionary.Values.ToList()[i].TryGet(nameof(BackupHistoryEntry.NodeTag), out string storageNodeTag);
+                    fromResponseDictionary.Values.ToList()[i].TryGet(nameof(BackupHistoryEntry.NodeTag), out string responseNodeTag);
+                    entriesFromClusterDictionary.Values.ToList()[i].TryGet(nameof(BackupHistoryEntry.NodeTag), out string storageNodeTag);
 
-                        Assert.Equal(expectedNodeTag, responseNodeTag);
-                        Assert.Equal(expectedNodeTag, storageNodeTag);
-                    }
+                    Assert.Equal(expectedNodeTag, responseNodeTag);
+                    Assert.Equal(expectedNodeTag, storageNodeTag);
                 }
+
+                Assert.Equal(backupPlan.Length, details.Count);
+                scope.Dispose();
             }
         }
 
-        
         [Theory, Trait("Category", "Smuggler")]
         // It matters which backup was made first after the cluster down. We need to test all scenarios.
         [InlineData(new[] { true, false, false, true }, new[] { false, true })]
@@ -4040,9 +3943,9 @@ namespace SlowTests.Server.Documents.PeriodicBackup
 
                 await Task.Delay(3000);
 
-                await Backup.RunBackupAsync(leaderServer, taskId, leaderStore, isFullBackup: false);
-                backupCount++;
                 generalBackupPlan.Add(false);
+                await Backup.RunBackupAsync(leaderServer, taskId, leaderStore, isFullBackup: generalBackupPlan.Last());
+                backupCount++;
 
                 CollectAndAssertBackupHistoryData(
                     expectedCountOfEntriesInClusterStorage: backupCount,
@@ -4053,7 +3956,7 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                     using (CollectBackupHistoryDebugData(leaderServer, leaderStore, database,
                                out var fromResponseDictionary,
                                out var entriesFromClusterDictionary,
-                               out var entriesFromTemporaryDictionary))
+                               out var entriesFromTemporaryDictionary, out var details))
                     {
                         var fromStoragesDictionary = new Dictionary<(DateTime, bool), BlittableJsonReaderObject>();
                         foreach (var entry in entriesFromClusterDictionary)
@@ -4078,6 +3981,7 @@ namespace SlowTests.Server.Documents.PeriodicBackup
                             Assert.True(entryFromStorage.TryGet(nameof(BackupHistoryEntry.CreatedAt), out DateTime _));
                             Assert.Equal(entryFromStorage, entryFromResponse);
                             Assert.Equal(expectedIsFull, writtenAsFullBackup);
+                            Assert.Equal(expectedCountOfEntriesInClusterStorage + expectedCountOfEntriesInTemporaryStorage, details.Count);
                         }
                     }
                 }
