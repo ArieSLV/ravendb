@@ -38,16 +38,16 @@ public enum LicenseAttribute
     PostgreSqlIntegration,
     CanBeActivatedUntil,
     QueueEtl,
-    ServerWideBackups,
-    ServerWideExternalReplications,
-    ServerWideCustomSorters,
-    ServerWideAnalyzers,
-    IndexCleanup,
-    PeriodicBackup,
-    ClientConfiguration,
-    StudioConfiguration,
-    QueueSink,
-    DataArchival,
+    ServerWideBackups, // TODO: only PUT done, check if other commands exist
+    ServerWideExternalReplications, // TODO: only PUT done, check if other commands exist
+    ServerWideCustomSorters, // TODO: only PUT done, check if other commands exist
+    ServerWideAnalyzers, // TODO: only PUT done, check if other commands exist
+    IndexCleanup, // TODO: only PUT done, check if other commands exist
+    PeriodicBackup, // TODO: only PUT done
+    ClientConfiguration, // TODO: only PUT done, check if other commands exist
+    StudioConfiguration, // TODO: only PUT done, check if other commands exist
+    QueueSink, // done
+    DataArchival, // done
     RevisionsInSubscriptions,
     MultiNodeSharding,
     SetupDefaultRevisionsConfiguration,

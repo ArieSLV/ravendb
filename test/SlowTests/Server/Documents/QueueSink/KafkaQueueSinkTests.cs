@@ -406,7 +406,8 @@ output('test: ' + this.Id)
 
         protected QueueSinkConfiguration SetupKafkaQueueSink(DocumentStore store, string script, List<string> queues,
             string configurationName = null,
-            string transformationName = null, Dictionary<string, string> configuration = null,
+            string transformationName = null,
+            Dictionary<string, string> configuration = null,
             string bootstrapServers = null)
         {
             var connectionStringName = $"{store.Database} to Kafka";

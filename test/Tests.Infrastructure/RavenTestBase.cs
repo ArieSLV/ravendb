@@ -622,7 +622,7 @@ namespace FastTests
             } while (true);
         }
 
-        protected static T WaitForValue<T>(Func<T> act, T expectedVal, int timeout = 15000, int interval = 16)
+        protected internal static T WaitForValue<T>(Func<T> act, T expectedVal, int timeout = 15000, int interval = 16)
         {
             if (Debugger.IsAttached)
                 timeout *= 100;

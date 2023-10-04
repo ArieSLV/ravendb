@@ -63,7 +63,6 @@ namespace SlowTests.Server.Documents.DataArchival
                 using (database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
                 using (context.OpenReadTransaction())
                 {
-
                     DatabaseTopology topology;
                     string nodeTag;
 

@@ -481,7 +481,7 @@ namespace FastTests
 
         private static readonly ConcurrentDictionary<RavenServer, string> LeakedServers = new();
 
-        protected virtual RavenServer GetNewServer(ServerCreationOptions options = null, [CallerMemberName] string caller = null)
+        protected internal virtual RavenServer GetNewServer(ServerCreationOptions options = null, [CallerMemberName] string caller = null)
         {
             if (options == null)
             {

@@ -89,7 +89,7 @@ namespace SlowTests.Issues
             }
         }
 
-        internal class PutStudioConfigurationOperation : IMaintenanceOperation
+        public class PutStudioConfigurationOperation : IMaintenanceOperation
         {
             private readonly StudioConfiguration _configuration;
 
@@ -137,7 +137,7 @@ namespace SlowTests.Issues
             }
         }
 
-        internal class PutServerWideStudioConfigurationOperation : IServerOperation
+        public class PutServerWideStudioConfigurationOperation : IServerOperation
         {
             private readonly ServerWideStudioConfiguration _configuration;
 
@@ -185,7 +185,7 @@ namespace SlowTests.Issues
             }
         }
 
-        internal class GetServerWideStudioConfigurationOperation : IServerOperation<ServerWideStudioConfiguration>
+        public class GetServerWideStudioConfigurationOperation : IServerOperation<ServerWideStudioConfiguration>
         {
             public RavenCommand<ServerWideStudioConfiguration> GetCommand(DocumentConventions conventions, JsonOperationContext context)
             {

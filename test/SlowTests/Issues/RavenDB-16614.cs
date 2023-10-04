@@ -5,6 +5,7 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
+using FastTests.Client;
 using Raven.Client.Documents.Operations.CompareExchange;
 using Raven.Client.Documents.Session;
 using Raven.Client.Documents.Smuggler;
@@ -26,7 +27,7 @@ namespace SlowTests.Issues
         {
         }
 
-        protected override RavenServer GetNewServer(ServerCreationOptions options = null, [CallerMemberName] string caller = null)
+        protected internal override RavenServer GetNewServer(ServerCreationOptions options = null, [CallerMemberName] string caller = null)
         {
             if (options == null)
             {
