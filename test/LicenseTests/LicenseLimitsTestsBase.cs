@@ -30,34 +30,34 @@ namespace LicenseTests;
 
 public class LicenseLimitsTestsBase(ITestOutputHelper output) : ReplicationTestBase(output)
 {
-    protected static Task<T> Assert_Success_ExecutePutServerOperation<TOperation, T>(LicenseTestsFixtureBuilder<TOperation>.Fixture<TOperation> fixture) where TOperation : IServerOperation<T>
+    protected static Task<T> Assert_Success_ExecutePutServerOperation<TOperation, T>(LicenseLimitsOperationsTestFixtureBuilder<TOperation>.Fixture<TOperation> fixture) where TOperation : IServerOperation<T>
     {
         return ExecuteServerOperation<TOperation, T>(fixture);
     }
 
-    protected static Task Assert_Success_ExecutePutServerOperation<TOperation>(LicenseTestsFixtureBuilder<TOperation>.Fixture<TOperation> fixture) where TOperation : IServerOperation
+    protected static Task Assert_Success_ExecutePutServerOperation<TOperation>(LicenseLimitsOperationsTestFixtureBuilder<TOperation>.Fixture<TOperation> fixture) where TOperation : IServerOperation
     {
         return ExecuteServerOperation(fixture);
     }
 
-    protected static async Task Assert_Throw_ExecutePutServerOperation<TOperation, T>(LicenseTestsFixtureBuilder<TOperation>.Fixture<TOperation> fixture)
+    protected static async Task Assert_Throw_ExecutePutServerOperation<TOperation, T>(LicenseLimitsOperationsTestFixtureBuilder<TOperation>.Fixture<TOperation> fixture)
         where TOperation : IServerOperation<T>
     {
         await Assert.ThrowsAsync<LicenseLimitException>(() => ExecuteServerOperation<TOperation, T>(fixture));
     }
 
-    protected static async Task Assert_Throw_ExecutePutServerOperation<TOperation>(LicenseTestsFixtureBuilder<TOperation>.Fixture<TOperation> fixture)
+    protected static async Task Assert_Throw_ExecutePutServerOperation<TOperation>(LicenseLimitsOperationsTestFixtureBuilder<TOperation>.Fixture<TOperation> fixture)
         where TOperation : IServerOperation
     {
         await Assert.ThrowsAsync<LicenseLimitException>(() => ExecuteServerOperation(fixture));
     }
 
-    private static Task<T> ExecuteServerOperation<TOperation, T>(LicenseTestsFixtureBuilder<TOperation>.Fixture<TOperation> fixture) where TOperation : IServerOperation<T>
+    private static Task<T> ExecuteServerOperation<TOperation, T>(LicenseLimitsOperationsTestFixtureBuilder<TOperation>.Fixture<TOperation> fixture) where TOperation : IServerOperation<T>
     {
         return fixture.Store.Maintenance.Server.SendAsync(fixture.PutOperation);
     }
 
-    private static Task ExecuteServerOperation<TOperation>(LicenseTestsFixtureBuilder<TOperation>.Fixture<TOperation> fixture) where TOperation : IServerOperation
+    private static Task ExecuteServerOperation<TOperation>(LicenseLimitsOperationsTestFixtureBuilder<TOperation>.Fixture<TOperation> fixture) where TOperation : IServerOperation
     {
         return fixture.Store.Maintenance.Server.SendAsync(fixture.PutOperation);
     }
@@ -67,24 +67,24 @@ public class LicenseLimitsTestsBase(ITestOutputHelper output) : ReplicationTestB
 
 
 
-    protected static Task<T> Assert_Success_ExecutePutMaintenanceOperation<TOperation, T>(LicenseTestsFixtureBuilder<TOperation>.Fixture<TOperation> fixture) where TOperation : IMaintenanceOperation<T>
+    protected static Task<T> Assert_Success_ExecutePutMaintenanceOperation<TOperation, T>(LicenseLimitsOperationsTestFixtureBuilder<TOperation>.Fixture<TOperation> fixture) where TOperation : IMaintenanceOperation<T>
     {
         var result = ExecuteMaintenanceOperation<TOperation, T>(fixture);
         return result;
     }
 
-    protected static Task Assert_Success_ExecutePutMaintenanceOperation<TOperation>(LicenseTestsFixtureBuilder<TOperation>.Fixture<TOperation> fixture) where TOperation : IMaintenanceOperation
+    protected static Task Assert_Success_ExecutePutMaintenanceOperation<TOperation>(LicenseLimitsOperationsTestFixtureBuilder<TOperation>.Fixture<TOperation> fixture) where TOperation : IMaintenanceOperation
     {
         return ExecuteMaintenanceOperation(fixture);
     }
 
-    protected static async Task Assert_Throw_ExecutePutMaintenanceOperation<TOperation, T>(LicenseTestsFixtureBuilder<TOperation>.Fixture<TOperation> fixture)
+    protected static async Task Assert_Throw_ExecutePutMaintenanceOperation<TOperation, T>(LicenseLimitsOperationsTestFixtureBuilder<TOperation>.Fixture<TOperation> fixture)
         where TOperation : IMaintenanceOperation<T>
     {
         await Assert.ThrowsAsync<LicenseLimitException>(() => ExecuteMaintenanceOperation<TOperation, T>(fixture));
     }
 
-    protected static async Task Assert_Throw_ExecutePutMaintenanceOperation<TOperation>(LicenseTestsFixtureBuilder<TOperation>.Fixture<TOperation> fixture)
+    protected static async Task Assert_Throw_ExecutePutMaintenanceOperation<TOperation>(LicenseLimitsOperationsTestFixtureBuilder<TOperation>.Fixture<TOperation> fixture)
         where TOperation : IMaintenanceOperation
     {
         await Assert.ThrowsAsync<LicenseLimitException>(() => ExecuteMaintenanceOperation(fixture));
@@ -100,7 +100,7 @@ public class LicenseLimitsTestsBase(ITestOutputHelper output) : ReplicationTestB
         await Assert.ThrowsAsync<LicenseLimitException>(() => ExecuteMaintenanceOperation<TOperation, T>(store, operation));
     }
 
-    private static Task<T> ExecuteMaintenanceOperation<TOperation, T>(LicenseTestsFixtureBuilder<TOperation>.Fixture<TOperation> fixture) where TOperation : IMaintenanceOperation<T>
+    private static Task<T> ExecuteMaintenanceOperation<TOperation, T>(LicenseLimitsOperationsTestFixtureBuilder<TOperation>.Fixture<TOperation> fixture) where TOperation : IMaintenanceOperation<T>
     {
         return fixture.Store.Maintenance.SendAsync(fixture.PutOperation);
     }
@@ -110,62 +110,81 @@ public class LicenseLimitsTestsBase(ITestOutputHelper output) : ReplicationTestB
         return store.Maintenance.SendAsync(operation);
     }
 
-    private static Task ExecuteMaintenanceOperation<TOperation>(LicenseTestsFixtureBuilder<TOperation>.Fixture<TOperation> fixture) where TOperation : IMaintenanceOperation
+    private static Task ExecuteMaintenanceOperation<TOperation>(LicenseLimitsOperationsTestFixtureBuilder<TOperation>.Fixture<TOperation> fixture) where TOperation : IMaintenanceOperation
     {
         return fixture.Store.Maintenance.SendAsync(fixture.PutOperation);
     }
 
-
-
-
-
-
-
-
-
-
-
-
-    protected Task Assert_Success_SwitchToLicenseWithRestrictions<TOperation>(LicenseTestsFixtureBuilder<TOperation>.Fixture<TOperation> fixture)
+    private static Task SetupSubscription(LicenseLimitsSubscriptionsTestFixtureBuilder.Fixture fixture)
     {
-        return SwitchToCommunityLicense(fixture);
+        return fixture.Store.Subscriptions.CreateAsync(fixture.SubscriptionCreationOptions);
     }
 
-    protected async Task Assert_Fail_SwitchToLicenseWithRestrictions<TOperation>(LicenseTestsFixtureBuilder<TOperation>.Fixture<TOperation> fixture)
+
+    protected static Task Assert_Success_SetupSubscription(LicenseLimitsSubscriptionsTestFixtureBuilder.Fixture fixture)
     {
-        await Assert.ThrowsAsync<LicenseLimitException>(() => SwitchToCommunityLicense(fixture));
+        return SetupSubscription(fixture);
     }
 
-    protected static async Task Assert_Equal<TOperation>(LicenseTestsFixtureBuilder<TOperation>.Fixture<TOperation> fixture, int expectedValue, Func<DatabaseRecordWithEtag, int> actualValue)
+    protected static async Task Assert_Fail_SetupSubscription(LicenseLimitsSubscriptionsTestFixtureBuilder.Fixture fixture)
+    {
+        await Assert.ThrowsAsync<LicenseLimitException>(() =>  SetupSubscription(fixture));
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+    protected Task Assert_Success_SwitchToLicenseWithRestrictions<TOperation>(LicenseLimitsOperationsTestFixtureBuilder<TOperation>.Fixture<TOperation> fixture)
+    {
+        return SwitchToCommunityLicense(fixture.Server, fixture.CommunityLicenseString);
+    }
+
+    protected Task Assert_Success_SwitchToLicenseWithRestrictions(LicenseLimitsSubscriptionsTestFixtureBuilder.Fixture fixture)
+    {
+        return SwitchToCommunityLicense(fixture.Server, fixture.CommunityLicenseString);
+    }
+
+    protected async Task Assert_Fail_SwitchToLicenseWithRestrictions<TOperation>(LicenseLimitsOperationsTestFixtureBuilder<TOperation>.Fixture<TOperation> fixture)
+    {
+        await Assert.ThrowsAsync<LicenseLimitException>(() => SwitchToCommunityLicense(fixture.Server, fixture.CommunityLicenseString));
+    }
+
+    protected static async Task Assert_Equal<TOperation>(LicenseLimitsOperationsTestFixtureBuilder<TOperation>.Fixture<TOperation> fixture, int expectedValue, Func<DatabaseRecordWithEtag, int> actualValue)
     {
         Assert.Equal(expectedValue, actualValue(await GetDatabaseRecord(fixture)));
     }
 
-    protected static async Task Assert_Equal<TOperation>(LicenseTestsFixtureBuilder<TOperation>.Fixture<TOperation> fixture, bool expectedValue, Func<DatabaseRecordWithEtag, bool> actualValue)
+    protected static async Task Assert_Equal<TOperation>(LicenseLimitsOperationsTestFixtureBuilder<TOperation>.Fixture<TOperation> fixture, bool expectedValue, Func<DatabaseRecordWithEtag, bool> actualValue)
     {
         Assert.Equal(expectedValue, actualValue(await GetDatabaseRecord(fixture)));
     }
 
-    protected static async Task Assert_Equal<TOperation>(LicenseTestsFixtureBuilder<TOperation>.Fixture<TOperation> fixture, int expectedValue, Func<RavenServer, int> actualValue)
+    protected static async Task Assert_Equal<TOperation>(LicenseLimitsOperationsTestFixtureBuilder<TOperation>.Fixture<TOperation> fixture, int expectedValue, Func<RavenServer, int> actualValue)
     {
         Assert.Equal(expectedValue, actualValue(fixture.Server));
     }
 
-    protected static async Task Assert_Equal<TOperation>(LicenseTestsFixtureBuilder<TOperation>.Fixture<TOperation> fixture, int expectedValue, Func<DocumentStore, int> actualValue)
+    protected static async Task Assert_Equal<TOperation>(LicenseLimitsOperationsTestFixtureBuilder<TOperation>.Fixture<TOperation> fixture, int expectedValue, Func<DocumentStore, int> actualValue)
     {
         Assert.Equal(expectedValue, actualValue(fixture.Store));
     }
 
-    private static Task<DatabaseRecordWithEtag> GetDatabaseRecord<TOperation>(LicenseTestsFixtureBuilder<TOperation>.Fixture<TOperation> fixture) =>
-        fixture.Store.Maintenance.Server.SendAsync(new GetDatabaseRecordOperation(fixture.Store.Database));
-
-    public static async Task SwitchToCommunityLicense<TOperation>(LicenseTestsFixtureBuilder<TOperation>.Fixture<TOperation> fixture)
+    protected static async Task Assert_Equal(LicenseLimitsSubscriptionsTestFixtureBuilder.Fixture fixture, int expectedValue, Func<DocumentStore, Task<int>> actualValue)
     {
-        await SwitchToCommunityLicense(fixture.Server, fixture.CommunityLicenseString);
-
-        WaitForValue(() => fixture.Server.ServerStore.LicenseManager.LicenseStatus.Type, LicenseType.Community);
-        Assert.Equal(LicenseType.Community, fixture.Server.ServerStore.LicenseManager.LicenseStatus.Type);
+        Assert.Equal(expectedValue, actualValue(fixture.Store).Result);
     }
+
+    private static Task<DatabaseRecordWithEtag> GetDatabaseRecord<TOperation>(LicenseLimitsOperationsTestFixtureBuilder<TOperation>.Fixture<TOperation> fixture) =>
+        fixture.Store.Maintenance.Server.SendAsync(new GetDatabaseRecordOperation(fixture.Store.Database));
 
     public static async Task SwitchToCommunityLicense(RavenServer server, string communityLicenseString)
     {
@@ -185,6 +204,9 @@ public class LicenseLimitsTestsBase(ITestOutputHelper output) : ReplicationTestB
             await server.ServerStore.EnsureNotPassiveAsync(skipLicenseActivation: true);
             await server.ServerStore.LicenseManager.ActivateAsync(license, RaftIdGenerator.NewId());
         }
+
+        WaitForValue(() => server.ServerStore.LicenseManager.LicenseStatus.Type, LicenseType.Community);
+        Assert.Equal(LicenseType.Community, server.ServerStore.LicenseManager.LicenseStatus.Type);
     }
 
 
