@@ -48,7 +48,7 @@ public enum LicenseAttribute
     StudioConfiguration, // TODO: only PUT done, check if other commands exist
     QueueSink, // done
     DataArchival, // done
-    RevisionsInSubscriptions,
+    RevisionsInSubscriptions, // done
     MultiNodeSharding,
     SetupDefaultRevisionsConfiguration,
     MaxCoresPerNode,

@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using LicenseTests.Fixtures;
 using Raven.Client.Documents;
 using Raven.Client.Documents.Conventions;
 using Raven.Client.Documents.Indexes.Analysis;
@@ -239,11 +240,11 @@ namespace LicenseTests
         [Fact]
         public async Task ServerWideBackups_Can_SwitchToLicenseWithRestriction()
         {
-            var fixture = LicenseLimitsOperationsTestFixtureBuilder<PutServerWideBackupConfigurationOperation>.Init(this)
+            var fixture = LicenseLimitsOperationsTestFixtureBuilder<PutServerWideBackupConfigurationOperation, PutServerWideBackupConfigurationResponse>.Init(this)
                 .WithPutOperation(() => _putServerWideBackupConfigurationOperation)
                 .Build();
 
-            await Assert_Success_ExecutePutServerOperation<PutServerWideBackupConfigurationOperation, PutServerWideBackupConfigurationResponse>(fixture);
+            await Assert_Success_ExecutePut_ServerOperation(fixture);
             await Assert_Success_SwitchToLicenseWithRestrictions(fixture);
 
             await Assert_Equal(fixture,
@@ -254,12 +255,13 @@ namespace LicenseTests
         [Fact]
         public async Task ServerWideBackups_Fail_IfLicenseOptionDisabled()
         {
-            var fixture = LicenseLimitsOperationsTestFixtureBuilder<PutServerWideBackupConfigurationOperation>.Init(this)
+            var fixture = LicenseLimitsOperationsTestFixtureBuilder<PutServerWideBackupConfigurationOperation, PutServerWideBackupConfigurationResponse>.Init(this)
                 .WithPutOperation(() => _putServerWideBackupConfigurationOperation)
                 .WithCommunityLicense()
                 .Build();
 
-            await Assert_Throw_ExecutePutServerOperation<PutServerWideBackupConfigurationOperation, PutServerWideBackupConfigurationResponse>(fixture);
+            await Assert_Throw_ExecutePut_ServerOperation(fixture);
+
             await Assert_Equal(fixture,
                 expectedValue: 0,
                 actualValue: databaseRecord => databaseRecord.PeriodicBackups.Count);
@@ -271,12 +273,13 @@ namespace LicenseTests
         [Fact]
         public async Task ServerWideExternalReplication_ThrowOnSwitchToLicenseWithFeatureDisabled()
         {
-            var fixture = LicenseLimitsOperationsTestFixtureBuilder<PutServerWideExternalReplicationOperation>.Init(this)
+            var fixture = LicenseLimitsOperationsTestFixtureBuilder<PutServerWideExternalReplicationOperation, ServerWideExternalReplicationResponse>.Init(this)
                 .WithPutOperation(GetPutServerWideExternalReplicationOperation)
                 .Build();
 
-            await Assert_Success_ExecutePutServerOperation<PutServerWideExternalReplicationOperation, ServerWideExternalReplicationResponse>(fixture);
+            await Assert_Success_ExecutePut_ServerOperation(fixture);
             await Assert_Fail_SwitchToLicenseWithRestrictions(fixture);
+
             await Assert_Equal(fixture,
                 expectedValue: 1,
                 actualValue: databaseRecord => databaseRecord.ExternalReplications.Count);
@@ -285,12 +288,13 @@ namespace LicenseTests
         [Fact]
         public async Task ServerWideExternalReplication_Fail_IfLicenseOptionDisabled()
         {
-            var fixture = LicenseLimitsOperationsTestFixtureBuilder<PutServerWideExternalReplicationOperation>.Init(this)
+            var fixture = LicenseLimitsOperationsTestFixtureBuilder<PutServerWideExternalReplicationOperation, ServerWideExternalReplicationResponse>.Init(this)
                 .WithPutOperation(GetPutServerWideExternalReplicationOperation)
                 .WithCommunityLicense()
                 .Build();
             
-            await Assert_Throw_ExecutePutServerOperation<PutServerWideExternalReplicationOperation, ServerWideExternalReplicationResponse>(fixture);
+            await Assert_Throw_ExecutePut_ServerOperation(fixture);
+
             await Assert_Equal(fixture,
                 expectedValue: 0,
                 actualValue: databaseRecord => databaseRecord.ExternalReplications.Count);
@@ -306,9 +310,10 @@ namespace LicenseTests
                 .WithPutOperation(() => _putServerWideSortersOperation)
                 .Build();
 
-            await Assert_Success_ExecutePutServerOperation(fixture);
+            await Assert_Success_ExecutePut_ServerOperation(fixture);
             await Assert_Success_SwitchToLicenseWithRestrictions(fixture);
-            await Assert_Equal(fixture,
+
+            Assert_Equal(fixture,
                 expectedValue: 1,
                 actualValue: GetServerWideCustomSortersCount);
         }
@@ -321,8 +326,9 @@ namespace LicenseTests
                 .WithCommunityLicense()
                 .Build();
 
-            await Assert_Throw_ExecutePutServerOperation(fixture);
-            await Assert_Equal(fixture,
+            await Assert_Throw_ExecutePut_ServerOperation(fixture);
+
+            Assert_Equal(fixture,
                 expectedValue: 0,
                 actualValue: GetServerWideCustomSortersCount);
         }
@@ -337,9 +343,10 @@ namespace LicenseTests
                 .WithPutOperation(() => _putServerWideAnalyzersOperation)
                 .Build();
 
-            await Assert_Success_ExecutePutServerOperation(fixture);
+            await Assert_Success_ExecutePut_ServerOperation(fixture);
             await Assert_Success_SwitchToLicenseWithRestrictions(fixture);
-            await Assert_Equal(fixture,
+
+            Assert_Equal(fixture,
                 expectedValue: 1,
                 actualValue: GetServerWideAnalyzerCount);
         }
@@ -352,8 +359,9 @@ namespace LicenseTests
                 .WithCommunityLicense()
                 .Build();
 
-            await Assert_Throw_ExecutePutServerOperation(fixture);
-            await Assert_Equal(fixture,
+            await Assert_Throw_ExecutePut_ServerOperation(fixture);
+
+            Assert_Equal(fixture,
                 expectedValue: 0,
                 actualValue: GetServerWideAnalyzerCount);
         }
@@ -364,11 +372,11 @@ namespace LicenseTests
         [Fact]
         public async Task PeriodicBackup_Can_SwitchToLicenseWithRestriction()
         {
-            var fixture = LicenseLimitsOperationsTestFixtureBuilder<UpdatePeriodicBackupOperation>.Init(this)
+            var fixture = LicenseLimitsOperationsTestFixtureBuilder<UpdatePeriodicBackupOperation, UpdatePeriodicBackupOperationResult>.Init(this)
                 .WithPutOperation(() => _updatePeriodicBackupOperation)
                 .Build();
 
-            await Assert_Success_ExecutePutMaintenanceOperation<UpdatePeriodicBackupOperation, UpdatePeriodicBackupOperationResult>(fixture);
+            await Assert_Success_ExecutePut_MaintenanceOperation(fixture);
             await Assert_Success_SwitchToLicenseWithRestrictions(fixture);
 
             await Assert_Equal(fixture,
@@ -379,12 +387,13 @@ namespace LicenseTests
         [Fact]
         public async Task PeriodicBackup_Fail_IfLicenseOptionDisabled()
         {
-            var fixture = LicenseLimitsOperationsTestFixtureBuilder<UpdatePeriodicBackupOperation>.Init(this)
+            var fixture = LicenseLimitsOperationsTestFixtureBuilder<UpdatePeriodicBackupOperation, UpdatePeriodicBackupOperationResult>.Init(this)
                 .WithPutOperation(() => _updatePeriodicBackupOperation)
                 .WithCommunityLicense()
                 .Build();
 
-            await Assert_Throw_ExecutePutMaintenanceOperation<UpdatePeriodicBackupOperation, UpdatePeriodicBackupOperationResult>(fixture);
+            await Assert_Throw_ExecutePut_MaintenanceOperation(fixture);
+
             await Assert_Equal(fixture,
                 expectedValue: 0,
                 actualValue: databaseRecord => databaseRecord.PeriodicBackups.Count);
@@ -401,10 +410,10 @@ namespace LicenseTests
                 .WithPutOperation(() => _putClientConfigurationOperation)
                 .Build();
 
-            await Assert_Success_ExecutePutMaintenanceOperation(fixture);
+            await Assert_Success_ExecutePut_MaintenanceOperation(fixture);
             await Assert_Success_SwitchToLicenseWithRestrictions(fixture);
 
-            await Assert_Equal(fixture,
+            Assert_Equal(fixture,
                 expectedValue: ExpectedMaxNumberOfRequestsPerSession,
                 actualValue: store =>
                 {
@@ -422,8 +431,9 @@ namespace LicenseTests
                 .WithCommunityLicense()
                 .Build();
 
-            await Assert_Throw_ExecutePutMaintenanceOperation(fixture);
-            await Assert_Equal(fixture,
+            await Assert_Throw_ExecutePut_MaintenanceOperation(fixture);
+
+            Assert_Equal(fixture,
                 expectedValue: DocumentConventions.Default.MaxNumberOfRequestsPerSession,
                 actualValue: store =>
                 {
@@ -443,9 +453,10 @@ namespace LicenseTests
                 .WithPutOperation(() => _putServerWideStudioConfigurationOperation)
                 .Build();
 
-            await Assert_Success_ExecutePutServerOperation(fixture);
+            await Assert_Success_ExecutePut_ServerOperation(fixture);
             await Assert_Success_SwitchToLicenseWithRestrictions(fixture);
-            await Assert_Equal(fixture,
+
+            Assert_Equal(fixture,
                 expectedValue: 2,
                 actualValue: store =>
             {
@@ -462,8 +473,9 @@ namespace LicenseTests
                 .WithCommunityLicense()
                 .Build();
 
-            await Assert_Throw_ExecutePutServerOperation(fixture);
-            await Assert_Equal(fixture,
+            await Assert_Throw_ExecutePut_ServerOperation(fixture);
+
+            Assert_Equal(fixture,
                 expectedValue: -1,
                 actualValue: store =>
             {
@@ -482,10 +494,10 @@ namespace LicenseTests
                 .WithPutOperation(() => _putStudioConfigurationOperation)
                 .Build();
 
-            await Assert_Success_ExecutePutMaintenanceOperation(fixture);
+            await Assert_Success_ExecutePut_MaintenanceOperation(fixture);
             await Assert_Success_SwitchToLicenseWithRestrictions(fixture);
 
-            await Assert_Equal(fixture,
+            Assert_Equal(fixture,
                 expectedValue: (int)StudioConfiguration.StudioEnvironment.Production,
                 actualValue: store =>
                 {
@@ -502,8 +514,9 @@ namespace LicenseTests
                 .WithCommunityLicense()
                 .Build();
 
-            await Assert_Throw_ExecutePutMaintenanceOperation(fixture);
-            await Assert_Equal(fixture,
+            await Assert_Throw_ExecutePut_MaintenanceOperation(fixture);
+
+            Assert_Equal(fixture,
                 expectedValue: -1,
                 actualValue: store =>
                 {
@@ -515,11 +528,11 @@ namespace LicenseTests
         [Fact]
         public async Task QueueSink_Kafka_Can_Put_Than_SwitchToLicenseWithRestriction()
         {
-            var fixture = LicenseLimitsOperationsTestFixtureBuilder<AddQueueSinkOperation<QueueConnectionString>>.Init(this)
+            var fixture = LicenseLimitsOperationsTestFixtureBuilder<AddQueueSinkOperation<QueueConnectionString>, AddQueueSinkOperationResult>.Init(this)
                 .WithPutOperation(store => GetAddQueueSinkOperation(store, QueueBrokerType.Kafka))
                 .Build();
 
-            await Assert_Success_ExecutePutMaintenanceOperation<AddQueueSinkOperation<QueueConnectionString>, AddQueueSinkOperationResult>(fixture);
+            await Assert_Success_ExecutePut_MaintenanceOperation(fixture);
             await Assert_Success_SwitchToLicenseWithRestrictions(fixture);
 
             await Assert_Equal(fixture,
@@ -530,12 +543,13 @@ namespace LicenseTests
         [Fact]
         public async Task QueueSink_Kafka_FailPut_IfLicenseOptionDisabled()
         {
-            var fixture = LicenseLimitsOperationsTestFixtureBuilder<AddQueueSinkOperation<QueueConnectionString>>.Init(this)
+            var fixture = LicenseLimitsOperationsTestFixtureBuilder<AddQueueSinkOperation<QueueConnectionString>, AddQueueSinkOperationResult>.Init(this)
                 .WithPutOperation(store => GetAddQueueSinkOperation(store, QueueBrokerType.Kafka))
                 .WithCommunityLicense()
                 .Build();
 
-            await Assert_Throw_ExecutePutMaintenanceOperation<AddQueueSinkOperation<QueueConnectionString>, AddQueueSinkOperationResult>(fixture);
+            await Assert_Throw_ExecutePut_MaintenanceOperation(fixture);
+
             await Assert_Equal(fixture,
                 expectedValue: 0,
                 actualValue: databaseRecord => databaseRecord.QueueSinks.Count);
@@ -544,29 +558,28 @@ namespace LicenseTests
         [Fact]
         public async Task QueueSink_RabbitMq_Can_Put_Than_SwitchToLicenseWithRestriction()
         {
-            var fixture = LicenseLimitsOperationsTestFixtureBuilder<AddQueueSinkOperation<QueueConnectionString>>.Init(this)
+            var fixture = LicenseLimitsOperationsTestFixtureBuilder<AddQueueSinkOperation<QueueConnectionString>, AddQueueSinkOperationResult>.Init(this)
                 .WithPutOperation(store => GetAddQueueSinkOperation(store, QueueBrokerType.RabbitMq))
                 .Build();
 
-            await Assert_Success_ExecutePutMaintenanceOperation<AddQueueSinkOperation<QueueConnectionString>, AddQueueSinkOperationResult>(fixture);
+            await Assert_Success_ExecutePut_MaintenanceOperation(fixture);
             await Assert_Success_SwitchToLicenseWithRestrictions(fixture);
 
             await Assert_Equal(fixture,
                 expectedValue: 1,
                 actualValue: databaseRecord => databaseRecord.QueueSinks.Count);
-
-            WaitForUserToContinueTheTest(fixture.Store);
         }
 
         [Fact]
         public async Task QueueSink_RabbitMq_FailPut_IfLicenseOptionDisabled()
         {
-            var fixture = LicenseLimitsOperationsTestFixtureBuilder<AddQueueSinkOperation<QueueConnectionString>>.Init(this)
+            var fixture = LicenseLimitsOperationsTestFixtureBuilder<AddQueueSinkOperation<QueueConnectionString>, AddQueueSinkOperationResult>.Init(this)
                 .WithPutOperation(store => GetAddQueueSinkOperation(store, QueueBrokerType.RabbitMq))
                 .WithCommunityLicense()
                 .Build();
 
-            await Assert_Throw_ExecutePutMaintenanceOperation<AddQueueSinkOperation<QueueConnectionString>, AddQueueSinkOperationResult>(fixture);
+            await Assert_Throw_ExecutePut_MaintenanceOperation(fixture);
+
             await Assert_Equal(fixture,
                 expectedValue: 0,
                 actualValue: databaseRecord => databaseRecord.QueueSinks.Count);
@@ -575,13 +588,13 @@ namespace LicenseTests
         [Fact]
         public async Task QueueSink_RabbitMq_CanUpdate_IfLicenseOptionEnabled()
         {
-            var fixture = LicenseLimitsOperationsTestFixtureBuilder<AddQueueSinkOperation<QueueConnectionString>>.Init(this)
+            var fixture = LicenseLimitsOperationsTestFixtureBuilder<AddQueueSinkOperation<QueueConnectionString>, AddQueueSinkOperationResult>.Init(this)
                 .WithPutOperation(store => GetAddQueueSinkOperation(store, QueueBrokerType.RabbitMq))
                 .Build();
 
-            var putResult = await Assert_Success_ExecutePutMaintenanceOperation<AddQueueSinkOperation<QueueConnectionString>, AddQueueSinkOperationResult>(fixture);
-            var updateOperation = GetUpdateQueueSinkOperation(fixture.Store, putResult.TaskId, QueueBrokerType.RabbitMq);
-            await Assert_Success_ExecuteUpdateMaintenanceOperation<UpdateQueueSinkOperation<QueueConnectionString>, UpdateQueueSinkOperationResult>(fixture.Store, updateOperation);
+            await Assert_Success_ExecutePut_MaintenanceOperation(fixture);
+            var updateOperation = GetUpdateQueueSinkOperation(fixture.Store, fixture.PutResult.TaskId, QueueBrokerType.RabbitMq);
+            await Assert_Success_ExecuteUpdate_MaintenanceOperation<UpdateQueueSinkOperation<QueueConnectionString>, UpdateQueueSinkOperationResult>(fixture.Store, updateOperation);
 
             await Assert_Equal(fixture,
                 expectedValue: 1,
@@ -591,16 +604,16 @@ namespace LicenseTests
         [Fact]
         public async Task QueueSink_RabbitMq_FailUpdate_IfLicenseOptionDisabled()
         {
-            var fixture = LicenseLimitsOperationsTestFixtureBuilder<AddQueueSinkOperation<QueueConnectionString>>.Init(this)
+            var fixture = LicenseLimitsOperationsTestFixtureBuilder<AddQueueSinkOperation<QueueConnectionString>, AddQueueSinkOperationResult>.Init(this)
                 .WithPutOperation(store => GetAddQueueSinkOperation(store, QueueBrokerType.RabbitMq))
                 .Build();
 
-            var putResult = await Assert_Success_ExecutePutMaintenanceOperation<AddQueueSinkOperation<QueueConnectionString>, AddQueueSinkOperationResult>(fixture);
 
+            await Assert_Success_ExecutePut_MaintenanceOperation(fixture);
             await Assert_Success_SwitchToLicenseWithRestrictions(fixture);
 
-            var updateOperation = GetUpdateQueueSinkOperation(fixture.Store, putResult.TaskId, QueueBrokerType.RabbitMq);
-            await Assert_Throw_ExecuteUpdateMaintenanceOperation<UpdateQueueSinkOperation<QueueConnectionString>, UpdateQueueSinkOperationResult>(fixture.Store, updateOperation);
+            var updateOperation = GetUpdateQueueSinkOperation(fixture.Store, fixture.PutResult.TaskId, QueueBrokerType.RabbitMq);
+            await Assert_Throw_ExecuteUpdate_MaintenanceOperation<UpdateQueueSinkOperation<QueueConnectionString>, UpdateQueueSinkOperationResult>(fixture.Store, updateOperation);
 
             await Assert_Equal(fixture,
                 expectedValue: 1,
@@ -610,67 +623,133 @@ namespace LicenseTests
         [Fact]
         public async Task DataArchival_Can_Put_Than_SwitchToLicenseWithRestriction()
         {
-            var fixture = LicenseLimitsOperationsTestFixtureBuilder<ConfigureDataArchivalOperation>.Init(this)
+            var fixture = LicenseLimitsOperationsTestFixtureBuilder<ConfigureDataArchivalOperation, ConfigureDataArchivalOperationResult>.Init(this)
                 .WithPutOperation(GetConfigureDataArchivalOperation)
                 .Build();
 
-            await Assert_Success_ExecutePutMaintenanceOperation<ConfigureDataArchivalOperation, ConfigureDataArchivalOperationResult>(fixture);
+            await Assert_Success_ExecutePut_MaintenanceOperation(fixture);
             await Assert_Success_SwitchToLicenseWithRestrictions(fixture);
 
             await Assert_Equal(fixture,
                 expectedValue: false,
                 actualValue: databaseRecord => databaseRecord.DataArchival.Disabled);
-
-            WaitForUserToContinueTheTest(fixture.Store);
         }
 
         [Fact]
         public async Task DataArchival_FailPut_IfLicenseOptionDisabled()
         {
-            var fixture = LicenseLimitsOperationsTestFixtureBuilder<ConfigureDataArchivalOperation>.Init(this)
+            var fixture = LicenseLimitsOperationsTestFixtureBuilder<ConfigureDataArchivalOperation, ConfigureDataArchivalOperationResult>.Init(this)
                 .WithPutOperation(GetConfigureDataArchivalOperation)
                 .WithCommunityLicense()
                 .Build();
 
-            await Assert_Throw_ExecutePutMaintenanceOperation<ConfigureDataArchivalOperation, ConfigureDataArchivalOperationResult>(fixture);
+            await Assert_Throw_ExecutePut_MaintenanceOperation(fixture);
 
             await Assert_Equal(fixture,
                 expectedValue: true,
                 actualValue: databaseRecord => databaseRecord.DataArchival == null);
-
-            WaitForUserToContinueTheTest(fixture.Store);
         }
 
-        private readonly SubscriptionCreationOptions _subscriptionCreationParams = new() { Query = "from People (Revisions = true)" };
+        private static readonly SubscriptionCreationOptions RevisionsInSubscriptionCreationOptions = new() { Query = $"from People {DocumentSubscriptions.IncludeRevisionsRQL}" };
 
         [Fact]
         public async Task RevisionsInSubscriptions_Can_Put_Than_SwitchToLicenseWithRestriction()
         {
             var fixture = LicenseLimitsSubscriptionsTestFixtureBuilder.Init(this)
-                .WithSubscription(() => _subscriptionCreationParams)
+                .WithCreateOptions(() => RevisionsInSubscriptionCreationOptions)
                 .Build();
 
-            await Assert_Success_SetupSubscription(fixture);
+            await Assert_Success_CreateSubscription(fixture);
             await Assert_Success_SwitchToLicenseWithRestrictions(fixture);
 
             await Assert_Equal(fixture,
                 expectedValue: 1,
-                actualValue: async store => (await store.Subscriptions.GetSubscriptionsAsync(0, 10)).Count);
+                actualValue: async store => (await store.Subscriptions.GetSubscriptionsAsync(0, int.MaxValue)).Count);
         }
 
         [Fact]
         public async Task RevisionsInSubscriptions_FailPut_IfLicenseOptionDisabled()
         {
             var fixture = LicenseLimitsSubscriptionsTestFixtureBuilder.Init(this)
-                .WithSubscription(() => _subscriptionCreationParams)
+                .WithCreateOptions(() => RevisionsInSubscriptionCreationOptions)
                 .WithCommunityLicense()
                 .Build();
 
-            await Assert_Fail_SetupSubscription(fixture);
+            await Assert_Throw_CreateSubscription(fixture);
 
             await Assert_Equal(fixture,
                 expectedValue: 0,
-                actualValue: async store => (await store.Subscriptions.GetSubscriptionsAsync(0, 10)).Count);
+                actualValue: async store => (await store.Subscriptions.GetSubscriptionsAsync(0, int.MaxValue)).Count);
         }
+
+        private static readonly SubscriptionUpdateOptions RevisionInSubscriptionUpdateOptions = new() { Query = RevisionsInSubscriptionCreationOptions.Query };
+
+        [Fact]
+        public async Task RevisionsInSubscriptions_Fail_UpdateSubscription_WithRevisions()
+        {
+            var fixture = LicenseLimitsSubscriptionsTestFixtureBuilder.Init(this)
+                .WithCreateOptions(() => RevisionsInSubscriptionCreationOptions)
+                .WithUpdatedOptions(() => RevisionInSubscriptionUpdateOptions)
+                .WithCommunityLicense()
+                .Build();
+
+            await Assert_Throw_CreateSubscription(fixture); // With revisions in Subscription
+
+            fixture.SubscriptionCreationOptions = new SubscriptionCreationOptions { Query = "from People" };
+            Assert.False(fixture.SubscriptionCreationOptions.Query.Contains(DocumentSubscriptions.IncludeRevisionsRQL));
+
+            await Assert_Success_CreateSubscription(fixture); // Without revision in Subscription
+            await Assert_Fail_UpdateSubscription(fixture); // With revisions in Subscription
+
+            await Assert_Equal(fixture,
+                expectedValue: false,
+                actualValue: async store =>
+                {
+                    var subscriptions = await store.Subscriptions.GetSubscriptionsAsync(0, int.MaxValue);
+                    Assert.Single(subscriptions);
+                    return subscriptions[0].Query.Contains(DocumentSubscriptions.IncludeRevisionsRQL);
+                });
+        }
+
+        [Fact]
+        public async Task RevisionsInSubscriptions_Can_UpdateSubscription_WithoutRevisions()
+        {
+            var fixture = LicenseLimitsSubscriptionsTestFixtureBuilder.Init(this)
+                .WithCreateOptions(() => RevisionsInSubscriptionCreationOptions)
+                .WithUpdatedOptions(() => new SubscriptionUpdateOptions { Query = "from Orders" })
+                .Build();
+
+            await Assert_Success_CreateSubscription(fixture); // With revision in Subscription
+            await Assert_Success_SwitchToLicenseWithRestrictions(fixture);
+
+            await Assert_Success_UpdateSubscription(fixture); // Without revisions in Subscription
+
+            await Assert_Equal(fixture,
+                expectedValue: true,
+                actualValue: async store =>
+                {
+                    var subscriptions = await store.Subscriptions.GetSubscriptionsAsync(0, int.MaxValue);
+                    Assert.Single(subscriptions);
+                    return
+                        subscriptions[0].Query.Contains("from Orders") &&
+                        subscriptions[0].Query.Contains(DocumentSubscriptions.IncludeRevisionsRQL) == false;
+                });
+        }
+
+        // [Fact]
+        // public async Task MultiNodeSharding_Can_Put_Than_SwitchToLicenseWithRestriction()
+        // {
+        //     var fixture = LicenseLimitsTestFixtureBuilder.InitSharded(this)
+        //         .WithCommunityLicense()
+        //         .Build();
+        //
+        //     await Assert_Success_SwitchToLicenseWithRestrictions(fixture);
+        //
+        //     await Assert_Equal(fixture,
+        //         expectedValue: 1,
+        //         actualValue: async store => (await store.GetSubscriptionsAsync(0, int.MaxValue)).Count);
+        // }
+
+
     }
 }
