@@ -27,18 +27,28 @@ using Xunit.Abstractions;
 
 namespace LicenseTests;
 
-public class LicenseLimitsTestsBase(ITestOutputHelper output) : ReplicationTestBase(output)
+public class LicenseLimitsTestsBase : ReplicationTestBase
 {
-    public static async Task SwitchToCommunityLicense(RavenServer server, string communityLicenseString)
+    internal const string EnvironmentVariableForLicenceKeyWithAllFeaturesEnabled = "RAVEN_LICENSE";
+    internal const string EnvironmentVariableForLicenceKeyWithAllFeaturesDisabled = "RAVEN_LICENSE_ALL_FEATURES_DISABLED";
+
+    private static readonly string LicenseKeyWithAllFeaturesEnabled = Environment.GetEnvironmentVariable(EnvironmentVariableForLicenceKeyWithAllFeaturesEnabled);
+    private static readonly string LicenseKeyWithAllFeaturesDisabled = Environment.GetEnvironmentVariable(EnvironmentVariableForLicenceKeyWithAllFeaturesDisabled);
+
+    protected LicenseLimitsTestsBase(ITestOutputHelper output) : base(output)
     {
-        if (server == null || communityLicenseString == null)
-            throw new InvalidOperationException("Call Init method first to initialize server and store.");
+    }
+
+    public static async Task SwitchToLicenseWithFeatureDisabled(RavenServer server)
+    {
+        if (server == null)
+            throw new InvalidOperationException("Call Init method first to initialize server.");
 
         Assert.False(server.ServerStore.LicenseManager.LicenseStatus.Type == LicenseType.Community);
 
         using (server.ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
         {
-            byte[] byteArray = Encoding.UTF8.GetBytes(communityLicenseString);
+            byte[] byteArray = Encoding.UTF8.GetBytes(LicenseKeyWithAllFeaturesDisabled);
             await using Stream stream = new MemoryStream(byteArray);
 
             var json = await context.ReadForMemoryAsync(stream, "license activation");
@@ -54,12 +64,12 @@ public class LicenseLimitsTestsBase(ITestOutputHelper output) : ReplicationTestB
 
     protected static async Task Assert_Fail_SwitchToLicenseWithRestrictions(ILicenseLimitsTestsFixture fixture)
     {
-        await Assert.ThrowsAsync<LicenseLimitException>(() => SwitchToCommunityLicense(fixture.Server, fixture.CommunityLicenseString));
+        await Assert.ThrowsAsync<LicenseLimitException>(() => SwitchToLicenseWithFeatureDisabled(fixture.Server));
     }
 
     protected static Task Assert_Success_SwitchToLicenseWithRestrictions(ILicenseLimitsTestsFixture fixture)
     {
-        return SwitchToCommunityLicense(fixture.Server, fixture.CommunityLicenseString);
+        return SwitchToLicenseWithFeatureDisabled(fixture.Server);
     }
 
 
@@ -148,6 +158,11 @@ public class LicenseLimitsTestsBase(ITestOutputHelper output) : ReplicationTestB
     protected static async Task Assert_Equal<T>(ILicenseLimitsTestsFixture fixture, T expectedValue, Func<DocumentStore, Task<T>> actualValue)
     {
         Assert.Equal(expectedValue, actualValue(fixture.Store).Result);
+    }
+
+    protected static async Task Assert_Equal<T>(ILicenseLimitsTestsFixture fixture, T expectedValue, Func<DatabaseRecordWithEtag, T> actualValue)
+    {
+        Assert.Equal(expectedValue, actualValue(await GetDatabaseRecord(fixture.Store)));
     }
 
     protected static void Assert_Equal<TOperation, T>(ILicenseLimitsTestsFixture<TOperation> fixture, T expectedValue, Func<DocumentStore, T> actualValue)
@@ -278,5 +293,50 @@ public class LicenseLimitsTestsBase(ITestOutputHelper output) : ReplicationTestB
             throw new ArgumentNullException(nameof(server.ServerStore));
 
         return new ConfigureDataArchivalOperation(config);
+    }
+}
+
+public class LicenseWithAllFeaturesDisabledRequiredFactAttribute : FactAttribute
+{
+    private static readonly bool HasAllFeaturesEnabledLicense;
+    private static readonly bool HasAllFeaturesDisabledLicense;
+
+    static LicenseWithAllFeaturesDisabledRequiredFactAttribute()
+    {
+        HasAllFeaturesEnabledLicense = string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(LicenseLimitsTestsBase.EnvironmentVariableForLicenceKeyWithAllFeaturesEnabled)) == false;
+        HasAllFeaturesDisabledLicense = string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(LicenseLimitsTestsBase.EnvironmentVariableForLicenceKeyWithAllFeaturesEnabled)) == false;
+    }
+
+    public override string Skip => ShouldSkip(out string skipMessage) ? skipMessage : null;
+
+    private static bool ShouldSkip(out string skipMessage)
+    {
+        if (HasAllFeaturesEnabledLicense == false && HasAllFeaturesDisabledLicense == false)
+        {
+            skipMessage = $"Test execution requires both license keys '{LicenseLimitsTestsBase.EnvironmentVariableForLicenceKeyWithAllFeaturesEnabled}' and " +
+                          $"'{LicenseLimitsTestsBase.EnvironmentVariableForLicenceKeyWithAllFeaturesDisabled}' to be set in environment variables. " +
+                          $"Test will be skipped as both of these keys are missing.";
+
+            return true;
+        }
+
+        if (HasAllFeaturesEnabledLicense == false)
+        {
+            skipMessage = $"Test execution requires 'All Features Enabled' license key with '{LicenseLimitsTestsBase.EnvironmentVariableForLicenceKeyWithAllFeaturesEnabled}' " +
+                          $"to be set in environment variables. Test will be skipped as this key is missing.";
+
+            return true;
+        }
+
+        if (HasAllFeaturesDisabledLicense == false)
+        {
+            skipMessage = $"Test execution requires 'All Features Disabled' license key with '{LicenseLimitsTestsBase.EnvironmentVariableForLicenceKeyWithAllFeaturesDisabled}' " +
+                          $"to be set in environment variables. Test will be skipped as this key is missing.";
+
+            return true;
+        }
+        
+        skipMessage = null;
+        return false;
     }
 }

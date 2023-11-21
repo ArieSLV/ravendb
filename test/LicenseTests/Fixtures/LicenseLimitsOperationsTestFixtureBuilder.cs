@@ -21,7 +21,6 @@ namespace LicenseTests.Fixtures
                 Store = _store,
                 PutOperation = _putOperation,
                 Server = _server,
-                CommunityLicenseString = CommunityLicenseStringConst,
             };
         }
 
@@ -30,7 +29,6 @@ namespace LicenseTests.Fixtures
             public RavenServer Server { get; init; }
             public DocumentStore Store { get; init; }
             public T PutOperation { get; init; }
-            public string CommunityLicenseString { get; init; }
         }
     }
 
@@ -63,7 +61,6 @@ namespace LicenseTests.Fixtures
                 Store = _store,
                 PutOperation = _putOperation,
                 Server = _server,
-                CommunityLicenseString = CommunityLicenseStringConst,
             };
         }
 
@@ -71,7 +68,6 @@ namespace LicenseTests.Fixtures
         {
             public RavenServer Server { get; init; }
             public DocumentStore Store { get; init; }
-            public string CommunityLicenseString { get; init; }
             public TO PutOperation { get; init; }
             public TR PutResult { get; set; }
         }

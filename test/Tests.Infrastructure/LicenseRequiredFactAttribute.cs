@@ -3,6 +3,8 @@ using Xunit;
 
 namespace Tests.Infrastructure
 {
+
+
     public class LicenseRequiredFactAttribute : FactAttribute
     {
         internal static readonly bool HasLicense;

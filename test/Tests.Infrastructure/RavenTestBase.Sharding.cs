@@ -501,5 +501,117 @@ public partial class RavenTestBase
                 }
             }
         }
+
+        public class ShardingOptionsBuilder
+        {
+            private RavenServer _leader;
+            private int? _numberOfShards;
+            private int? _shardReplicationFactor;
+            private int? _orchestratorReplicationFactor;
+            private bool _dynamicNodeDistribution = false;
+            private DocumentsCompressionConfiguration _documentsCompressionConfiguration;
+            private bool _runInMemory = true;
+
+            public static ShardingOptionsBuilder Init() => new();
+
+            public ShardingOptionsBuilder WithLeader(RavenServer leader)
+            {
+                _leader = leader;
+                return this;
+            }
+
+            public ShardingOptionsBuilder WithNumberOfShards(int numberOfShards)
+            {
+                _numberOfShards = numberOfShards;
+                return this;
+            }
+
+            public ShardingOptionsBuilder WithShardReplicationFactor(int shardReplicationFactor)
+            {
+                _shardReplicationFactor = shardReplicationFactor;
+                return this;
+            }
+
+            public ShardingOptionsBuilder WithOrchestratorReplicationFactor(int orchestratorReplicationFactor)
+            {
+                _orchestratorReplicationFactor = orchestratorReplicationFactor;
+                return this;
+            }
+
+            public ShardingOptionsBuilder WithDynamicNodeDistribution(bool dynamicNodeDistribution)
+            {
+                _dynamicNodeDistribution = dynamicNodeDistribution;
+                return this;
+            }
+
+            public ShardingOptionsBuilder WithDocumentsCompressionConfiguration(DocumentsCompressionConfiguration configuration)
+            {
+                _documentsCompressionConfiguration = configuration;
+                return this;
+            }
+
+            public ShardingOptionsBuilder WithoutDocumentsCompression()
+            {
+                _documentsCompressionConfiguration = new DocumentsCompressionConfiguration
+                {
+                    CompressRevisions = false, CompressAllCollections = false
+                };
+                return this;
+            }
+
+            public ShardingOptionsBuilder WithRunInMemory(bool runInMemory)
+            {
+                _runInMemory = runInMemory;
+                return this;
+            }
+
+            public Options Build()
+            {
+                if (_numberOfShards == null)
+                    throw new ArgumentNullException(nameof(_numberOfShards), $"Number of Shards was not specified. Please specify it before building options");
+
+                if (_shardReplicationFactor == null)
+                    throw new ArgumentNullException(nameof(_shardReplicationFactor), $"Shard Replication Factor was not specified. Please specify it before building options");
+
+                if (_orchestratorReplicationFactor == null)
+                    throw new ArgumentNullException(nameof(_orchestratorReplicationFactor), $"Orchestrator Replication Factor was not specified. Please specify it before building options");
+
+                if (_leader == null)
+                    throw new ArgumentNullException(nameof(_leader), $"Cluster leader was not specified. Please specify it before building options");
+
+                return new Options
+                {
+                    DatabaseMode = RavenDatabaseMode.Sharded,
+                    ModifyDatabaseRecord = r =>
+                    {
+                        r.Sharding = new ShardingConfiguration
+                        {
+                            Shards = new Dictionary<int, DatabaseTopology>(_numberOfShards.Value),
+                            Orchestrator = new OrchestratorConfiguration
+                            {
+                                Topology = new OrchestratorTopology
+                                {
+                                    DynamicNodesDistribution = _dynamicNodeDistribution, ReplicationFactor = _orchestratorReplicationFactor.Value
+                                }
+                            }
+                        };
+
+                        for (int shardNumber = 0; shardNumber < _numberOfShards.Value; shardNumber++)
+                        {
+                            r.Sharding.Shards[shardNumber] = new DatabaseTopology
+                            {
+                                ReplicationFactor = _shardReplicationFactor.Value, DynamicNodesDistribution = _dynamicNodeDistribution
+                            };
+                        }
+
+                        if (_documentsCompressionConfiguration != null)
+                            r.DocumentsCompression = _documentsCompressionConfiguration;
+                    },
+                    ReplicationFactor = _shardReplicationFactor.Value, // this ensures not to use the same path for the replicas
+                    Server = _leader,
+                    RunInMemory = _runInMemory
+                };
+            }
+        }
     }
 }

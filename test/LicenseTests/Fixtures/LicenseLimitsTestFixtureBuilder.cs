@@ -9,8 +9,7 @@ public class LicenseLimitsTestFixtureBuilder : LicenseLimitsTestFixtureBuilderBa
         new()
         {
             Store = _store,
-            Server = _server,
-            CommunityLicenseString = CommunityLicenseStringConst,
+            Server = _server
         };
 
     public class Fixture : ILicenseLimitsTestsFixture

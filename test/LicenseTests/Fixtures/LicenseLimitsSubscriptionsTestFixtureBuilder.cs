@@ -29,8 +29,7 @@ public class LicenseLimitsSubscriptionsTestFixtureBuilder : LicenseLimitsTestFix
             Store = _store,
             SubscriptionCreationOptions = _subscriptionCreationOptions,
             SubscriptionUpdateOption = _subscriptionUpdateOptions,
-            Server = _server,
-            CommunityLicenseString = CommunityLicenseStringConst,
+            Server = _server
         };
     }
 
