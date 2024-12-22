@@ -52,6 +52,7 @@ using FacetSetup = Raven.Client.Documents.Queries.Facets.FacetSetup;
 using Raven.Server.Documents.ETL.Providers.OLAP.Test;
 using Raven.Server.Documents.ETL.Providers.Queue.Test;
 using Raven.Server.EventListener;
+using Raven.Server.Documents.PeriodicBackup.BackupHistory;
 using Raven.Server.NotificationCenter;
 using BackupConfiguration = Raven.Client.Documents.Operations.Backups.BackupConfiguration;
 using MigrationConfiguration = Raven.Server.Smuggler.Migration.MigrationConfiguration;
@@ -233,6 +234,12 @@ namespace Raven.Server.Json
         public static readonly Func<BlittableJsonReaderObject, BlockingTombstoneDetails> BlockingTombstoneDetails = GenerateJsonDeserializationRoutine<BlockingTombstoneDetails>();
 
         public static readonly Func<BlittableJsonReaderObject, EventListenerToLog.EventListenerConfiguration> EventListenerConfiguration = GenerateJsonDeserializationRoutine<EventListenerToLog.EventListenerConfiguration>();
+        
+        public static readonly Func<BlittableJsonReaderObject, BackupHistory> BackupHistory = GenerateJsonDeserializationRoutine<BackupHistory>();
+        
+        public static readonly Func<BlittableJsonReaderObject, BackupHistoryEntry> BackupHistoryEntry = GenerateJsonDeserializationRoutine<BackupHistoryEntry>();
+
+        public static readonly Func<BlittableJsonReaderObject, BackupResult> BackupResult = GenerateJsonDeserializationRoutine<BackupResult>();
 
         public class Parameters
         {

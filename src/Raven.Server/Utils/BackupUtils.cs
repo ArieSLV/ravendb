@@ -571,6 +571,14 @@ internal static class BackupUtils
 
             backupResult?.AddError($"{message}{Environment.NewLine}{e}");
         }
+        finally
+        {
+            var database = serverStore.DatabasesLandlord.TryGetOrCreateResourceStore(databaseName).Result;
+            var retentionPeriod = database.Configuration.Backup.BackupHistoryRetentionPeriod;
+
+            serverStore.DatabaseInfoCache.BackupHistoryStorage.StoreBackupStatus(databaseName, status, retentionPeriod);
+            serverStore.DatabaseInfoCache.BackupHistoryStorage.StoreBackupResultDetails(backupResult, status, databaseName);
+        }
     }
 
     public class NextBackupOccurrenceParameters

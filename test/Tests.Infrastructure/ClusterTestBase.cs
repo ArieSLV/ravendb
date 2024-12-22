@@ -9,9 +9,11 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Web;
 using FastTests;
 using Raven.Client.Documents;
 using Raven.Client.Documents.Conventions;
+using Raven.Client.Documents.Operations.Backups;
 using Raven.Client.Documents.Session;
 using Raven.Client.Exceptions;
 using Raven.Client.Http;
@@ -22,7 +24,9 @@ using Raven.Client.Util;
 using Raven.Server;
 using Raven.Server.Config;
 using Raven.Server.Documents;
+using Raven.Server.Documents.PeriodicBackup.BackupHistory;
 using Raven.Server.Documents.Replication;
+using Raven.Server.Json;
 using Raven.Server.Rachis;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
@@ -32,6 +36,7 @@ using Raven.Tests.Core.Utils.Entities;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using Sparrow.Platform;
+using Sparrow.Server.Json.Sync;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -1239,6 +1244,145 @@ namespace Tests.Infrastructure
                     sb.AppendLine(json.ToString());
                 }
             }
+        }
+
+        protected static BackupHistory GetBackupHistoryFromEndpoint(TransactionOperationContext context, DocumentStore store, BackupHistoryRequestParameters parameters)
+        {
+            var client = store.GetRequestExecutor().HttpClient;
+
+            var baseUrl = $"{store.Urls.First()}/databases/{parameters.DatabaseName}/backup/history";
+
+            var builder = new UriBuilder(baseUrl);
+
+            var query = HttpUtility.ParseQueryString(string.Empty);
+
+            if (parameters.TaskId != 0)
+                query["taskId"] = parameters.TaskId.ToString();
+            if (parameters.FullBackupId != 0)
+                query["fullBackupTicks"] = parameters.FullBackupId.ToString();
+            if (parameters.IncludeIncrementals == false)
+                query["includeIncrementals"] = "false";
+
+            builder.Query = query.ToString() ?? string.Empty;
+
+            var fullUrl = builder.ToString();
+
+            var response = AsyncHelpers.RunSync(() => client.GetAsync(fullUrl));
+            string result = response.Content.ReadAsStringAsync().Result;
+
+            var bjro = context.Sync.ReadForMemory(result, "BackupHistory");
+            bjro.TryGet(nameof(BackupHistory), out BlittableJsonReaderObject backupHistoryBjro);
+
+            return backupHistoryBjro == null ? null : JsonDeserializationServer.BackupHistory(backupHistoryBjro);
+        }
+
+        public class BackupHistoryRequestParameters
+        {
+            public string DatabaseName { get; set; }
+            public long TaskId { get; set; }
+            public bool IncludeIncrementals { get; set; } = true;
+            public long FullBackupId { get; set; }
+        }
+
+        protected static BackupResult GetBackupResultFromEndpoint(JsonOperationContext context, DocumentStore store, string databaseName, long taskId, DateTime createdAt)
+        {
+            var client = store.GetRequestExecutor().HttpClient;
+            var response = AsyncHelpers.RunSync(() =>
+                client.GetAsync(
+                    $"{store.Urls.First()}/databases/{databaseName}/backup/result?taskId={taskId}&id={createdAt.Ticks}"));
+            string result = response.Content.ReadAsStringAsync().Result;
+                
+            var resultBjro = context.Sync.ReadForMemory(result, "Result");
+            resultBjro.TryGet(nameof(BackupResult), out BlittableJsonReaderObject backupResultBjro);
+
+            return backupResultBjro == null ? null : JsonDeserializationServer.BackupResult(backupResultBjro);
+        }
+
+        protected async Task<BackupHistory> RunBackupsAccordingPlan(BackupKind[] backupPlan, RavenServer server, long taskId, DocumentStore store, BackupHistory existingBackupHistory = null)
+        {
+            BackupGroup backupGroup = null;
+
+            if (existingBackupHistory != null)
+                backupGroup = existingBackupHistory.Groups.LastOrDefault(x => x.TaskId == taskId);
+            else
+                existingBackupHistory = new BackupHistory(store.Database);
+
+            foreach (var backupKind in backupPlan)
+            {
+                await Backup.RunBackupAsync(server, taskId, store, isFullBackup: backupKind.Equals(BackupKind.Full));
+                
+                switch (backupKind)
+                {
+                    case BackupKind.Full:
+                        backupGroup = new BackupGroup
+                        {
+                            TaskId = taskId, 
+                            FullBackup = new BackupHistoryEntry { NodeTag = server.ServerStore.NodeTag, BackupKind = BackupKind.Full }
+                        };
+                        
+                        existingBackupHistory.Groups.Add(backupGroup);
+                        break;
+                    
+                    case BackupKind.Incremental:
+                        if (backupGroup == null)
+                        {
+                            backupGroup = new BackupGroup { TaskId = taskId };
+                            existingBackupHistory.Groups.Add(backupGroup);
+                        }
+                        backupGroup.AddIncrementalBackup(new BackupHistoryEntry { NodeTag = server.ServerStore.NodeTag, BackupKind = BackupKind.Incremental});
+                        break;
+                }
+            }
+
+            return existingBackupHistory;
+        }
+
+        internal static BackupHistory CollectAndAssertBackupHistoryStructure(BackupHistory expectedBackupHistory, RavenServer server, DocumentStore documentStore, BackupHistoryRequestParameters parameters)
+        {
+            BackupHistory actualBackupHistory = null;
+
+            using (server.ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
+            using (context.OpenReadTransaction())
+                WaitForValue(() =>
+                    {
+                        actualBackupHistory = GetBackupHistoryFromEndpoint(context, documentStore, parameters);
+                        return actualBackupHistory.Groups.Count == expectedBackupHistory.Groups.Count;
+                    },
+                    expectedVal: true,
+                    timeout: (int)TimeSpan.FromSeconds(15).TotalMilliseconds,
+                    interval: (int)TimeSpan.FromSeconds(1).TotalMilliseconds);
+
+            Assert.NotNull(actualBackupHistory);
+            actualBackupHistory.Groups.Sort((a, b) => a.FullBackup.CreatedAt.CompareTo(b.FullBackup.CreatedAt));
+
+            Assert.True(actualBackupHistory.Groups.Count == expectedBackupHistory.Groups.Count,
+                userMessage: $"Expected backup history groups count is `{expectedBackupHistory.Groups.Count}`, " +
+                             $"but got `{actualBackupHistory.Groups.Count}`{Environment.NewLine}{actualBackupHistory.ToString(server.ServerStore.ContextPool)}");
+
+            for (int i = 0; i < actualBackupHistory.Groups.Count; i++)
+            {
+                var actualBackupGroup = actualBackupHistory.Groups[i];
+                var expectedBackupGroup = expectedBackupHistory.Groups[i];
+
+                if (parameters.IncludeIncrementals)
+                {
+                    Assert.True(actualBackupGroup.IncrementalBackups.Count == expectedBackupGroup.IncrementalBackups.Count,
+                        userMessage: $"Expected size of incremental backups list on backup group with index `{i}` is `{expectedBackupGroup.IncrementalBackups.Count}`, " +
+                                     $"but got `{actualBackupGroup.IncrementalBackups.Count}`{Environment.NewLine}{actualBackupHistory.ToString(server.ServerStore.ContextPool)}");
+                }
+                else
+                {
+                    Assert.True(actualBackupGroup.IncrementalBackups.Count == 0,
+                        userMessage: $"Expected size of incremental backups list on backup group with index `{i}` is `0`, " +
+                                     $"but got `{actualBackupGroup.IncrementalBackups.Count}`{Environment.NewLine}{actualBackupHistory.ToString(server.ServerStore.ContextPool)}");
+                }
+
+                Assert.True(actualBackupGroup.IncrementalBackupsCount == expectedBackupGroup.IncrementalBackupsCount,
+                    userMessage: $"Expected incremental backups count on backup group with index `{i}` is `{expectedBackupGroup.IncrementalBackupsCount}`, " +
+                                 $"but got `{actualBackupGroup.IncrementalBackupsCount}`{Environment.NewLine}{actualBackupHistory.ToString(server.ServerStore.ContextPool)}");
+            }
+
+            return actualBackupHistory;
         }
 
         public override void Dispose()
