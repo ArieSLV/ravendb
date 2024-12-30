@@ -229,19 +229,24 @@ namespace SlowTests.Authentication
                 Path = path
             }))
             {
-                store.Maintenance.Send(new CreateSampleDataOperation(operateOnTypes: DatabaseSmugglerOptions.DefaultOperateOnTypes));
+                await store.Maintenance.SendAsync(new CreateSampleDataOperation(operateOnTypes: DatabaseSmugglerOptions.DefaultOperateOnTypes));
 
-                for (int i = 0; i < 3; i++)
+                for (int i = 1; i <= 3; i++)
                 {
-                    await store.Operations.Send(new PatchByQueryOperation(new IndexQuery
+                    var operation = await store.Operations.SendAsync(new PatchByQueryOperation(new IndexQuery { Query = """FROM Orders UPDATE { put("orders/", this); } """ }));
+                    try
                     {
-                        Query = @"FROM Orders UPDATE { put(""orders/"", this); } "
-                    })).WaitForCompletionAsync(TimeSpan.FromSeconds(300));
+                        await operation.WaitForCompletionAsync(TimeSpan.FromSeconds(200 * i));
+                    }
+                    catch (Exception e)
+                    {
+                        throw new InvalidOperationException($"Failed to execute {nameof(PatchByQueryOperation)}, attempt {i} with timeout {200 * i} seconds", e);
+                    }
                 }
 
                 Indexes.WaitForIndexing(store);
 
-                var deleteOperation = store.Operations.Send(new DeleteByQueryOperation(new IndexQuery() { Query = "FROM orders" }));
+                var deleteOperation = await store.Operations.SendAsync(new DeleteByQueryOperation(new IndexQuery() { Query = "FROM orders" }));
                 await deleteOperation.WaitForCompletionAsync(TimeSpan.FromSeconds(60));
 
                 var oldSize = StorageCompactionTestsSlow.GetDirSize(new DirectoryInfo(path));
