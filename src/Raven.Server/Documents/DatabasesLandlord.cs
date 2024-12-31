@@ -1201,7 +1201,7 @@ namespace Raven.Server.Documents
             if (SkipShouldContinueDisposeCheck)
                 return true;
 
-            // if we have a small value or even a negative one, simply don't dispose the database.
+            // if we have a small value, simply don't dispose the database.
             return idleDatabaseActivity.DueTime > TimeSpan.FromMinutes(5).TotalMilliseconds;
         }
 
@@ -1288,7 +1288,7 @@ namespace Raven.Server.Documents
         public DateTime? DateTime { get; internal set; }
         public long TaskId { get; }
         public int DueTime => DateTime.HasValue
-            ? (int)Math.Min(int.MaxValue, (DateTime.Value - System.DateTime.UtcNow).TotalMilliseconds)
+            ? (int)Math.Min(int.MaxValue, Math.Max(0, (DateTime.Value - System.DateTime.UtcNow).TotalMilliseconds))
             : 0;
 
         public IdleDatabaseActivity(IdleDatabaseActivityType type)
