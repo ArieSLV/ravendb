@@ -5,9 +5,9 @@ using System.Threading.Tasks;
 using Raven.Client.Documents.Operations.Backups;
 using Raven.Client.ServerWide.Operations;
 using Raven.Client.ServerWide.Operations.Configuration;
-using Raven.Client.Util;
 using Raven.Server;
-using Raven.Server.ServerWide.Commands.PeriodicBackup;
+using Raven.Server.ServerWide.Context;
+using Raven.Server.Utils;
 using Raven.Tests.Core.Utils.Entities;
 using Tests.Infrastructure;
 using Xunit;
@@ -45,9 +45,40 @@ namespace StressTests.Server.Documents.PeriodicBackup
                 var val = WaitForValue(() => gotMissingResponsibleNode, true, timeout: 66666, interval: 333);
                 Assert.True(val, "Didn't get a missing responsible node status");
 
+                Backup.WaitForResponsibleNodeUpdate(Server.ServerStore, store.Database, periodicBackupTaskId);
+
                 var getPeriodicBackupStatus = new GetPeriodicBackupStatusOperation(periodicBackupTaskId);
-                val = WaitForValue(() => store.Maintenance.Send(getPeriodicBackupStatus).Status?.LastFullBackup != null, true, timeout: 66666, interval: 333);
-                Assert.True(val, "Failed to complete the backup in time");
+                PeriodicBackupStatus getStatusResult = null;
+                val = WaitForValue(() =>
+                {
+                    getStatusResult = store.Maintenance.Send(getPeriodicBackupStatus).Status;
+                    return getStatusResult?.LastFullBackup != null;
+                }, true, timeout: 66666, interval: 333);
+
+                Assert.True(val, BuildFailedToCompleteBackupMessage());
+                return;
+
+                string BuildFailedToCompleteBackupMessage()
+                {
+                    var msg = "Failed to complete the backup in time.";
+
+                    using (Server.ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
+                    using (context.OpenReadTransaction())
+                    {
+                        var responsibleNode = BackupUtils.GetResponsibleNodeTag(Server.ServerStore, store.Database, periodicBackupTaskId);
+                        msg += $" ResponsibleNode: '{responsibleNode ?? "null"}'.";
+
+                        if (getStatusResult != null)
+                        {
+                            var bjro = context.ReadObject(getStatusResult.ToJson(), "status");
+                            msg += $" {nameof(PeriodicBackupStatus)}:{Environment.NewLine}{bjro}";
+                        }
+                        else
+                            msg += $" {nameof(PeriodicBackupStatus)} is null.";
+                    }
+
+                    return msg;
+                }
             }
         }
 
