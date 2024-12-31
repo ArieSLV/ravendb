@@ -926,7 +926,7 @@ namespace Raven.Server.Web.System
             if (state != DatabaseStateStatus.RestoreInProgress)
                 return;
 
-            var restoredOnNode = topology.Members.First(); // we restore only on one node
+            var restoredOnNode = topology.AllNodes.First(); // we restore only on one node
             if (ServerStore.NodeTag != restoredOnNode)
                 throw new InvalidOperationException($"Can't delete database '{databaseName}' while the restore " +
                                                     $"process is in progress. In order to delete the database, " +
