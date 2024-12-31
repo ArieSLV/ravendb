@@ -3,6 +3,7 @@ using System.IO.Compression;
 using Microsoft.AspNetCore.Http;
 using Raven.Client.Documents.Smuggler;
 using Raven.Server.Routing;
+using Sparrow.Json.Parsing;
 
 namespace Raven.Server.Smuggler.Documents.Data
 {
@@ -53,6 +54,18 @@ namespace Raven.Server.Smuggler.Documents.Data
             }
 
             return result;
+        }
+        
+        public override DynamicJsonValue ToAuditJson()
+        {
+            var json = base.ToAuditJson();
+            json[nameof(ReadLegacyEtag)] = ReadLegacyEtag;
+            json[nameof(FileName)] = FileName;
+            json[nameof(AuthorizationStatus)] = AuthorizationStatus.ToString();
+            json[nameof(SkipRevisionCreation)] = SkipRevisionCreation;
+            json[nameof(CompressionAlgorithm)] = CompressionAlgorithm?.ToString();
+            json[nameof(CompressionLevel)] = CompressionLevel?.ToString();
+            return json;
         }
     }
 }

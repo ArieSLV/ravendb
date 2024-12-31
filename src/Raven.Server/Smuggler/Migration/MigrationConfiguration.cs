@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using Raven.Client.Documents.Smuggler;
 using Sparrow.Json;
+using Sparrow.Json.Parsing;
 
 namespace Raven.Server.Smuggler.Migration
 {
@@ -43,6 +44,16 @@ namespace Raven.Server.Smuggler.Migration
         public bool ImportRavenFs { get; set; }
 
         public string TransformScript { get; set; }
+
+        public DynamicJsonValue ToAuditJson() =>
+            new()
+            {
+                [nameof(OperateOnTypes)] = OperateOnTypes,
+                [nameof(OperateOnDatabaseRecordTypes)] = OperateOnDatabaseRecordTypes,
+                [nameof(RemoveAnalyzers)] = RemoveAnalyzers,
+                [nameof(ImportRavenFs)] = ImportRavenFs,
+                [nameof(TransformScript)] = TransformScript
+            };
     }
 
     public abstract class MigrationConfigurationBase

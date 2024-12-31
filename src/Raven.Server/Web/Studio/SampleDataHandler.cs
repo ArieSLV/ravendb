@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.IO.Compression;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Primitives;
 using Raven.Client.Documents.Operations.Revisions;
@@ -12,6 +11,8 @@ using Raven.Server.ServerWide.Commands;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.Smuggler.Documents;
 using Raven.Server.Smuggler.Documents.Data;
+using Raven.Server.Web.System;
+using Sparrow.Logging;
 using DatabaseSmuggler = Raven.Server.Smuggler.Documents.DatabaseSmuggler;
 
 namespace Raven.Server.Web.Studio
@@ -92,6 +93,9 @@ namespace Raven.Server.Web.Studio
                         await smuggler.ExecuteAsync();
                     }
                 }
+                
+                if (LoggingSource.AuditLog.IsInfoEnabled)
+                    LogAuditFor(Database.Name, "IMPORT", $"{EnumHelper.GetDescription(Documents.Operations.Operations.OperationType.DatabaseImport)} from sample data");
 
                 await NoContent();
             }

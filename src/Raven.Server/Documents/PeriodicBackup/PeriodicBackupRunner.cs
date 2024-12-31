@@ -33,6 +33,7 @@ namespace Raven.Server.Documents.PeriodicBackup
     public class PeriodicBackupRunner : ITombstoneAware, IDisposable
     {
         private readonly Logger _logger;
+        private readonly Logger _auditLog = LoggingSource.AuditLog.GetLogger("PeriodicBackupRunner", "Audit");
 
         private readonly DocumentDatabase _database;
         private readonly ServerStore _serverStore;
@@ -469,6 +470,16 @@ namespace Raven.Server.Documents.PeriodicBackup
                     ScheduleNextBackup(periodicBackup, backupResult?.Elapsed, lockTaken: false);
 
                     tcs.SetResult(backupResult);
+                }
+                
+                if (LoggingSource.AuditLog.IsInfoEnabled)
+                {
+                    using (_serverStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
+                    {
+                        var backupKind = backupTask._isFullBackup ? BackupKind.Full : BackupKind.Incremental;
+                        var configurationString = context.ReadObject(periodicBackup.Configuration.ToAuditJson(), nameof(PeriodicBackupConfiguration)).ToString();
+                        _auditLog.Info($"EXPORT {backupKind} backup executed automatically as scheduled with configuration: '{configurationString}'");
+                    }
                 }
             }
             catch (Exception e) when (e.ExtractSingleInnerException() is OperationCanceledException oce)

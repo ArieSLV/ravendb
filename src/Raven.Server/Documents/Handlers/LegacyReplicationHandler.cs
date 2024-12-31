@@ -15,6 +15,7 @@ using Raven.Server.Smuggler.Documents.Data;
 using Raven.Server.Smuggler.Migration;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
+using Sparrow.Logging;
 using DatabaseSmuggler = Raven.Server.Smuggler.Documents.DatabaseSmuggler;
 
 namespace Raven.Server.Documents.Handlers
@@ -51,10 +52,17 @@ namespace Raven.Server.Documents.Handlers
 
                 var smuggler = new DatabaseSmuggler(Database, source, destination, Database.Time, options);
                 var result = await smuggler.ExecuteAsync();
+                var fromServer = GetFromServer();
 
+                if (LoggingSource.AuditLog.IsInfoEnabled)
+                {
+                    var optionsString = context.ReadObject(options.ToAuditJson(), nameof(DatabaseSmugglerOptionsServerSide)).ToString();
+                    LogAuditFor(Database.Name, "IMPORT", $"Executed legacy documents replication from '{fromServer}' with options: '{optionsString}'");
+                }
+                
                 var replicationSource = GetSourceReplicationInformation(context, GetRemoteServerInstanceId(), out var documentId);
                 replicationSource.LastDocumentEtag = result.LegacyLastDocumentEtag;
-                replicationSource.Source = GetFromServer();
+                replicationSource.Source = fromServer;
                 replicationSource.LastBatchSize = result.Documents.ReadCount + result.Tombstones.ReadCount;
                 replicationSource.LastModified = DateTime.UtcNow;
 

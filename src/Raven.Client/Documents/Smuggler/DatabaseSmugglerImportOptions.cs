@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+﻿using Sparrow.Json.Parsing;
 
 namespace Raven.Client.Documents.Smuggler
 {
@@ -19,6 +19,13 @@ namespace Raven.Client.Documents.Smuggler
         }
 
         public bool SkipRevisionCreation { get; set; }
+        
+        public override DynamicJsonValue ToAuditJson()
+        {
+            var json = base.ToAuditJson();
+            json[nameof(SkipRevisionCreation)] = SkipRevisionCreation;
+            return json;
+        }
     }
 
     internal interface IDatabaseSmugglerImportOptions : IDatabaseSmugglerOptions

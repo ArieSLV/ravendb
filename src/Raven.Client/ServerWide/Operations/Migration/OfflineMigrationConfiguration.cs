@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using Raven.Client.Util;
+using Sparrow.Json.Parsing;
 
 namespace Raven.Client.ServerWide.Operations.Migration
 {
@@ -154,5 +155,21 @@ namespace Raven.Client.ServerWide.Operations.Migration
                 return $"\"{path}\"";
             }
         }
+        
+        public DynamicJsonValue ToAuditJson() =>
+            new()
+            {
+                [nameof(DataDirectory)] = DataDirectory,
+                [nameof(OutputFilePath)] = OutputFilePath,
+                [nameof(DataExporterFullPath)] = DataExporterFullPath,
+                [nameof(BatchSize)] = BatchSize,
+                [nameof(IsRavenFs)] = IsRavenFs,
+                [nameof(IsCompressed)] = IsCompressed,
+                [nameof(JournalsPath)] = JournalsPath,
+                [nameof(LogFileSize)] = LogFileSize,
+                [nameof(MaxVerPages)] = MaxVerPages,
+                [nameof(EncryptionAlgorithm)] = EncryptionAlgorithm,
+                [nameof(Timeout)] = Timeout
+            };
     }
 }

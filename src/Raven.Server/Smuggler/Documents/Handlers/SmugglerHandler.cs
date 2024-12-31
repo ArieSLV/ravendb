@@ -7,7 +7,6 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Data;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -38,6 +37,7 @@ using Raven.Server.ServerWide.Context;
 using Raven.Server.Smuggler.Documents.Data;
 using Raven.Server.Smuggler.Migration;
 using Raven.Server.Utils;
+using Raven.Server.Web.System;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using Sparrow.Logging;
@@ -151,8 +151,12 @@ namespace Raven.Server.Smuggler.Documents.Handlers
                 {
                     HttpContext.Abort();
                 }
-                
-                LogTaskToAudit(Operations.OperationType.DatabaseExport.ToString(), operationId, configuration: null);
+
+                if (LoggingSource.AuditLog.IsInfoEnabled)
+                {
+                    var optionsString = context.ReadObject(options.ToAuditJson(), nameof(DatabaseSmugglerOptionsServerSide)).ToString();
+                    LogAuditFor(Database.Name, "EXPORT", $"{EnumHelper.GetDescription(Operations.OperationType.DatabaseExport)} using options: '{optionsString}'");
+                }
             }
         }
 
@@ -230,7 +234,7 @@ namespace Raven.Server.Smuggler.Documents.Handlers
 
         private async Task<Stream> GetInputStreamAsync(Stream fileStream, DatabaseSmugglerOptionsServerSide options)
         {
-            if (options.EncryptionKey != null)
+            if (options?.EncryptionKey != null)
             {
                 var decryptingStream = new DecryptingXChaCha20Oly1305Stream(fileStream, Convert.FromBase64String(options.EncryptionKey));
 
@@ -267,6 +271,13 @@ namespace Raven.Server.Smuggler.Documents.Handlers
 
                     await WriteImportResultAsync(context, result, ResponseBodyStream());
                 }
+
+                if (LoggingSource.AuditLog.IsInfoEnabled)
+                {
+                    var optionsString = context.ReadObject(options.ToAuditJson(), nameof(DatabaseSmugglerOptionsServerSide)).ToString();
+                    LogAuditFor(Database.Name, "IMPORT", $"{EnumHelper.GetDescription(Operations.OperationType.DatabaseImport)} " +
+                                                      $"using options: '{optionsString}'");
+                }
             }
         }
 
@@ -292,6 +303,10 @@ namespace Raven.Server.Smuggler.Documents.Handlers
             var files = new BlockingCollection<Func<Task<Stream>>>(new ConcurrentQueue<Func<Task<Stream>>>(urls));
             files.CompleteAdding();
             await BulkImport(files, Path.GetTempPath());
+            
+            if (LoggingSource.AuditLog.IsInfoEnabled)
+                LogAuditFor(Database.Name, "IMPORT", $"{EnumHelper.GetDescription(Operations.OperationType.DatabaseImport)} from S3 directory " +
+                                                     $"using url: '{url}', files count: '{files.Count}'");
         }
 
         [RavenAction("/databases/*/admin/smuggler/import-dir", "GET", AuthorizationStatus.DatabaseAdmin, DisableOnCpuCreditsExhaustion = true)]
@@ -306,6 +321,10 @@ namespace Raven.Server.Smuggler.Documents.Handlers
             );
             files.CompleteAdding();
             await BulkImport(files, directory);
+            
+            if (LoggingSource.AuditLog.IsInfoEnabled)
+                LogAuditFor(Database.Name, "IMPORT", $"{EnumHelper.GetDescription(Operations.OperationType.DatabaseImport)} " +
+                                                     $"from directory: '{directory}', files count: '{files.Count}'");
         }
 
         private async Task BulkImport(BlockingCollection<Func<Task<Stream>>> files, string directory)
@@ -428,7 +447,14 @@ namespace Raven.Server.Smuggler.Documents.Handlers
                 var migrator = new Migrator(migrationConfigurationJson, ServerStore);
                 await migrator.UpdateBuildInfoIfNeeded();
                 var operationId = migrator.StartMigratingSingleDatabase(migrationConfigurationJson.MigrationSettings, Database);
-
+                
+                if (LoggingSource.AuditLog.IsInfoEnabled)
+                {
+                    var migrationConfigurationString = context.ReadObject(migrationConfigurationJson.MigrationSettings.ToAuditJson(), nameof(DatabaseMigrationSettings)).ToString();
+                    LogAuditFor(Database.Name, "IMPORT", $"{EnumHelper.GetDescription(Operations.OperationType.DatabaseMigration)} from RavenDB " +
+                                                      $"using configuration: '{migrationConfigurationString}'");
+                }
+                
                 await using (var writer = new AsyncBlittableJsonTextWriter(context, ResponseBodyStream()))
                 {
                     writer.WriteOperationIdAndNodeTag(context, operationId, ServerStore.NodeTag);
@@ -580,8 +606,9 @@ namespace Raven.Server.Smuggler.Documents.Handlers
                 var operationId = GetLongQueryString("operationId", false) ?? Database.Operations.GetNextOperationId();
                 var token = CreateBackgroundOperationToken();
                 var transformScript = migrationConfiguration.TransformScript;
-
-                var t = Database.Operations.AddOperation(Database, $"Migration from: {migrationConfiguration.DatabaseTypeName}",
+                
+                var description = $"{EnumHelper.GetDescription(Operations.OperationType.DatabaseMigration)} from: '{migrationConfiguration.DatabaseTypeName}'";
+                var t = Database.Operations.AddOperation(Database, description,
                     Operations.OperationType.DatabaseMigration,
                     onProgress =>
                     {
@@ -598,6 +625,12 @@ namespace Raven.Server.Smuggler.Documents.Handlers
                                         TransformScript = transformScript
                                     };
                                     await DoImportInternalAsync(migrateContext, process.StandardOutput.BaseStream, options, result, onProgress, token);
+
+                                    if (LoggingSource.AuditLog.IsInfoEnabled)
+                                    {
+                                        var optionsString = migrateContext.ReadObject(options.ToAuditJson(), nameof(DatabaseSmugglerOptionsServerSide)).ToString();
+                                        LogAuditFor(Database.Name, "IMPORT", $"{description} using options: '{optionsString}'");
+                                    }
                                 }
                             }
                             catch (OperationCanceledException)
@@ -738,6 +771,14 @@ namespace Raven.Server.Smuggler.Documents.Handlers
                                     var inputStream = await GetInputStreamAsync(section.Body, options);
                                     var stream = await BackupUtils.GetDecompressionStreamAsync(inputStream);
                                     await DoImportInternalAsync(context, stream, options, result, onProgress, token);
+
+                                    if (LoggingSource.AuditLog.IsInfoEnabled)
+                                    {
+                                        options ??= new DatabaseSmugglerOptionsServerSide();
+                                        var optionsString = context.ReadObject(options.ToAuditJson(), nameof(DatabaseSmugglerOptionsServerSide)).ToString();
+                                        LogAuditFor(Database.Name, "IMPORT",
+                                            $"{EnumHelper.GetDescription(Operations.OperationType.DatabaseImport)} using options: '{optionsString}'");
+                                    }
                                 }
                             }
                             catch (Exception e)
@@ -847,9 +888,11 @@ namespace Raven.Server.Smuggler.Documents.Handlers
                 var result = new SmugglerResult();
                 var operationId = GetLongQueryString("operationId", false) ?? Database.Operations.GetNextOperationId();
                 var collection = GetStringQueryString("collection", false);
-                var operationDescription = collection != null ? "Import collection: " + collection : "Import collection from CSV";
+                var operationDescription = EnumHelper.GetDescription(Operations.OperationType.CollectionImportFromCsv);
+                if (string.IsNullOrEmpty(collection) == false)
+                    operationDescription += $": '{collection}'";
 
-                await Database.Operations.AddOperation(Database, operationDescription, Raven.Server.Documents.Operations.Operations.OperationType.CollectionImportFromCsv,
+                await Database.Operations.AddOperation(Database, operationDescription, Operations.OperationType.CollectionImportFromCsv,
                     onProgress =>
                     {
                         return Task.Run(async () =>
@@ -930,6 +973,12 @@ namespace Raven.Server.Smuggler.Documents.Handlers
                                         else
                                         {
                                             await ImportDocumentsFromCsvStreamAsync(section.Body, context, collection, options, result, onProgress, token, csvConfig);
+                                        }
+
+                                        if (LoggingSource.AuditLog.IsInfoEnabled)
+                                        {
+                                            var optionsString = context.ReadObject(options.ToAuditJson(), nameof(DatabaseSmugglerOptionsServerSide)).ToString();
+                                            LogAuditFor(Database.Name, "IMPORT", $"{operationDescription} using options: '{optionsString}'");
                                         }
                                     }
                                 }

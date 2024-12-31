@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features.Authentication;
 using Raven.Client;
 using Raven.Client.Documents.Changes;
@@ -158,6 +157,12 @@ namespace Raven.Server.Documents.Handlers.Admin
 
                 var smuggler = new DatabaseSmuggler(Database, source, destination, Database.Time, options);
                 await smuggler.ExecuteAsync();
+
+                if (LoggingSource.AuditLog.IsInfoEnabled)
+                {
+                    var optionsString = context.ReadObject(options.ToAuditJson(), nameof(DatabaseSmugglerOptionsServerSide)).ToString();
+                    LogAuditFor(Database.Name, "IMPORT", $"Index deployment from legacy replication with options: '{optionsString}'");
+                }
             }
         }
 

@@ -34,6 +34,19 @@ namespace Raven.Client.Documents.Operations.Backups
                 [nameof(Type)] = Type
             };
         }
+
+        internal virtual DynamicJsonValue ToAuditJson() =>
+            new()
+            {
+                [nameof(DatabaseName)] = DatabaseName,
+                [nameof(LastFileNameToRestore)] = LastFileNameToRestore,
+                [nameof(DataDirectory)] = DataDirectory,
+                [nameof(EncryptionKey)] = EncryptionKey,
+                [nameof(DisableOngoingTasks)] = DisableOngoingTasks,
+                [nameof(SkipIndexes)] = SkipIndexes,
+                [nameof(BackupEncryptionSettings)] = BackupEncryptionSettings,
+                [nameof(Type)] = Type
+            };
     }
 
     public class RestoreBackupConfiguration : RestoreBackupConfigurationBase
@@ -45,6 +58,13 @@ namespace Raven.Client.Documents.Operations.Backups
         public override DynamicJsonValue ToJson()
         {
             var json = base.ToJson();
+            json[nameof(BackupLocation)] = BackupLocation;
+            return json;
+        }
+
+        internal override DynamicJsonValue ToAuditJson()
+        {
+            var json = base.ToAuditJson();
             json[nameof(BackupLocation)] = BackupLocation;
             return json;
         }
@@ -62,6 +82,13 @@ namespace Raven.Client.Documents.Operations.Backups
             json[nameof(Settings)] = Settings;
             return json;
         }
+
+        internal override DynamicJsonValue ToAuditJson()
+        {
+            var json = base.ToAuditJson();
+            json[nameof(Settings)] = Settings.ToAuditJson();
+            return json;
+        }
     }
 
     public class RestoreFromAzureConfiguration : RestoreBackupConfigurationBase
@@ -76,6 +103,13 @@ namespace Raven.Client.Documents.Operations.Backups
             json[nameof(Settings)] = Settings;
             return json;
         }
+        
+        internal override DynamicJsonValue ToAuditJson()
+        {
+            var json = base.ToAuditJson();
+            json[nameof(Settings)] = Settings.ToAuditJson();
+            return json;
+        }
     }  
     
     public class RestoreFromGoogleCloudConfiguration : RestoreBackupConfigurationBase
@@ -88,6 +122,13 @@ namespace Raven.Client.Documents.Operations.Backups
         {
             var json = base.ToJson();
             json[nameof(Settings)] = Settings;
+            return json;
+        }
+        
+        internal override DynamicJsonValue ToAuditJson()
+        {
+            var json = base.ToAuditJson();
+            json[nameof(Settings)] = Settings.ToAuditJson();
             return json;
         }
     }

@@ -661,10 +661,12 @@ namespace Raven.Server.Web.System
                 var operationId = ServerStore.Operations.GetNextOperationId();
                 var cancelToken = CreateBackgroundOperationToken();
                 RestoreBackupTaskBase restoreBackupTask;
+                DynamicJsonValue configurationJsonForAudit;
                 switch (restoreType)
                 {
                     case RestoreType.Local:
                         var localConfiguration = JsonDeserializationCluster.RestoreBackupConfiguration(restoreConfiguration);
+                        configurationJsonForAudit = localConfiguration.ToAuditJson();
                         restoreBackupTask = new RestoreFromLocal(
                             ServerStore,
                             localConfiguration,
@@ -674,6 +676,7 @@ namespace Raven.Server.Web.System
 
                     case RestoreType.S3:
                         var s3Configuration = JsonDeserializationCluster.RestoreS3BackupConfiguration(restoreConfiguration);
+                        configurationJsonForAudit = s3Configuration.ToAuditJson();
                         restoreBackupTask = new RestoreFromS3(
                             ServerStore,
                             s3Configuration,
@@ -683,6 +686,7 @@ namespace Raven.Server.Web.System
 
                     case RestoreType.Azure:
                         var azureConfiguration = JsonDeserializationCluster.RestoreAzureBackupConfiguration(restoreConfiguration);
+                        configurationJsonForAudit = azureConfiguration.ToAuditJson();
                         restoreBackupTask = new RestoreFromAzure(
                             ServerStore,
                             azureConfiguration,
@@ -692,6 +696,7 @@ namespace Raven.Server.Web.System
 
                     case RestoreType.GoogleCloud:
                         var googlCloudConfiguration = JsonDeserializationCluster.RestoreGoogleCloudBackupConfiguration(restoreConfiguration);
+                        configurationJsonForAudit = googlCloudConfiguration.ToAuditJson();
                         restoreBackupTask = new RestoreFromGoogleCloud(
                             ServerStore,
                             googlCloudConfiguration,
@@ -709,6 +714,13 @@ namespace Raven.Server.Web.System
                     Documents.Operations.Operations.OperationType.DatabaseRestore,
                     taskFactory: onProgress => Task.Run(async () => await restoreBackupTask.Execute(onProgress), cancelToken.Token),
                     id: operationId, token: cancelToken, resourceName: restoreBackupTask.RestoreFromConfiguration.DatabaseName);
+
+                if (LoggingSource.AuditLog.IsInfoEnabled)
+                {
+                    var configurationString = context.ReadObject(configurationJsonForAudit, nameof(configurationJsonForAudit)).ToString();
+                    LogAuditFor(restoreBackupTask.RestoreFromConfiguration.DatabaseName, "IMPORT",
+                        $"{EnumHelper.GetDescription(Documents.Operations.Operations.OperationType.DatabaseRestore)} with restore type: '{restoreType}' " +
+                        $"using configuration: '{configurationString}'");}
 
                 await using (var writer = new AsyncBlittableJsonTextWriter(context, ResponseBodyStream()))
                 {
@@ -1402,6 +1414,14 @@ namespace Raven.Server.Web.System
                 var migrator = new Migrator(migrationConfigurationJson, ServerStore);
                 await migrator.MigrateDatabases(migrationConfigurationJson.Databases);
 
+                if (LoggingSource.AuditLog.IsInfoEnabled)
+                    foreach (var databaseMigrationSettings in migrationConfigurationJson.Databases)
+                    {
+                        var databaseMigrationSettingsString = context.ReadObject(databaseMigrationSettings.ToAuditJson(), nameof(databaseMigrationSettings)).ToString();
+                        LogAuditFor(databaseMigrationSettings.DatabaseName, "IMPORT", $"{EnumHelper.GetDescription(Documents.Operations.Operations.OperationType.DatabaseMigration)} from RavenDB " +
+                                                                                   $"using configuration: '{databaseMigrationSettingsString}'");
+                    }
+
                 NoContentStatus();
             }
         }
@@ -1547,6 +1567,17 @@ namespace Raven.Server.Web.System
                                         token: token.Token);
 
                                     await smuggler.ExecuteAsync();
+                                }
+                                
+                                if (LoggingSource.AuditLog.IsInfoEnabled)
+                                {
+                                    using (ServerStore.ContextPool.AllocateOperationContext(out TransactionOperationContext context))
+                                    {
+                                        var configurationString = context.ReadObject(configuration.ToAuditJson(), nameof(configuration)).ToString();
+                                        LogAuditFor(databaseName, "IMPORT",
+                                            $"{EnumHelper.GetDescription(Documents.Operations.Operations.OperationType.MigrationFromLegacyData)} " +
+                                            $"using configuration: '{configurationString}'");
+                                    }
                                 }
                             }
                         }
