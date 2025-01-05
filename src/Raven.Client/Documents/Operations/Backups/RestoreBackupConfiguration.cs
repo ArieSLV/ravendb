@@ -41,7 +41,6 @@ namespace Raven.Client.Documents.Operations.Backups
                 [nameof(DatabaseName)] = DatabaseName,
                 [nameof(LastFileNameToRestore)] = LastFileNameToRestore,
                 [nameof(DataDirectory)] = DataDirectory,
-                [nameof(EncryptionKey)] = EncryptionKey,
                 [nameof(DisableOngoingTasks)] = DisableOngoingTasks,
                 [nameof(SkipIndexes)] = SkipIndexes,
                 [nameof(BackupEncryptionSettings)] = BackupEncryptionSettings,
