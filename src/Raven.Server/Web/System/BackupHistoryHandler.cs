@@ -11,7 +11,7 @@ namespace Raven.Server.Web.System;
 
 internal class BackupHistoryHandler : DatabaseRequestHandler
 {
-    [RavenAction("/databases/*/backup/result", "GET", AuthorizationStatus.DatabaseAdmin)]
+    [RavenAction("/databases/*/admin/backup/result", "GET", AuthorizationStatus.DatabaseAdmin)]
     public async Task GetBackupResult()
     {
         var taskId = GetLongQueryString("taskId");
@@ -30,7 +30,7 @@ internal class BackupHistoryHandler : DatabaseRequestHandler
         }
     }
 
-    [RavenAction("/databases/*/backup/history", "GET", AuthorizationStatus.DatabaseAdmin)]
+    [RavenAction("/databases/*/admin/backup/history", "GET", AuthorizationStatus.DatabaseAdmin)]
     public async Task GetBackupHistory()
     {
         var includeIncrementals = GetBoolValueQueryString("includeIncrementals", required: false) ?? true;

@@ -1250,7 +1250,7 @@ namespace Tests.Infrastructure
         {
             var client = store.GetRequestExecutor().HttpClient;
 
-            var baseUrl = $"{store.Urls.First()}/databases/{parameters.DatabaseName}/backup/history";
+            var baseUrl = $"{store.Urls.First()}/databases/{parameters.DatabaseName}/admin/backup/history";
 
             var builder = new UriBuilder(baseUrl);
 
@@ -1289,7 +1289,7 @@ namespace Tests.Infrastructure
             var client = store.GetRequestExecutor().HttpClient;
             var response = AsyncHelpers.RunSync(() =>
                 client.GetAsync(
-                    $"{store.Urls.First()}/databases/{databaseName}/backup/result?taskId={taskId}&id={createdAt.Ticks}"));
+                    $"{store.Urls.First()}/databases/{databaseName}/admin/backup/result?taskId={taskId}&id={createdAt.Ticks}"));
             string result = response.Content.ReadAsStringAsync().Result;
                 
             var resultBjro = context.Sync.ReadForMemory(result, "Result");
