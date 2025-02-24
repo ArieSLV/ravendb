@@ -302,7 +302,7 @@ namespace Raven.Server.Documents.PeriodicBackup
                 lastEtag = _database.DocumentsStorage.ReadLastEtag(tx.InnerTransaction);
             }
 
-            return BackupUtils.GetEarliestIdleDatabaseActivity(new BackupUtils.EarliestIdleDatabaseActivityParameters
+            var a =  BackupUtils.GetEarliestIdleDatabaseActivity(new BackupUtils.EarliestIdleDatabaseActivityParameters
             {
                 DatabaseName = databaseName,
                 DatabaseWakeUpTimeUtc = _databaseWakeUpTimeUtc,
@@ -314,6 +314,10 @@ namespace Raven.Server.Documents.PeriodicBackup
                 ServerStore = _serverStore,
                 IsIdle = false
             });
+
+            Console.WriteLine($"{DateTime.Now:O}: Periodic backup runner: Next idle database activity for {databaseName}: {a.Type}, {a.DateTime:O}");
+
+            return a;
         }
 
         private long CreateBackupTask(PeriodicBackup periodicBackup, bool isFullBackup, DateTime startTimeInUtc, long? operationId = null)

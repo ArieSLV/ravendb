@@ -38,7 +38,7 @@ namespace Raven.Server.Documents.PeriodicBackup
             {
                 lock (_locker)
                 {
-                    return _runningBackupsPerDatabase.Count - 1 > 0;
+                    return _runningBackupsPerDatabase.Count <= MaxNumberOfConcurrentBackups;
                 }
             }
         }

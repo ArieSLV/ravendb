@@ -1267,44 +1267,53 @@ namespace Raven.Server.Documents
 
         public bool UnloadDirectly(StringSegment databaseName, IdleDatabaseActivity idleDatabaseActivity, [CallerMemberName] string caller = null)
         {
+            Console.WriteLine($"{DateTime.Now:O}: UnloadDirectly -> Unloading directly database '{databaseName}'.");
             if (ShouldContinueDispose(databaseName.Value, idleDatabaseActivity) == false)
             {
+                Console.WriteLine($"{DateTime.Now:O}: UnloadDirectly -> Unloading directly database '{databaseName}' failed: {nameof(IdleDatabaseActivity.DueTime)} is {idleDatabaseActivity?.DueTime} ms which is less than {TimeSpan.FromMinutes(5).TotalMilliseconds} ms.");
                 LogUnloadFailureReason(databaseName, $"{nameof(IdleDatabaseActivity.DueTime)} is {idleDatabaseActivity?.DueTime} ms which is less than {TimeSpan.FromMinutes(5).TotalMilliseconds} ms.");
                 return false;
             }
 
             if (DatabasesCache.TryGetValue(databaseName, out var databaseTask) == false)
             {
+                Console.WriteLine($"{DateTime.Now:O}: UnloadDirectly -> Unloading directly database '{databaseName}' failed: database was already unloaded or deleted.");
                 LogUnloadFailureReason(databaseName, "database was already unloaded or deleted.");
                 return false;
             }
 
             if (databaseTask.IsCompleted == false)
             {
+                Console.WriteLine($"{DateTime.Now:O}: UnloadDirectly -> Unloading directly database '{databaseName}' failed: database is loading.");
                 LogUnloadFailureReason(databaseName, "database is loading.");
                 return false;
             }
 
             if (databaseTask.IsCompletedSuccessfully == false)
             {
+                Console.WriteLine($"{DateTime.Now:O}: UnloadDirectly -> Unloading directly database '{databaseName}' failed: database task is faulted or canceled.");
                 LogUnloadFailureReason(databaseName, "database task is faulted or canceled.");
                 return false;
             }
 
             try
             {
+                Console.WriteLine($"{DateTime.Now:O}: Starting to unload database '{databaseName}' directly.");
                 UnloadDatabaseInternal(databaseName.Value, caller);
                 LastRecentlyUsed.TryRemove(databaseName, out _);
 
                 // DateTime should be only null in tests
                 if (idleDatabaseActivity is { DateTime: not null })
                 {
+                    Console.WriteLine($"{DateTime.Now:O}: Unloading directly database '{databaseName}', next scheduled action is {idleDatabaseActivity.Type} at {idleDatabaseActivity.DateTime:O}.");
                     AddOrUpdateWakeupTimer(databaseName.Value, idleDatabaseActivity);
                 }
 
+                var msg = idleDatabaseActivity == null ? "without setting a wakeup timer." : $"wakeup timer set to: '{idleDatabaseActivity.DateTime.GetValueOrDefault():O}', which will happen in '{idleDatabaseActivity.DueTime}' ms.";
+                Console.WriteLine($"{DateTime.Now:O}: Unloading directly database '{databaseName}', {msg}");
+
                 if (_logger.IsOperationsEnabled)
                 {
-                    var msg = idleDatabaseActivity == null ? "without setting a wakeup timer." : $"wakeup timer set to: '{idleDatabaseActivity.DateTime.GetValueOrDefault()}', which will happen in '{idleDatabaseActivity.DueTime}' ms.";
                     _logger.Operations($"Unloading directly database '{databaseName}', {msg}");
                 }
 
@@ -1312,21 +1321,25 @@ namespace Raven.Server.Documents
             }
             catch (AggregateException ae) when (nameof(DeleteDatabase).Equals(ae.InnerException.Data["Source"]))
             {
+                Console.WriteLine($"{DateTime.Now:O}: UnloadDirectly -> Unloading directly database '{databaseName}' failed: database is in the process of being deleted.");
                 LogUnloadFailureReason(databaseName, "database is in the process of being deleted.");
                 return false;
             }
             catch (AggregateException ae) when (ae.InnerException is DatabaseDisabledException)
             {
+                Console.WriteLine($"{DateTime.Now:O}: UnloadDirectly -> Unloading directly database '{databaseName}' failed: database is already disabled when we try to unload it.");
                 LogUnloadFailureReason(databaseName, "database is already disabled when we try to unload it.");
                 return false;
             }
             catch (DatabaseDisabledException)
             {
+                Console.WriteLine($"{DateTime.Now:O}: UnloadDirectly -> Unloading directly database '{databaseName}' failed: database is already disabled when we try to unload it.");
                 LogUnloadFailureReason(databaseName, "database is already disabled when we try to unload it.");
                 return false;
             }
             catch (ObjectDisposedException)
             {
+                Console.WriteLine($"{DateTime.Now:O}: UnloadDirectly -> Unloading directly database '{databaseName}' failed: the server is disposed when we are trying to access to database.");
                 LogUnloadFailureReason(databaseName, "the server is disposed when we are trying to access to database.");
                 return false;
             }
@@ -1339,6 +1352,7 @@ namespace Raven.Server.Documents
                 _ => new Timer(_ => NextScheduledActivityCallback(databaseName, idleDatabaseActivity), state: null, dueTime: idleDatabaseActivity.DueTime, period: Timeout.Infinite),
                 (_, timer) =>
                 {
+                    Console.WriteLine($"{DateTime.Now:O}: AddOrUpdateWakeupTimer -> Rescheduling wakeup timer for database '{databaseName}' to {idleDatabaseActivity.DateTime:O}.");
                     timer.Change(idleDatabaseActivity.DueTime, Timeout.Infinite);
                     return timer;
                 });
@@ -1354,8 +1368,12 @@ namespace Raven.Server.Documents
         {
             if (idleDatabaseActivity == null)
             {
+                Console.WriteLine($"{DateTime.Now:O}: Removing wakeup timer for database '{databaseName}'.");
                 if (_wakeupTimers.TryRemove(databaseName, out var oldTimer))
+                {
+                    Console.WriteLine($"{DateTime.Now:O}: Disposing wakeup timer for database '{databaseName}'.");
                     oldTimer.Dispose();
+                }
 
                 return;
             }
@@ -1383,6 +1401,7 @@ namespace Raven.Server.Documents
                             using (context.OpenReadTransaction())
                                 backupStatus = BackupUtils.GetBackupStatusFromCluster(_serverStore, context, databaseName, nextIdleDatabaseActivity.TaskId);
 
+                            // Update current backup status
                             backupStatus.LastIncrementalBackup = backupStatus.LastIncrementalBackupInternal = nextIdleDatabaseActivity.DateTime;
                             backupStatus.LocalBackup.LastIncrementalBackup = nextIdleDatabaseActivity.DateTime;
                             backupStatus.LocalBackup.IncrementalBackupDurationInMs = 0;
@@ -1401,12 +1420,15 @@ namespace Raven.Server.Documents
                                 IsIdle = true
                             });
 
+                            Console.WriteLine($"{DateTime.Now:O}: Rescheduling next idle database activity type {nextIdleDatabaseActivity.Type} for database '{databaseName}' to {nextIdleDatabaseActivity.DateTime:O}.");
+
                             RescheduleNextIdleDatabaseActivity(databaseName, nextIdleDatabaseActivity);
                             break;
 
                         case IdleDatabaseActivityType.WakeUpDatabase:
                             if (_serverStore.ConcurrentBackupsCounter.CanRunBackup == false)
                             {
+                                Console.WriteLine($"{DateTime.Now:O}: Cannot run backup for database '{databaseName}' because we reached max concurrent backups.");
                                 // reached max concurrent backups
                                 var delayInMs = RescheduleDatabaseWakeup();
                                 if (_logger.IsInfoEnabled)
@@ -1417,6 +1439,7 @@ namespace Raven.Server.Documents
 
                             if (BackupUtils.CanServerRunBackup(_serverStore) == false)
                             {
+                                Console.WriteLine($"{DateTime.Now:O}: Cannot run backup for database '{databaseName}' because the server cannot run the backup.");
                                 // the server cannot run the backup anyway (low memory, low cpu credits or high dirty memory state)
                                 var delayInMs = RescheduleDatabaseWakeup();
                                 if (_logger.IsInfoEnabled)
@@ -1428,6 +1451,7 @@ namespace Raven.Server.Documents
                             var startDatabaseForBackup = _serverStore.ConcurrentBackupsCounter.TryStartDatabaseForBackup();
                             if (startDatabaseForBackup == null)
                             {
+                                Console.WriteLine($"{DateTime.Now:O}: Cannot run backup for database '{databaseName}' because we reached max concurrent loading of databases for backup.");
                                 // reached max concurrent loading of databases for backup
                                 var delayInMs = RescheduleDatabaseWakeup();
                                 if (_logger.IsInfoEnabled)

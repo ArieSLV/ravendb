@@ -264,10 +264,11 @@ internal static class BackupUtils
 
     public static NextBackup GetNextBackupDetails(NextBackupDetailsParameters parameters)
     {
-        var nowUtc = DateTime.UtcNow;
+        var baseLine = DateTime.UtcNow;
+        Console.WriteLine($"{DateTime.Now:O}: GetNextBackupDetails -> baseLine: {baseLine:O}");
 
-        var lastFullBackupUtc = parameters.BackupStatus?.LastFullBackupInternal ?? parameters.DatabaseWakeUpTimeUtc ?? parameters.Configuration.CreatedAt ?? nowUtc;
-        var lastIncrementalBackupUtc = parameters.BackupStatus?.LastIncrementalBackupInternal ?? parameters.BackupStatus?.LastFullBackupInternal ?? parameters.DatabaseWakeUpTimeUtc ?? nowUtc;
+        var lastFullBackupUtc = parameters.BackupStatus?.LastFullBackupInternal ?? parameters.DatabaseWakeUpTimeUtc ?? parameters.Configuration.CreatedAt ?? baseLine;
+        var lastIncrementalBackupUtc = parameters.BackupStatus?.LastIncrementalBackupInternal ?? parameters.BackupStatus?.LastFullBackupInternal ?? parameters.DatabaseWakeUpTimeUtc ?? baseLine;
         var nextFullBackup = GetNextBackupOccurrence(new NextBackupOccurrenceParameters
         {
             BackupFrequency = parameters.Configuration.FullBackupFrequency,
@@ -292,9 +293,15 @@ internal static class BackupUtils
         Debug.Assert(parameters.Configuration.TaskId != 0);
 
         var isFullBackup = IsFullBackup(parameters.BackupStatus, parameters.Configuration, nextFullBackup, nextIncrementalBackup, parameters.ResponsibleNodeTag);
+        Console.WriteLine($"{DateTime.Now:O}: GetNextBackupDetails -> isFullBackup: {isFullBackup}, nextFullBackup: {(nextFullBackup.HasValue ? $"{nextFullBackup.Value:O}" : "null")}, nextIncrementalBackup: {(nextIncrementalBackup.HasValue ? $"{nextIncrementalBackup.Value:O}" : "null")}");
+
         var nextBackupTimeLocal = GetNextBackupDateTime(nextFullBackup, nextIncrementalBackup, parameters.BackupStatus?.DelayUntil);
+        Console.WriteLine($"{DateTime.Now:O}: GetNextBackupDetails -> nextBackupTimeLocal: {nextBackupTimeLocal:O}");
+
         var nextBackupTimeUtc = nextBackupTimeLocal.ToUniversalTime();
-        var timeSpan = nextBackupTimeUtc - nowUtc;
+
+        var timeSpan = nextBackupTimeUtc - baseLine;
+        Console.WriteLine($"{DateTime.Now:O}: GetNextBackupDetails -> timeSpan: {timeSpan}");
 
         TimeSpan nextBackupTimeSpan;
         if (timeSpan.Ticks <= 0 && parameters.BackupStatus != null)
@@ -304,20 +311,26 @@ internal static class BackupUtils
             {
                 // the backup will run now
                 nextBackupTimeSpan = TimeSpan.Zero;
-                nextBackupTimeUtc = nowUtc;
+                nextBackupTimeUtc = baseLine;
+
+                Console.WriteLine($"{DateTime.Now:O}: GetNextBackupDetails -> overdue backup of current node or first backup -> nextBackupTimeSpan: {nextBackupTimeSpan}, nextBackupTimeUtc: {nextBackupTimeUtc:O}");
             }
             else
             {
                 // overdue backup from other node
                 nextBackupTimeSpan = TimeSpan.FromMinutes(1);
-                nextBackupTimeUtc = nowUtc + nextBackupTimeSpan;
+                nextBackupTimeUtc = baseLine + nextBackupTimeSpan;
+                Console.WriteLine($"{DateTime.Now:O}: GetNextBackupDetails -> overdue backup from other node -> nextBackupTimeSpan: {nextBackupTimeSpan}, nextBackupTimeUtc: {nextBackupTimeUtc:O}");
             }
         }
         else
         {
             nextBackupTimeSpan = timeSpan;
+            Console.WriteLine($"{DateTime.Now:O}: GetNextBackupDetails -> nextBackupTimeSpan: {nextBackupTimeSpan}");
         }
         nextBackupTimeUtc = DateTime.SpecifyKind(nextBackupTimeUtc, DateTimeKind.Utc);
+
+        Console.WriteLine($"{DateTime.Now:O}: GetNextBackupDetails -> nextBackupTimeUtc: {nextBackupTimeUtc:O}");
         return new NextBackup
         {
             TimeSpan = nextBackupTimeSpan,
@@ -461,13 +474,30 @@ internal static class BackupUtils
                         : earliestAction;
             }
         }
+        Console.WriteLine($"{DateTime.Now:O}: GetEarliestIdleDatabaseActivity for {parameters.DatabaseName} -> nextAction: {earliestAction?.Type}, {earliestAction?.DateTime:O}");
         return earliestAction;
     }
 
     private static IdleDatabaseActivity GetNextIdleDatabaseActivity(NextIdleDatabaseActivityParameters parameters)
     {
-        // we will always wake up the database for a full backup.
-        // but for incremental we will wake the database only if there were changes made.
+        // General rules:
+        // We want to return `IdleDatabaseActivityType.WakeUpDatabase` if:
+        // 1. Next backup is Full
+        // 2. Next backup is Incremental and there are changes since the last backup
+        // 3. Next backup is Incremental and there are no changes since the last backup, but the next Full backup is overdue
+        // 4. Database is not idle, and we don't have a backup yet
+
+        // We want to return `IdleDatabaseActivityType.UpdateBackupStatusOnly` if:
+        // 1. Next backup is Incremental and there are no changes since the last backup, and the next Full backup is not overdue
+
+        // We want to return `null` if:
+        // 1. Periodic Backup is disabled
+        // 2. Both FullBackupFrequency and IncrementalBackupFrequency are null
+        // 3. There are no destinations in the configuration
+        // 4. Cluster is down
+        // 5. Responsible node is not the current node
+        // 6. Backup task have no next backup. Should not happen and likely a bug
+        Console.WriteLine();
 
         if (parameters.Configuration.Disabled ||
             parameters.Configuration.IncrementalBackupFrequency == null && parameters.Configuration.FullBackupFrequency == null ||
@@ -514,7 +544,8 @@ internal static class BackupUtils
             ResponsibleNodeTag = responsibleNodeTag,
             DatabaseWakeUpTimeUtc = parameters.DatabaseWakeUpTimeUtc,
             NodeTag = parameters.ServerStore.NodeTag,
-            OnMissingNextBackupInfo = parameters.OnMissingNextBackupInfo
+            OnMissingNextBackupInfo = parameters.OnMissingNextBackupInfo,
+            IsIdle = parameters.IsIdle
         });
 
         if (nextBackup == null)
@@ -529,16 +560,21 @@ internal static class BackupUtils
             // we want to wait for the backup occurrence
             if (parameters.Logger.IsOperationsEnabled)
                 parameters.Logger.Operations($"Backup Task '{parameters.Configuration.TaskId}' of database '{parameters.DatabaseName}' is never backed up yet.");
-            
+
+            Console.WriteLine($"{DateTime.Now:O}: Backup Task '{parameters.Configuration.TaskId}' of database '{parameters.DatabaseName}' is never backed up yet.");
+
             return new IdleDatabaseActivity(IdleDatabaseActivityType.WakeUpDatabase, nextBackup.DateTime);
         }
 
         var nowUtc = DateTime.UtcNow;
         if (nextBackup.DateTime < nowUtc)
         {
-            // this backup is delayed
+            Console.WriteLine($"{DateTime.Now:O}: {parameters.DatabaseName} nextBackup.DateTime: {nextBackup.DateTime:O}");
+            // Next backup is full and it's already due
             if (parameters.Logger.IsOperationsEnabled)
-                parameters.Logger.Operations($"Backup Task '{parameters.Configuration.TaskId}' of database '{parameters.DatabaseName}' is delayed.");
+                parameters.Logger.Operations($"Backup Task '{parameters.Configuration.TaskId}' of database '{parameters.DatabaseName}' is already due.");
+
+            Console.WriteLine($"{DateTime.Now:O}: Backup Task '{parameters.Configuration.TaskId}' of database '{parameters.DatabaseName}' is already due. Next database activity will be WakeUpDatabase now.");
             return new IdleDatabaseActivity(IdleDatabaseActivityType.WakeUpDatabase, DateTime.UtcNow);
         }
 
@@ -548,6 +584,8 @@ internal static class BackupUtils
             var type = nextBackup.IsFull ? "full" : "incremental";
             if (parameters.Logger.IsOperationsEnabled)
                 parameters.Logger.Operations($"Backup Task '{parameters.Configuration.TaskId}' of database '{parameters.DatabaseName}' have changes since last backup. Wakeup timer will be set to the next {type} backup at '{nextBackup.DateTime}'.");
+
+            Console.WriteLine($"{DateTime.Now:O}: Backup Task '{parameters.Configuration.TaskId}' of database '{parameters.DatabaseName}' have changes since last backup. Wakeup timer will be set to the next {type} backup at '{nextBackup.DateTime}'.");
             return new IdleDatabaseActivity(IdleDatabaseActivityType.WakeUpDatabase, nextBackup.DateTime);
         }
 
@@ -555,10 +593,13 @@ internal static class BackupUtils
         {
             if (parameters.Logger.IsOperationsEnabled)
                 parameters.Logger.Operations($"Backup Task '{parameters.Configuration.TaskId}' of database '{parameters.DatabaseName}' doesn't have changes since last backup. Wakeup timer will be set to the next full backup at '{nextBackup.DateTime}'.");
+            // there are no changes since the last backup, and the next backup will be full.
+
+            Console.WriteLine($"{DateTime.Now:O}: Backup Task '{parameters.Configuration.TaskId}' of database '{parameters.DatabaseName}' doesn't have changes since last backup. Wakeup timer will be set to the next full backup at '{nextBackup.DateTime}'.");
             return new IdleDatabaseActivity(IdleDatabaseActivityType.WakeUpDatabase, nextBackup.DateTime);
         }
 
-        // we don't have changes since the last backup and the next backup are incremental
+        // there are no changes since the last backup, and the next backup will be incremental.
         var lastFullBackup = backupStatus.LastFullBackupInternal ?? nowUtc;
         var nextFullBackup = GetNextBackupOccurrence(new NextBackupOccurrenceParameters
         {
@@ -571,14 +612,17 @@ internal static class BackupUtils
         if (nextFullBackup < nowUtc)
         {
             if (parameters.Logger.IsOperationsEnabled)
-                parameters.Logger.Operations($"Backup Task '{parameters.Configuration.TaskId}' of database '{parameters.DatabaseName}' doesn't have changes since last backup but has delayed backup.");
+                parameters.Logger.Operations($"Backup Task '{parameters.Configuration.TaskId}' of database '{parameters.DatabaseName}' doesn't have changes since last backup but has already due full backup.");
             // this backup is delayed
-            return new IdleDatabaseActivity(IdleDatabaseActivityType.WakeUpDatabase, DateTime.UtcNow);
+
+            Console.WriteLine($"{DateTime.Now:O}: Backup Task '{parameters.Configuration.TaskId}' of database '{parameters.DatabaseName}' doesn't have changes since last backup but has already due full backup.");
+            return new IdleDatabaseActivity(IdleDatabaseActivityType.WakeUpDatabase, nowUtc);
         }
 
         if (parameters.Logger.IsOperationsEnabled)
-            parameters.Logger.Operations($"Backup Task '{parameters.Configuration.TaskId}' of database '{parameters.DatabaseName}' doesn't have changes since last backup. Wakeup timer set to next full backup at {nextFullBackup}, and will skip the incremental backups.");
+            parameters.Logger.Operations($"Backup Task '{parameters.Configuration.TaskId}' of database '{parameters.DatabaseName}' doesn't have changes since last backup. Wakeup timer set to next incremental backup at '{nextBackup.DateTime}' to update the backup status only.");
 
+        Console.WriteLine($"{DateTime.Now:O}: Backup Task '{parameters.Configuration.TaskId}' of database '{parameters.DatabaseName}' doesn't have changes since last backup. Wakeup timer set to next incremental backup at '{nextBackup.DateTime}' to update the backup status only.");
         return new IdleDatabaseActivity(IdleDatabaseActivityType.UpdateBackupStatusOnly, nextBackup.DateTime, parameters.Configuration.TaskId, parameters.LastEtag);
     }
 
@@ -588,6 +632,8 @@ internal static class BackupUtils
         try
         {
             var raftId = RaftIdGenerator.NewId();
+
+            Console.WriteLine($"{DateTime.Now:O}: SaveBackupStatus -> db: {databaseName}, LastFullBackupInternal: {status.LastFullBackupInternal:O}, LastIncrementalBackupInternal: {status.LastIncrementalBackupInternal:O}");
 
             AsyncHelpers.RunSync(async () =>
             {
@@ -657,9 +703,13 @@ internal static class BackupUtils
 
         public string NodeTag { get; set; }
 
+        public DateTime? BaseLine { get; set; }
+
         public Action<OnParsingErrorParameters> OnParsingError { get; set; }
 
         public Action<PeriodicBackupConfiguration> OnMissingNextBackupInfo { get; set; }
+
+        public bool IsIdle { get; set; }
     }
 
     public sealed class BackupInfoParameters

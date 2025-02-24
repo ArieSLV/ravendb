@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using FastTests;
 using Raven.Client.Documents;
@@ -19,8 +20,11 @@ namespace StressTests.Server.Documents.PeriodicBackup
 {
     public class ServerWideBackupStress : RavenTestBase
     {
+        private readonly ITestOutputHelper _output;
+
         public ServerWideBackupStress(ITestOutputHelper output) : base(output)
         {
+            _output = output;
         }
 
         [Theory]
@@ -53,13 +57,17 @@ namespace StressTests.Server.Documents.PeriodicBackup
                     [RavenConfiguration.GetKey(x => x.Core.RunInMemory)] = "false"
                 }
             });
-            using (var store = GetDocumentStore(new RavenTestBase.Options { Server = server, RunInMemory = false }))
-            using (var excludedStore = GetDocumentStore(new RavenTestBase.Options { Server = server, RunInMemory = false }))
+            using (var store = GetDocumentStore(new Options { Server = server, RunInMemory = false }))
+            using (var excludedStore = GetDocumentStore(new Options { Server = server, RunInMemory = false }))
             {
-                await AssertWaitForGreaterAsync(() => server.ServerStore.IdleDatabases.Count, 1, timeout: 60000, interval: 1000);
+                var a = await AssertWaitForGreaterAsync(() => server.ServerStore.IdleDatabases.Count, 1, timeout: 60000, interval: 1000);
 
-                var fullFreq = "0 2 1 1 *";
-                var incFreq = "0 2 * * 0";
+                _output.WriteLine($"a = {a}");
+
+                WaitForUserToContinueTheTest(excludedStore, debug: false);
+
+                var fullFreq = "*/6 * * * *";
+                var incFreq = "*/6 * * * *";
                 var putConfiguration = new ServerWideBackupConfiguration
                 {
                     FullBackupFrequency = fullFreq,
@@ -80,7 +88,7 @@ namespace StressTests.Server.Documents.PeriodicBackup
                 // update the backup configuration
                 putConfiguration.Name = serverWideConfiguration.Name;
                 putConfiguration.TaskId = serverWideConfiguration.TaskId;
-                putConfiguration.FullBackupFrequency = "0 2 * * 0";
+                putConfiguration.FullBackupFrequency = "0/6 * * * *";
 
                 var oldName = result.Name;
                 result = await store.Maintenance.Server.SendAsync(new PutServerWideBackupConfigurationOperation(putConfiguration));
@@ -117,7 +125,10 @@ namespace StressTests.Server.Documents.PeriodicBackup
                     result = await store.Maintenance.Server.SendAsync(new PutServerWideBackupConfigurationOperation(putConfiguration));
                     await server.ServerStore.Cluster.WaitForIndexNotification(result.RaftCommandIndex, TimeSpan.FromMinutes(1));
                 }
+
+                WaitForUserToContinueTheTest(excludedStore, debug: false);
             }
+
 
             async Task BackupNow(DocumentStore store, string backupName)
             {
@@ -126,5 +137,44 @@ namespace StressTests.Server.Documents.PeriodicBackup
             }
         }
 
+        [Fact, Trait("Category", "Smuggler")]
+        public async Task BackupIsContinuouslyDeferredDueToWrongGetNextBackupDetailsCalculationBug()
+        {
+            using var server = GetNewServer(new ServerCreationOptions
+            {
+                CustomSettings = new Dictionary<string, string>
+                {
+                    [RavenConfiguration.GetKey(x => x.Databases.MaxIdleTime)] = "3",
+                    [RavenConfiguration.GetKey(x => x.Databases.FrequencyToCheckForIdle)] = "3",
+                    [RavenConfiguration.GetKey(x => x.Core.RunInMemory)] = "false"
+                }
+            });
+
+            using var store = GetDocumentStore(new Options { Server = server, RunInMemory = false });
+            // using var dummyStoreForDebug = GetDocumentStore(new Options { Server = server, RunInMemory = false });
+            server.ServerStore.DatabasesLandlord.SkipShouldContinueDisposeCheck = true;
+
+            var backupConfig = new ServerWideBackupConfiguration
+            {
+                FullBackupFrequency = "0/4 * * * *",
+                IncrementalBackupFrequency = "0/1 * * * *",
+                LocalSettings = new LocalSettings { FolderPath = "test/folder" },
+            };
+            var result = await store.Maintenance.Server.SendAsync(new PutServerWideBackupConfigurationOperation(backupConfig));
+            var serverWideConfig = await store.Maintenance.Server.SendAsync(new GetServerWideBackupConfigurationOperation(result.Name));
+            Assert.NotNull(serverWideConfig);
+
+            await BackupNow(store, serverWideConfig.Name);
+
+            await Task.Delay(TimeSpan.FromMinutes(600));
+            // WaitForUserToContinueTheTest(dummyStoreForDebug, debug: false);
+
+            async Task BackupNow(DocumentStore store, string backupName)
+            {
+                var res = await store.Maintenance.SendAsync(
+                    new GetOngoingTaskInfoOperation($"Server Wide Backup, {backupName}", OngoingTaskType.Backup));
+                await store.Maintenance.SendAsync(new StartBackupOperation(false, res.TaskId));
+            }
+        }
     }
 }
