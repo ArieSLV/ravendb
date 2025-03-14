@@ -2,12 +2,13 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.Embeddings;
 using Raven.Client.Documents.Operations.AI;
-using Raven.Server.Background;
 using Raven.Server.Config;
 using Raven.Server.Config.Categories;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings;
@@ -15,105 +16,98 @@ using Sparrow.Server.Logging;
 
 namespace Raven.Server.Documents.AI.Embeddings
 {
-    public class QueryEmbeddingsBatchingWorker(string databaseName,
-        AiConfiguration configuration,
-#pragma warning disable SKEXP0001
-        (AiConnectionString ConnectionString, ITextEmbeddingGenerationService Instance) service,
-#pragma warning restore SKEXP0001
-        SemaphoreSlim concurrencyLimiter,
-        RavenLogger logger,
-        CancellationToken shutdown)
-        : BackgroundWorkBase(databaseName, logger, shutdown)
+    public class QueryEmbeddingsBatchingWorker : IDisposable
     {
-        private readonly string _databaseName = databaseName;
+        private readonly string _databaseName;
+        private readonly AiConfiguration _configuration;
+#pragma warning disable SKEXP0001
+        private readonly (AiConnectionString ConnectionString, ITextEmbeddingGenerationService Instance) _service;
+#pragma warning restore SKEXP0001
+        private readonly SemaphoreSlim _concurrencyLimiter;
+        private readonly RavenLogger _logger;
+        private readonly CancellationToken _shutdown;
 
         private readonly ConcurrentQueue<QueryEmbeddingsBatchRequest> _requestQueue = new();
-        private readonly Stopwatch _batchTimer = new();
+        private readonly AutoResetEvent _workAvailableSignal = new(false);
+
+        private readonly Task[] _workerTasks;
 
         // Flag that indicates the service is being disposed
         private volatile bool _workerShuttingDown;
         private int _activeOperations;
 
+        public QueryEmbeddingsBatchingWorker(string databaseName,
+            AiConfiguration configuration,
+#pragma warning disable SKEXP0001
+            (AiConnectionString ConnectionString, ITextEmbeddingGenerationService Instance) service,
+#pragma warning restore SKEXP0001
+            SemaphoreSlim concurrencyLimiter,
+            RavenLogger logger,
+            CancellationToken shutdown)
+        {
+            _databaseName = databaseName;
+            _configuration = configuration;
+            _service = service;
+            _concurrencyLimiter = concurrencyLimiter;
+            _logger = logger;
+            _shutdown = shutdown;
+
+            // Initialize worker tasks
+            int workerCount = Math.Max(1, configuration.QueryEmbeddingsMaxConcurrentBatches);
+            _workerTasks = new Task[workerCount];
+
+            if (logger.IsInfoEnabled)
+                logger.Info($"Initializing {nameof(QueryEmbeddingsBatchingWorker)} for connection '{service.ConnectionString.Name}' in database '{databaseName}' with {workerCount} workers");
+        }
+
+        public void Start()
+        {
+            for (int i = 0; i < _workerTasks.Length; i++)
+                _workerTasks[i] = Task.Run(WorkerLoopAsync, _shutdown);
+        }
+
         public Task<ReadOnlyMemory<float>[]> EnqueueRequestAsync(IList<string> values, CancellationToken cancellationToken)
         {
-            var request = new QueryEmbeddingsBatchRequest(values, callerToken: cancellationToken, workerToken: CancellationToken);
+            var request = new QueryEmbeddingsBatchRequest(values, cancellationToken);
 
             if (_workerShuttingDown)
                 return request.CancelWithShutdownMessage();
 
-            bool wasEmpty = _requestQueue.IsEmpty;
             _requestQueue.Enqueue(request);
 
-            // Start the batch timer if this is the first request
-            if (wasEmpty)
-                _batchTimer.Restart();
+            // Signal workers that new work is available
+            _workAvailableSignal.Set();
 
             return request.TaskCompletionSource.Task;
         }
 
-        protected override async Task DoWork()
+        private async Task WorkerLoopAsync()
         {
-            if (_workerShuttingDown)
-                return;
-
-            try
+            while (_workerShuttingDown == false && _shutdown.IsCancellationRequested == false)
             {
-                // Check if we have requests to process
-                if (_requestQueue.IsEmpty)
-                {
-                    // No requests, wait for a bit before checking again
-                    await WaitOrThrowOperationCanceled(TimeSpan.FromMilliseconds(10));
-                    return;
-                }
-
-                if (_batchTimer.IsRunning == false)
-                    _batchTimer.Restart();
-
-                // Nagle's algorithm:
-                // 1. If we have a full batch, process immediately
-                // 2. If the timeout has elapsed, process immediately
-                // 3. Otherwise, wait for more requests longer
-                bool shouldProcessNow = _requestQueue.Count >= configuration.QueryEmbeddingsMaxBatchSize ||
-                                        _batchTimer.ElapsedMilliseconds >= configuration.QueryEmbeddingsBatchTimeout;
-
-                if (shouldProcessNow == false)
-                {
-                    // Wait a bit before checking again
-                    await WaitOrThrowOperationCanceled(TimeSpan.FromMilliseconds(Math.Min(10, configuration.QueryEmbeddingsBatchTimeout / 5)));
-                    return;
-                }
-
-                // Reset timer
-                _batchTimer.Reset();
-
-                // Process the batch
-                await concurrencyLimiter.WaitAsync(CancellationToken);
-
                 try
                 {
+                    WaitHandle.WaitAny([_workAvailableSignal, _shutdown.WaitHandle]);
+
+                    if (_shutdown.IsCancellationRequested || _workerShuttingDown)
+                        break;
+
+                    if (_requestQueue.IsEmpty)
+                        continue;
+
                     await ProcessBatchAsync();
                 }
-                finally
+                catch (OperationCanceledException)
                 {
-                    concurrencyLimiter.Release();
-
-                    // Restart timer if we have pending requests
-                    if (_requestQueue.IsEmpty == false)
-                        _batchTimer.Restart();
+                    break;
                 }
-            }
-            catch (OperationCanceledException)
-            {
-                // Expected during shutdown, just rethrow
-                throw;
-            }
-            catch (Exception ex)
-            {
-                if (Logger.IsErrorEnabled)
-                    Logger.Error($"Error in QueryEmbeddingsBatchingWorker for connection string '{service.ConnectionString.Name}' in database '{_databaseName}'", ex);
+                catch (Exception ex)
+                {
+                    if (_logger.IsErrorEnabled)
+                        _logger.Error($"Error in query embeddings batching worker for connection string '{_service.ConnectionString.Name}' in database '{_databaseName}'", ex);
 
-                // Wait a bit before retrying
-                await WaitOrThrowOperationCanceled(TimeSpan.FromSeconds(1));
+                    await Task.Delay(100, _shutdown); // Sleep briefly before continuing
+                }
             }
         }
 
@@ -121,18 +115,25 @@ namespace Raven.Server.Documents.AI.Embeddings
         {
             Interlocked.Increment(ref _activeOperations);
 
+            Stopwatch stopwatch = null;
+            var concurrencySlotAcquired = false;
+            QueryEmbeddingsBatchRequest[] requestsArray = null;
+            int count = 0;
+
             try
             {
-                // Check if shutting down
                 if (_workerShuttingDown)
                     return;
 
-                // Collect requests for this batch (up to QueryEmbeddingsMaxBatchSize)
-                var requestsArray = new QueryEmbeddingsBatchRequest[configuration.QueryEmbeddingsMaxBatchSize];
-                int count = 0;
+                // Acquire concurrency slot
+                await _concurrencyLimiter.WaitAsync(_shutdown);
+                concurrencySlotAcquired = true;
 
-                while (count < configuration.QueryEmbeddingsMaxBatchSize &&
-                       _requestQueue.TryDequeue(out var request))
+                // Collect requests for this batch
+                requestsArray = new QueryEmbeddingsBatchRequest[_configuration.QueryEmbeddingsMaxBatchSize];
+
+                while (count < _configuration.QueryEmbeddingsMaxBatchSize &&
+                       _requestQueue.TryDequeue(out var request)) // todo: take into account model's token limit
                 {
                     if (request.TaskCompletionSource.Task.IsCanceled)
                         continue;
@@ -143,54 +144,61 @@ namespace Raven.Server.Documents.AI.Embeddings
                 if (count == 0)
                     return;
 
-                var stopwatch = Stopwatch.StartNew();
+                // If there are more requests in the queue, signal another worker immediately
+                if (_requestQueue.IsEmpty == false)
+                    _workAvailableSignal.Set();
 
-                try
-                {
-                    // Re-check if shutting down before doing expensive work
-                    if (_workerShuttingDown)
-                    {
-                        CancelRequestsWithShutdownMessage(requestsArray, count);
-                        return;
-                    }
+                // Recheck shutdown before expensive operation
+                _shutdown.ThrowIfCancellationRequested();
 
-                    await FlushBatchAsync(requestsArray, count);
-                    ForTestingPurposes?.AfterBatchFlushed?.Invoke();
-                }
-                finally
-                {
-                    stopwatch.Stop();
+                // Process the batch
+                stopwatch = Stopwatch.StartNew();
+                await FlushBatchAsync(requestsArray, count);
+                ForTestingPurposes?.AfterBatchFlushed?.Invoke();
+            }
+            catch (OperationCanceledException)
+            {
+                CancelActiveRequestsWithShutdownMessage(requestsArray, count);
+                throw;
+            }
+            catch (Exception ex)
+            {
+                PropagateExceptionToActiveRequests(requestsArray, count, ex);
 
-                    if (Logger.IsDebugEnabled)
-                        Logger.Debug($"Batch processing completed for connection '{service.ConnectionString.Identifier}' in {stopwatch.ElapsedMilliseconds}ms, processed {count} requests");
-                }
+                if (_logger.IsErrorEnabled)
+                    _logger.Error($"Error in batch processing for connection string '{_service.ConnectionString.Name}' in database '{_databaseName}'", ex);
             }
             finally
             {
+                if (stopwatch != null)
+                {
+                    stopwatch.Stop();
+                    if (_logger.IsDebugEnabled && count > 0)
+                        _logger.Debug($"Batch processing completed for connection '{_service.ConnectionString.Identifier}' in {stopwatch.ElapsedMilliseconds}ms, processed {count} requests");
+                }
+
+                // Release concurrency slot
+                if (concurrencySlotAcquired)
+                    _concurrencyLimiter.Release();
+
+                // Decrement active operations counter
                 Interlocked.Decrement(ref _activeOperations);
             }
         }
 
         private async Task FlushBatchAsync(QueryEmbeddingsBatchRequest[] requestsArray, int count)
         {
-            if (_workerShuttingDown)
-            {
-                CancelRequestsWithShutdownMessage(requestsArray, count);
-                return;
-            }
-
-            // First calculate total number of values across all requests
-            int totalValueCount = 0;
-            for (int i = 0; i < count; i++)
+            var totalValueCount = 0;
+            for (var i = 0; i < count; i++)
                 totalValueCount += requestsArray[i].Values.Count;
-            
+
             var allTextValues = new string[totalValueCount];
-            
-            // Create tracking structure for the range of values for each request
+
+            // It's a tracking structure for the range of values for each request
             var valueRanges = new (int StartIndex, int Count)[count];
 
             // Fill the array with all values and remember the ranges
-            int currentIndex = 0;
+            var currentIndex = 0;
             for (int i = 0; i < count; i++)
             {
                 var values = requestsArray[i].Values;
@@ -199,128 +207,99 @@ namespace Raven.Server.Documents.AI.Embeddings
                 foreach (var value in values)
                     allTextValues[currentIndex++] = value;
             }
-                
-            // Execute with retry logic
-            for (int attempt = 0; attempt <= configuration.QueryEmbeddingsBatchMaxRetries; attempt++)
+
+            if (_logger.IsDebugEnabled)
+                _logger.Debug($"Processing batch of {totalValueCount} values from {count} requests for connection '{_service.ConnectionString.Name}'");
+
+            // Final check before calling service
+            _shutdown.ThrowIfCancellationRequested();
+
+            // Generate embeddings
+            IList<ReadOnlyMemory<float>> allEmbeddings = null;
+            try
             {
-                try
-                {
-                    if (attempt > 0)
-                    {
-                        if (Logger.IsWarnEnabled)
-                            Logger.Warn($"Retrying batch for connection '{service.ConnectionString.Name}', attempt {attempt}/{configuration.QueryEmbeddingsBatchMaxRetries}");
-
-                        // Exponential backoff
-                        var delay = configuration.QueryEmbeddingsBatchRetryDelay.AsTimeSpan * Math.Pow(2, attempt - 1);
-                        await WaitOrThrowOperationCanceled(delay);
-                    }
-
-                    if (Logger.IsDebugEnabled)
-                        Logger.Debug($"Processing batch of {totalValueCount} values from {count} requests for connection '{service.ConnectionString.Name}'");
-
-                    // Final check before calling service
-                    if (_workerShuttingDown)
-                        throw new OperationCanceledException(QueryEmbeddingsBatchingService.ShutdownMessage);
-
-                    IList<ReadOnlyMemory<float>> allEmbeddings;
-
-                    try
-                    {
 #pragma warning disable SKEXP0001
-                        allEmbeddings = await AiHelper.GenerateEmbeddingsAsync(service.Instance, allTextValues);
+                allEmbeddings = await AiHelper.GenerateEmbeddingsAsync(_service.Instance, allTextValues);
 #pragma warning restore SKEXP0001
-                    }
-                    catch (HttpOperationException httpOperationException) when (httpOperationException.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
-                    {
-                        // Handle rate limit errors
-                        throw new EmbeddingGenerationException(
-                            $"Failed to generate embeddings due to rate limits. The process will increase the delay between calls to the model. " +
-                            $"However, decreasing the number of elements processed in a single batch " +
-                            $"('{RavenConfiguration.GetKey(x => x.Ai.QueryEmbeddingsMaxBatchSize)}') may help, or you can increase the " +
-                            $"limits on your model deployment.", httpOperationException);
-                    }
+            }
+            catch (HttpOperationException httpOperationException) when (httpOperationException.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+            {
+                var rateLimitException = new EmbeddingGenerationException(
+                    $"Failed to generate embeddings due to rate limits. Consider decreasing the number of elements processed in a single batch " +
+                    $"('{RavenConfiguration.GetKey(x => x.Ai.QueryEmbeddingsMaxBatchSize)}') or increasing the " +
+                    $"limits on your model deployment.", httpOperationException);
 
-                    // Verify we got the expected number of embeddings
-                    if (allEmbeddings.Count != totalValueCount)
-                        throw new InvalidOperationException($"Failed to generate embeddings: expected {totalValueCount} embeddings, but got {allEmbeddings.Count}");
+                PropagateExceptionToActiveRequestsAndRethrow(requestsArray, count, rateLimitException);
+            }
+            catch (Exception ex)
+            {
+                PropagateExceptionToActiveRequestsAndRethrow(requestsArray, count, ex);
+            }
 
-                    // Distribute results back to the requests
-                    for (int i = 0; i < count; i++)
-                    {
-                        var request = requestsArray[i];
-                        (int startIndex, int itemsCount) = valueRanges[i];
+            // Verify we got the expected number of embeddings
+            if (allEmbeddings.Count != totalValueCount)
+            {
+                var ex = new InvalidOperationException($"Failed to generate embeddings: expected {totalValueCount} embeddings, but got {allEmbeddings.Count}");
+                PropagateExceptionToActiveRequestsAndRethrow(requestsArray, count, ex);
+            }
 
-                        ReadOnlyMemory<float>[] requestEmbeddings = new ReadOnlyMemory<float>[itemsCount];
-                            
-                        // Fill the temp array with embeddings for this request
-                        for (int j = 0; j < itemsCount; j++)
-                            requestEmbeddings[j] = allEmbeddings[startIndex + j];
-
-                        // Return the list of embeddings to the caller
-                        request.TaskCompletionSource.TrySetResult(requestEmbeddings);
-                    }
-
-                    // Successfully processed batch, exit retry loop
-                    break;
-                }
-                catch (Exception ex) when (attempt < configuration.QueryEmbeddingsBatchMaxRetries && IsNonRetriableException(ex) == false)
+            // Distribute results back to the requests - this needs to be done regardless of cancellation
+            // If the request was canceled, we still need to create and return the result to cache the embeddings
+            try
+            {
+                for (int i = 0; i < count; i++)
                 {
-                    if (Logger.IsWarnEnabled)
-                        Logger.Warn($"Error processing batch for connection '{service.ConnectionString.Name}', retrying {attempt + 1}/{configuration.QueryEmbeddingsBatchMaxRetries}", ex);
+                    var request = requestsArray[i];
+                    (int startIndex, int itemsCount) = valueRanges[i];
 
-                    // Continue to next retry iteration
-                }
-                catch (Exception ex)
-                {
-                    if (Logger.IsErrorEnabled)
-                        Logger.Error($"Final error processing batch for connection '{service.ConnectionString.Name}' after {attempt} retries", ex);
+                    var requestEmbeddings = new ReadOnlyMemory<float>[itemsCount];
 
-                    for (int i = 0; i < count; i++)
-                        requestsArray[i].TaskCompletionSource.TrySetException(ex);
+                    for (int j = 0; j < itemsCount; j++)
+                        requestEmbeddings[j] = allEmbeddings[startIndex + j];
+
+                    // Return the list of embeddings to the caller - even if the request was canceled
+                    // If request was already canceled, TrySetResult will silently fail, but we don't care
+                    // because we just want to ensure embeddings are processed for caching
+                    request.TaskCompletionSource.TrySetResult(requestEmbeddings);
                 }
+            }
+            catch (Exception ex)
+            {
+                PropagateExceptionToActiveRequestsAndRethrow(requestsArray, count, ex);
             }
         }
 
-        private static bool IsNonRetriableException(Exception ex) =>
-            ex switch
-            {
-                // Check for specific exceptions that are not retriable
-                ArgumentException or InvalidOperationException or UnauthorizedAccessException or OperationCanceledException => true,
-
-                // Client errors (4xx) are generally not worth retrying, except for a few specific codes
-                HttpOperationException { StatusCode: not null } httpEx when (int)httpEx.StatusCode >= 400 && (int)httpEx.StatusCode < 500 =>
-                    httpEx.StatusCode switch
-                    {
-                        System.Net.HttpStatusCode.RequestTimeout => false, // 408
-                        System.Net.HttpStatusCode.TooManyRequests => false, // 429
-                        System.Net.HttpStatusCode.GatewayTimeout => false, // 504
-                        _ => true // Other 4xx errors are non-retriable
-                    },
-
-                // Server errors (5xx) are generally worth retrying
-                HttpOperationException { StatusCode: not null } httpEx when (int)httpEx.StatusCode >= 500 && (int)httpEx.StatusCode < 600 => false,
-
-                // For EmbeddingGenerationException, check the inner exception
-                EmbeddingGenerationException { InnerException: not null } embEx => IsNonRetriableException(embEx.InnerException),
-
-                // For all other exceptions, assume they are retriable
-                _ => false
-            };
-
-        public AiSettingsCompareDifferences Compare(AiConnectionString connectionString) => service.ConnectionString.Compare(connectionString);
-
-        private static void CancelRequestsWithShutdownMessage(QueryEmbeddingsBatchRequest[] requests, int count)
+        [DoesNotReturn]
+        private static void PropagateExceptionToActiveRequestsAndRethrow(QueryEmbeddingsBatchRequest[] requestsArray, int count, Exception ex)
         {
-            for (int i = 0; i < count; i++)
-                requests[i].CancelWithShutdownMessage();
+            PropagateExceptionToActiveRequests(requestsArray, count, ex);
+            throw ex;
         }
 
-        protected override void InitializeWork()
-        {
-            if (Logger.IsInfoEnabled)
-                Logger.Info($"Initializing {nameof(QueryEmbeddingsBatchingWorker)} for connection '{service.ConnectionString.Name}' in database '{_databaseName}'");
+        public AiSettingsCompareDifferences Compare(AiConnectionString connectionString) =>
+            _service.ConnectionString.Compare(connectionString);
 
-            _batchTimer.Reset();
+        private static void PropagateExceptionToActiveRequests(QueryEmbeddingsBatchRequest[] requests, int count, Exception ex)
+        {
+            if (requests == null || count < 1)
+                return;
+
+            for (int i = 0; i < count; i++)
+            {
+                var request = requests[i];
+                if (request.WasCanceled == false && request.TaskCompletionSource.Task.IsCompleted == false)
+                    request.TaskCompletionSource.TrySetException(ex);
+            }
+        }
+
+        private static void CancelActiveRequestsWithShutdownMessage(QueryEmbeddingsBatchRequest[] requests, int count)
+        {
+            if (requests == null || count < 1)
+                return;
+
+            for (int i = 0; i < count; i++)
+                if (requests[i].WasCanceled == false)
+                    requests[i].CancelWithShutdownMessage();
         }
 
         public async Task PrepareForServiceDisposalAsync()
@@ -331,6 +310,9 @@ namespace Raven.Server.Documents.AI.Embeddings
             while (_requestQueue.TryDequeue(out var request))
                 await request.CancelWithShutdownMessage();
 
+            // Signal any waiting workers to check the shutdown flag
+            _workAvailableSignal.Set();
+
             var timeout = TimeSpan.FromSeconds(10); // Timeout for waiting operations to complete
             var deadline = DateTime.UtcNow.Add(timeout);
 
@@ -340,24 +322,40 @@ namespace Raven.Server.Documents.AI.Embeddings
                 // Check if timeout has elapsed
                 if (DateTime.UtcNow > deadline)
                 {
-                    if (Logger.IsWarnEnabled)
-                        Logger.Warn($"Timed out waiting for {_activeOperations} operations to complete during worker disposal.");
+                    if (_logger.IsWarnEnabled)
+                        _logger.Warn($"Timed out waiting for {_activeOperations} operations to complete during worker disposal.");
 
                     break;
                 }
 
-                await Task.Delay(100);
+                await Task.Delay(100, _shutdown);
             }
 
+            // Wait for worker tasks to complete with timeout
             try
             {
-                Stop();
+                await Task.WhenAny(
+                    Task.WhenAll(_workerTasks.Where(t => t != null)),
+                    Task.Delay(timeout)
+                );
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                if (Logger.IsErrorEnabled)
-                    Logger.Error("Error stopping background worker", ex);
+                if (_logger.IsErrorEnabled)
+                    _logger.Error("Error waiting for worker tasks to complete", ex);
             }
+        }
+
+        public void Dispose()
+        {
+            // Ensure we're shutting down
+            _workerShuttingDown = true;
+
+            // Signal to wake up any waiting workers
+            _workAvailableSignal.Set();
+
+            // Dispose the signal
+            _workAvailableSignal.Dispose();
         }
 
         internal TestingStuff ForTestingPurposes;
