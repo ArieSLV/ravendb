@@ -1,12 +1,13 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using Microsoft.SemanticKernel.Embeddings;
 using Raven.Client.ServerWide;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings;
 using Raven.Server.Documents.ETL.Providers.AI;
 using System.Collections.Generic;
+using System.Linq;
 using Raven.Client.Documents.Operations.AI;
 using Raven.Server.Documents.AI.Embeddings;
-using Sparrow.Server.Logging;
 
 #pragma warning disable SKEXP0001
 
@@ -14,12 +15,12 @@ namespace Raven.Server.Documents.AI;
 
 public class AiIntegrationsController : IDisposable
 {
-    private Dictionary<AiConnectionStringIdentifier, ITextEmbeddingGenerationService> _embeddingsGenerationServiceByConnectionStringIdentifier;
+    private readonly ConcurrentDictionary<AiConnectionStringIdentifier, ITextEmbeddingGenerationService> _embeddingsGenerationServiceByConnectionStringIdentifier;
 
-    private Dictionary<EmbeddingsGenerationTaskIdentifier, AiConnectionStringIdentifier> _connectionStringsByTaskIdentifiers;
-    private Dictionary<EmbeddingsGenerationTaskIdentifier, EmbeddingsGenerationConfiguration> _embeddingsGenerationConfigurationByTaskIdentifiers;
+    private readonly ConcurrentDictionary<EmbeddingsGenerationTaskIdentifier, AiConnectionStringIdentifier> _connectionStringsByTaskIdentifiers;
+    private readonly ConcurrentDictionary<EmbeddingsGenerationTaskIdentifier, EmbeddingsGenerationConfiguration> _embeddingsGenerationConfigurationByTaskIdentifiers;
 
-    private readonly RavenLogger _logger;
+    private readonly object _atomicDatabaseRecordChangeLock = new();
     
     public DocumentDatabase Database { get; }
 
@@ -34,8 +35,6 @@ public class AiIntegrationsController : IDisposable
         var cacher = new QueryEmbeddingsCacher(database, database.DatabaseShutdown);
 
         Embeddings = new EmbeddingsController(this, storage, cacher);
-
-        _logger = database.Loggers.GetLogger<AiIntegrationsController>();
     }
 
     public EmbeddingsController Embeddings { get; private set; }
@@ -54,53 +53,70 @@ public class AiIntegrationsController : IDisposable
     {
         if (record == null)
             return;
-        
-        var embeddingsGenerationServiceByConnectionStringIdentifier = new Dictionary<AiConnectionStringIdentifier, ITextEmbeddingGenerationService>();
-        var connectionStringsByTaskIdentifier = new Dictionary<EmbeddingsGenerationTaskIdentifier, AiConnectionStringIdentifier>();
-        var embeddingsGenerationConfigurationsByTaskIdentifier = new Dictionary<EmbeddingsGenerationTaskIdentifier, EmbeddingsGenerationConfiguration>();
 
-        foreach (var connectionStringKvp in record.AiConnectionStrings)
+        lock (_atomicDatabaseRecordChangeLock)
         {
-            var connectionStringIdentifier = new AiConnectionStringIdentifier(connectionStringKvp.Value.Identifier);
-            var connectionString = connectionStringKvp.Value;
+            var embeddingsGenerationTaskIdsToRetain = new HashSet<EmbeddingsGenerationTaskIdentifier>();
 
-            if (_embeddingsGenerationServiceByConnectionStringIdentifier.TryGetValue(connectionStringIdentifier, out var embeddingsGenerationService) == false)
-                embeddingsGenerationService = AiHelper.CreateService(connectionString);
+            // Updating existing configurations, connection strings and workers for active Embeddings Generation tasks
+            foreach (var newEmbeddingGenerationConfiguration in record.EmbeddingsGenerations.Where(configuration => configuration.Disabled == false))
+            {
+                var taskId = new EmbeddingsGenerationTaskIdentifier(newEmbeddingGenerationConfiguration.Identifier);
+                embeddingsGenerationTaskIdsToRetain.Add(taskId);
 
-            embeddingsGenerationServiceByConnectionStringIdentifier[connectionStringIdentifier] = embeddingsGenerationService;
-        }
+                var isConnectionStringChanged = false;
+                if (_embeddingsGenerationConfigurationByTaskIdentifiers.TryGetValue(taskId, out var oldEmbeddingGenerationConfiguration))
+                    isConnectionStringChanged = oldEmbeddingGenerationConfiguration.Connection.Compare(newEmbeddingGenerationConfiguration.Connection) != AiSettingsCompareDifferences.None;
 
-        var hasTasks = false;
+                _embeddingsGenerationConfigurationByTaskIdentifiers.AddOrUpdate(taskId, newEmbeddingGenerationConfiguration, (_, _) => newEmbeddingGenerationConfiguration);
 
-        foreach (var embeddingGenerationConfiguration in record.EmbeddingsGenerations)
-        {
-            hasTasks = true;
+                if (record.AiConnectionStrings?.TryGetValue(newEmbeddingGenerationConfiguration.ConnectionStringName, out var connectionString) != true)
+                    continue;
 
-            var embeddingsGeneratorIdentifier = new EmbeddingsGenerationTaskIdentifier(embeddingGenerationConfiguration.Identifier);
-            var connectionStringIdentifier = new AiConnectionStringIdentifier(record.AiConnectionStrings[embeddingGenerationConfiguration.ConnectionStringName].Identifier);
+                var connectionStringIdentifier = new AiConnectionStringIdentifier(connectionString.Identifier);
+                _connectionStringsByTaskIdentifiers.AddOrUpdate(taskId, connectionStringIdentifier, (_, _) => connectionStringIdentifier);
 
-            connectionStringsByTaskIdentifier[embeddingsGeneratorIdentifier] = connectionStringIdentifier;
+                if (isConnectionStringChanged == false)
+                    continue;
 
-            embeddingsGenerationConfigurationsByTaskIdentifier[embeddingsGeneratorIdentifier] = embeddingGenerationConfiguration;
-        }
+                var newService = AiHelper.CreateService(connectionString);
+                _embeddingsGenerationServiceByConnectionStringIdentifier.AddOrUpdate(connectionStringIdentifier, newService, (_, _) => newService);
+                Embeddings.UpdateBatchingWorkerForConnectionStringId(connectionString);
+            }
 
-        // TODO
-        //Embeddings.UpdateBatchingWorkerForConnectionStringIdAsync()
-        //Embeddings.RemoveBatchingWorkerForConnectionStringIdAsync()
+            // Removing configurations for inactive Embeddings Generation tasks
+            foreach ((EmbeddingsGenerationTaskIdentifier taskId, _) in _embeddingsGenerationConfigurationByTaskIdentifiers)
+            {
+                if (embeddingsGenerationTaskIdsToRetain.Contains(taskId))
+                    continue;
 
-        _embeddingsGenerationServiceByConnectionStringIdentifier = embeddingsGenerationServiceByConnectionStringIdentifier;
-        _connectionStringsByTaskIdentifiers = connectionStringsByTaskIdentifier;
-        _embeddingsGenerationConfigurationByTaskIdentifiers = embeddingsGenerationConfigurationsByTaskIdentifier;
+                _embeddingsGenerationConfigurationByTaskIdentifiers.TryRemove(taskId, out _);
+            }
 
-        if (Embeddings.QueryEmbeddingsCacher.IsRunning)
-        {
-            if (hasTasks == false)
-                Embeddings.QueryEmbeddingsCacher.Stop();
-        }
-        else
-        {
-            if (hasTasks)
-                Embeddings.QueryEmbeddingsCacher.Start();
+            // Removing connection strings and workers for inactive Embeddings Generation tasks
+            foreach ((EmbeddingsGenerationTaskIdentifier taskId, _) in _connectionStringsByTaskIdentifiers)
+            {
+                if (embeddingsGenerationTaskIdsToRetain.Contains(taskId))
+                    continue;
+
+                if (_connectionStringsByTaskIdentifiers.TryRemove(taskId, out var connectionStringIdToRemove) == false)
+                    continue;
+
+                _embeddingsGenerationServiceByConnectionStringIdentifier.TryRemove(connectionStringIdToRemove, out _);
+                Embeddings.RemoveBatchingWorkerForConnectionStringId(connectionStringIdToRemove);
+            }
+
+            // Switching the QueryEmbeddingsCacher on or off based on the existence of active Embeddings Generation tasks
+            if (Embeddings.QueryEmbeddingsCacher.IsRunning)
+            {
+                if (embeddingsGenerationTaskIdsToRetain.Count == 0)
+                    Embeddings.QueryEmbeddingsCacher.Stop();
+            }
+            else
+            {
+                if (embeddingsGenerationTaskIdsToRetain.Count > 0)
+                    Embeddings.QueryEmbeddingsCacher.Start();
+            }
         }
     }
 

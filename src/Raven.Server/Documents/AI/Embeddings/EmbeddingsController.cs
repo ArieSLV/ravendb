@@ -102,6 +102,10 @@ public class EmbeddingsController(AiIntegrationsController aiIntegrations, Embed
         return embeddingValues;
     }
 
+    public void RemoveBatchingWorkerForConnectionStringId(AiConnectionStringIdentifier connectionStringId) => _queryBatchingService.RemoveWorker(connectionStringId);
+
+    public void UpdateBatchingWorkerForConnectionStringId(AiConnectionString newConnectionString) => _queryBatchingService.RecreateWorker(newConnectionString);
+
     private List<string> ChunkValues(string[] values, ChunkingOptions chunkingOptions)
     {
         var chunks = new List<string>();
