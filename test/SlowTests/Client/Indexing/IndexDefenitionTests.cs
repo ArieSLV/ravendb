@@ -1,7 +1,9 @@
 ﻿using System;
 using System.Linq;
-using FastTests;
+using System.Runtime.CompilerServices;
+using Raven.Client.Documents;
 using Raven.Client.Documents.Indexes;
+using FastTests;
 using Raven.Client.Documents.Operations.Indexes;
 using Tests.Infrastructure;
 using Xunit;
@@ -15,134 +17,75 @@ namespace SlowTests.Client.Indexing
         {
         }
 
-        // ReSharper disable once ClassNeverInstantiated.Local
-        private class DocWithArray
-        {
-            public string Id { get; set; }
-            public string[] Tags { get; set; }
-            public string[] Categories { get; set; }
-            public int[] Numbers { get; set; }
-        }
-
         #region Map Index Tests - Contains
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_MemoryExtensionsContains_StringArray_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            var indexBuilder = new IndexDefinitionBuilder<DocWithArray, DocWithArray>
             {
-                // Arrange
-                var indexBuilder = new IndexDefinitionBuilder<DocWithArray>
-                {
-                    Map = docs => from doc in docs
-                        select new
-                        {
-                            // ReSharper disable once InvokeAsExtensionMethod
-                            HasTag = MemoryExtensions.Contains(doc.Tags, "csharp")
-                        }
-                };
+                Map = docs => from doc in docs
+                    select new
+                    {
+                        HasTag = MemoryExtensions.Contains(doc.Tags, "csharp")
+                    }
+            };
 
-                var indexDefinition = indexBuilder.ToIndexDefinition(store.Conventions);
-                indexDefinition.Name = "DocsByTag";
-
-                // Act & Assert
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                var map = indexDefinition.Maps.First();
-                Assert.DoesNotContain("MemoryExtensions", map);
-                Assert.DoesNotContain("ReadOnlySpan", map);
-                Assert.Contains("Contains", map);
-            }
+            AssertIndexBuilderRewritesCorrectly(options, indexBuilder, additionalMapAsserts: map =>
+                    Assert.True(map.Contains(nameof(Enumerable.Contains)), $"The map should have been rewritten to use '{nameof(Enumerable.Contains)}', but it did not. Map: '{map}'"));
         }
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_MemoryExtensionsContains_IntArray_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            var indexBuilder = new IndexDefinitionBuilder<DocWithArray, DocWithArray>
             {
-                // Arrange
-                var indexBuilder = new IndexDefinitionBuilder<DocWithArray>
-                {
-                    Map = docs => from doc in docs
-                        select new
-                        {
-                            // ReSharper disable once InvokeAsExtensionMethod
-                            HasNumber = MemoryExtensions.Contains(doc.Numbers, 42)
-                        }
-                };
+                Map = docs => from doc in docs
+                    select new
+                    {
+                        HasNumber = MemoryExtensions.Contains(doc.Numbers, 42)
+                    }
+            };
 
-                var indexDefinition = indexBuilder.ToIndexDefinition(store.Conventions);
-                indexDefinition.Name = "DocsByNumber";
-
-                // Act & Assert
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                var map = indexDefinition.Maps.First();
-                Assert.DoesNotContain("MemoryExtensions", map);
-                Assert.DoesNotContain("ReadOnlySpan", map);
-            }
+            AssertIndexBuilderRewritesCorrectly(options, indexBuilder, additionalMapAsserts: map =>
+                    Assert.True(map.Contains(nameof(Enumerable.Contains)), $"The map should have been rewritten to use '{nameof(Enumerable.Contains)}', but it did not. Map: '{map}'"));
         }
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_MemoryExtensionsContains_MultipleFields_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            var indexBuilder = new IndexDefinitionBuilder<DocWithArray, DocWithArray>
             {
-                // Arrange
-                var indexBuilder = new IndexDefinitionBuilder<DocWithArray>
-                {
-                    Map = docs => from doc in docs
-                        select new
-                        {
-                            // ReSharper disable once InvokeAsExtensionMethod
-                            HasTag = MemoryExtensions.Contains(doc.Tags, "csharp"),
-                            // ReSharper disable once InvokeAsExtensionMethod
-                            HasCategory = MemoryExtensions.Contains(doc.Categories, "backend")
-                        }
-                };
+                Map = docs => from doc in docs
+                    select new
+                    {
+                        HasTag = MemoryExtensions.Contains(doc.Tags, "csharp"),
+                        HasCategory = MemoryExtensions.Contains(doc.Categories, "backend")
+                    }
+            };
 
-                var indexDefinition = indexBuilder.ToIndexDefinition(store.Conventions);
-                indexDefinition.Name = "DocsByTagAndCategory";
-
-                // Act & Assert
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                var map = indexDefinition.Maps.First();
-                Assert.DoesNotContain("MemoryExtensions", map);
-                Assert.DoesNotContain("ReadOnlySpan", map);
-            }
+            AssertIndexBuilderRewritesCorrectly(options, indexBuilder, additionalMapAsserts: map =>
+                Assert.True(map.Contains(nameof(Enumerable.Contains)), $"The map should have been rewritten to use '{nameof(Enumerable.Contains)}', but it did not. Map: '{map}'"));
         }
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_MemoryExtensionsContains_WithNegation_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            var indexBuilder = new IndexDefinitionBuilder<DocWithArray, DocWithArray>
             {
-                // Arrange
-                var indexBuilder = new IndexDefinitionBuilder<DocWithArray>
-                {
-                    Map = docs => from doc in docs
-                        select new
-                        {
-                            // ReSharper disable once InvokeAsExtensionMethod
-                            DoesNotHaveTag = MemoryExtensions.Contains(doc.Tags, "deprecated") == false
-                        }
-                };
+                Map = docs => from doc in docs
+                    select new
+                    {
+                        DoesNotHaveTag = MemoryExtensions.Contains(doc.Tags, "deprecated") == false
+                    }
+            };
 
-                var indexDefinition = indexBuilder.ToIndexDefinition(store.Conventions);
-                indexDefinition.Name = "DocsWithoutDeprecatedTag";
-
-                // Act & Assert
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                var map = indexDefinition.Maps.First();
-                Assert.DoesNotContain("MemoryExtensions", map);
-                Assert.DoesNotContain("ReadOnlySpan", map);
-            }
+            AssertIndexBuilderRewritesCorrectly(options, indexBuilder, additionalMapAsserts: map =>
+                Assert.True(map.Contains(nameof(Enumerable.Contains)), $"The map should have been rewritten to use '{nameof(Enumerable.Contains)}', but it did not. Map: '{map}'"));
         }
 
         #endregion
@@ -153,95 +96,63 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_MemoryExtensionsContainsAny_IntArrays_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            var indexBuilder = new IndexDefinitionBuilder<DocWithArray, DocWithArray>
             {
-                // Arrange
-                var indexBuilder = new IndexDefinitionBuilder<DocWithArray>
+                Map = docs => from doc in docs
+                    select new
+                    {
+                        HasAnyNumber = MemoryExtensions.ContainsAny<int>(doc.Numbers, new int[] { 1, 2, 3, 42 })
+                    }
+            };
+
+            AssertIndexBuilderRewritesCorrectly(options, indexBuilder, additionalMapAsserts: map =>
                 {
-                    Map = docs => from doc in docs
-                        select new
-                        {
-                            // ReSharper disable once InvokeAsExtensionMethod
-                            HasAnyNumber = MemoryExtensions.ContainsAny<int>(doc.Numbers, new int[] { 1, 2, 3, 42 })
-                        }
-                };
-
-                var indexDefinition = indexBuilder.ToIndexDefinition(store.Conventions);
-                indexDefinition.Name = "DocsByAnyNumber";
-
-                // Act & Assert
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                var map = indexDefinition.Maps.First();
-                Assert.False(map.Contains("MemoryExtensions"), $"Map: {map} should not contain 'MemoryExtensions', but it does");
-                Assert.False(map.Contains("ReadOnlySpan"), $"Map: {map} should not contain 'ReadOnlySpan', but it does");
-
-                bool hasIntersectAny = map.Contains("Intersect") && map.Contains("Any");
-                bool hasContainsAny = map.Contains("ContainsAny");
-                Assert.True(hasIntersectAny || hasContainsAny, $"Map: {map} should contain either 'Intersect + Any' or 'ContainsAny' pattern");
-            }
+                    var hasIntersectAny = map.Contains(nameof(Enumerable.Intersect)) && map.Contains(nameof(Enumerable.Any));
+                    var hasContainsAny = map.Contains(nameof(MemoryExtensions.ContainsAny));
+                    Assert.True(hasIntersectAny || hasContainsAny, $"Map should contain either '{nameof(Enumerable.Intersect)}'/'{nameof(Enumerable.Any)}' or '{nameof(MemoryExtensions.ContainsAny)}'. Map: '{map}'");
+                });
         }
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_MemoryExtensionsContainsAny_StringArrays_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            var indexBuilder = new IndexDefinitionBuilder<DocWithArray, DocWithArray>
             {
-                // Arrange
-                var indexBuilder = new IndexDefinitionBuilder<DocWithArray>
+                Map = docs => from doc in docs
+                    select new
+                    {
+                        HasAnyTag = MemoryExtensions.ContainsAny<string>(doc.Tags, new string[] { "csharp", "dotnet", "ravendb" })
+                    }
+            };
+
+            AssertIndexBuilderRewritesCorrectly(options, indexBuilder, additionalMapAsserts: map =>
                 {
-                    Map = docs => from doc in docs
-                        select new
-                        {
-                            // ReSharper disable once InvokeAsExtensionMethod
-                            HasAnyTag = MemoryExtensions.ContainsAny<string>(doc.Tags, new string[] { "csharp", "dotnet", "ravendb" })
-                        }
-                };
-
-                var indexDefinition = indexBuilder.ToIndexDefinition(store.Conventions);
-                indexDefinition.Name = "DocsByAnyTag";
-
-                // Act & Assert
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                var map = indexDefinition.Maps.First();
-                Assert.False(map.Contains("MemoryExtensions"), $"Map: {map} should not contain 'MemoryExtensions', but it does");
-                Assert.False(map.Contains("ReadOnlySpan"), $"Map: {map} should not contain 'ReadOnlySpan', but it does");
-
-                bool hasIntersectAny = map.Contains("Intersect") && map.Contains("Any");
-                bool hasContainsAny = map.Contains("ContainsAny");
-                Assert.True(hasIntersectAny || hasContainsAny, $"Map: {map} should contain either 'Intersect + Any' or 'ContainsAny' pattern");
-            }
+                    var hasIntersectAny = map.Contains(nameof(Enumerable.Intersect)) && map.Contains(nameof(Enumerable.Any));
+                    var hasContainsAny = map.Contains(nameof(MemoryExtensions.ContainsAny));
+                    Assert.True(hasIntersectAny || hasContainsAny, $"Map should contain either '{nameof(Enumerable.Intersect)}'/'{nameof(Enumerable.Any)}' or '{nameof(MemoryExtensions.ContainsAny)}'. Map: '{map}'");
+                });
         }
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_MemoryExtensionsContainsAny_WithNegation_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            var indexBuilder = new IndexDefinitionBuilder<DocWithArray, DocWithArray>
             {
-                // Arrange
-                var indexBuilder = new IndexDefinitionBuilder<DocWithArray>
+                Map = docs => from doc in docs
+                    select new
+                    {
+                        IsValid = MemoryExtensions.ContainsAny<string>(doc.Tags, new string[] { "deprecated", "obsolete" }) == false
+                    }
+            };
+
+            AssertIndexBuilderRewritesCorrectly(options, indexBuilder, additionalMapAsserts: map =>
                 {
-                    Map = docs => from doc in docs
-                        select new
-                        {
-                            // ReSharper disable once InvokeAsExtensionMethod
-                            IsValid = MemoryExtensions.ContainsAny<string>(doc.Tags, new string[] { "deprecated", "obsolete" }) == false
-                        }
-                };
-
-                var indexDefinition = indexBuilder.ToIndexDefinition(store.Conventions);
-                indexDefinition.Name = "ValidDocs";
-
-                // Act & Assert
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                var map = indexDefinition.Maps.First();
-                Assert.DoesNotContain("MemoryExtensions", map);
-                Assert.DoesNotContain("ReadOnlySpan", map);
-            }
+                    var hasIntersectAny = map.Contains(nameof(Enumerable.Intersect)) && map.Contains(nameof(Enumerable.Any));
+                    var hasContainsAny = map.Contains(nameof(MemoryExtensions.ContainsAny));
+                    Assert.True(hasIntersectAny || hasContainsAny, $"Map should contain either '{nameof(Enumerable.Intersect)}'/'{nameof(Enumerable.Any)}' or '{nameof(MemoryExtensions.ContainsAny)}'. Map: '{map}'");
+                });
         }
 
         #endregion
@@ -252,80 +163,57 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapReduceIndex_MemoryExtensionsContains_InMap_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            var indexBuilder = new IndexDefinitionBuilder<DocWithArray, TagCount>
             {
-                // Arrange
-                var indexBuilder = new IndexDefinitionBuilder<DocWithArray, TagCount>
-                {
-                    Map = docs => from doc in docs
-                        // ReSharper disable once InvokeAsExtensionMethod
-                        where MemoryExtensions.Contains(doc.Tags, "csharp")
-                        select new TagCount
-                        {
-                            Tag = "csharp",
-                            Count = 1
-                        },
+                Map = docs => from doc in docs
+                    where MemoryExtensions.Contains(doc.Tags, "csharp")
+                    select new TagCount
+                    {
+                        Tag = "csharp",
+                        Count = 1
+                    },
 
-                    Reduce = results => from result in results
-                        group result by result.Tag
-                        into g
-                        select new TagCount
-                        {
-                            Tag = g.Key,
-                            Count = g.Sum(x => x.Count)
-                        }
-                };
+                Reduce = results => from result in results
+                    group result by result.Tag
+                    into g
+                    select new TagCount
+                    {
+                        Tag = g.Key,
+                        Count = g.Sum(x => x.Count)
+                    }
+            };
 
-                var indexDefinition = indexBuilder.ToIndexDefinition(store.Conventions);
-                indexDefinition.Name = "TagCounts";
-
-                // Act & Assert
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                var map = indexDefinition.Maps.First();
-                Assert.DoesNotContain("MemoryExtensions", map);
-                Assert.DoesNotContain("ReadOnlySpan", map);
-            }
+            AssertIndexBuilderRewritesCorrectly(options, indexBuilder, additionalMapAsserts: map =>
+                Assert.True(map.Contains(nameof(Enumerable.Contains)), $"The map should have been rewritten to use '{nameof(Enumerable.Contains)}', but it did not. Map: '{map}'"));
         }
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapReduceIndex_MemoryExtensionsContains_InReduce_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            var indexBuilder = new IndexDefinitionBuilder<DocWithArray, TagCount>
             {
-                var indexBuilder = new IndexDefinitionBuilder<DocWithArray, TagCount>
-                {
-                    Map = docs => from doc in docs
-                        from tag in doc.Tags
-                        select new TagCount
-                        {
-                            Tag = tag,
-                            Count = 1
-                        },
+                Map = docs => from doc in docs
+                    from tag in doc.Tags
+                    select new TagCount
+                    {
+                        Tag = tag,
+                        Count = 1
+                    },
 
-                    Reduce = results => from result in results
-                        group result by result.Tag
-                        into g
-                        // ReSharper disable once InvokeAsExtensionMethod
-                        where MemoryExtensions.Contains(new string[] { "deprecated", "obsolete" }, (string)g.Key) == false
-                        select new TagCount
-                        {
-                            Tag = g.Key,
-                            Count = g.Sum(x => x.Count)
-                        }
-                };
+                Reduce = results => from result in results
+                    group result by result.Tag
+                    into g
+                    where MemoryExtensions.Contains(new string[] { "deprecated", "obsolete" }, (string)g.Key) == false
+                    select new TagCount
+                    {
+                        Tag = g.Key,
+                        Count = g.Sum(x => x.Count)
+                    }
+            };
 
-                var indexDefinition = indexBuilder.ToIndexDefinition(store.Conventions);
-                indexDefinition.Name = "ActiveTagCounts";
-
-                // Act & Assert
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                var reduce = indexDefinition.Reduce;
-                Assert.DoesNotContain("MemoryExtensions", reduce);
-                Assert.DoesNotContain("ReadOnlySpan", reduce);
-            }
+            AssertIndexBuilderRewritesCorrectly(options, indexBuilder, additionalReduceAsserts: reduce =>
+                Assert.True(reduce.Contains(nameof(Enumerable.Contains)), $"The reduce should have been rewritten to use '{nameof(Enumerable.Contains)}', but it did not. Reduce: '{reduce}'"));
         }
 
         #endregion
@@ -336,81 +224,66 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapReduceIndex_MemoryExtensionsContainsAny_InMap_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            var indexBuilder = new IndexDefinitionBuilder<DocWithArray, TagCount>
             {
-                // Arrange
-                var indexBuilder = new IndexDefinitionBuilder<DocWithArray, TagCount>
+                Map = docs => from doc in docs
+                    where MemoryExtensions.ContainsAny<string>(doc.Tags, new string[] { "csharp", "dotnet", "ravendb" })
+                    select new TagCount
+                    {
+                        Tag = "important",
+                        Count = 1
+                    },
+
+                Reduce = results => from result in results
+                    group result by result.Tag
+                    into g
+                    select new TagCount
+                    {
+                        Tag = g.Key,
+                        Count = g.Sum(x => x.Count)
+                    }
+            };
+
+            AssertIndexBuilderRewritesCorrectly(options, indexBuilder, additionalMapAsserts: map =>
                 {
-                    Map = docs => from doc in docs
-                        // ReSharper disable once InvokeAsExtensionMethod
-                        where MemoryExtensions.ContainsAny<string>(doc.Tags, new string[] { "csharp", "dotnet", "ravendb" })
-                        select new TagCount
-                        {
-                            Tag = "important",
-                            Count = 1
-                        },
-
-                    Reduce = results => from result in results
-                        group result by result.Tag
-                        into g
-                        select new TagCount
-                        {
-                            Tag = g.Key,
-                            Count = g.Sum(x => x.Count)
-                        }
-                };
-
-                var indexDefinition = indexBuilder.ToIndexDefinition(store.Conventions);
-                indexDefinition.Name = "ImportantDocCounts";
-
-                // Act & Assert
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                var map = indexDefinition.Maps.First();
-                Assert.DoesNotContain("MemoryExtensions", map);
-                Assert.DoesNotContain("ReadOnlySpan", map);
-            }
+                    var hasIntersectAny = map.Contains(nameof(Enumerable.Intersect)) && map.Contains(nameof(Enumerable.Any));
+                    var hasContainsAny = map.Contains(nameof(MemoryExtensions.ContainsAny)); // For server-side compilation
+                    Assert.True(hasIntersectAny || hasContainsAny, $"Map should contain either '{nameof(Enumerable.Intersect)}'/'{nameof(Enumerable.Any)}' or '{nameof(MemoryExtensions.ContainsAny)}'. Map: '{map}'");
+                });
         }
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapReduceIndex_MemoryExtensionsContainsAny_InReduce_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            var indexBuilder = new IndexDefinitionBuilder<DocWithArray, CategoryCount>
             {
-                // Arrange
-                var indexBuilder = new IndexDefinitionBuilder<DocWithArray, CategoryCount>
+                Map = docs => from doc in docs
+                    from category in doc.Categories
+                    select new CategoryCount
+                    {
+                        Category = category,
+                        Count = 1
+                    },
+
+                Reduce = results => from result in results
+                    group result by result.Category
+                    into g
+                    where MemoryExtensions.ContainsAny<string>(new string[] { "backend", "frontend", "database" }, new string[] { g.Key })
+                    select new CategoryCount
+                    {
+                        Category = g.Key,
+                        Count = g.Sum(x => x.Count)
+                    }
+            };
+
+            AssertIndexBuilderRewritesCorrectly(options, indexBuilder,
+                additionalReduceAsserts: reduce =>
                 {
-                    Map = docs => from doc in docs
-                        from category in doc.Categories
-                        select new CategoryCount
-                        {
-                            Category = category,
-                            Count = 1
-                        },
-
-                    Reduce = results => from result in results
-                        group result by result.Category
-                        into g
-                        // ReSharper disable once InvokeAsExtensionMethod
-                        where MemoryExtensions.ContainsAny<string>(new string[] { "backend", "frontend", "database" }, new string[] { g.Key })
-                        select new CategoryCount
-                        {
-                            Category = g.Key,
-                            Count = g.Sum(x => x.Count)
-                        }
-                };
-
-                var indexDefinition = indexBuilder.ToIndexDefinition(store.Conventions);
-                indexDefinition.Name = "ValidCategoryCounts";
-
-                // Act & Assert
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                var reduce = indexDefinition.Reduce;
-                Assert.DoesNotContain("MemoryExtensions", reduce);
-                Assert.DoesNotContain("ReadOnlySpan", reduce);
-            }
+                    var hasIntersectAny = reduce.Contains(nameof(Enumerable.Intersect)) && reduce.Contains(nameof(Enumerable.Any));
+                    var hasContainsAny = reduce.Contains(nameof(MemoryExtensions.ContainsAny)); // For server-side compilation
+                    Assert.True(hasIntersectAny || hasContainsAny, $"Reduce should contain either '{nameof(Enumerable.Intersect)}'/'{nameof(Enumerable.Any)}' or '{nameof(MemoryExtensions.ContainsAny)}'. Reduce: '{reduce}'");
+                });
         }
 
         #endregion
@@ -421,81 +294,48 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_MixedMemoryExtensionsCalls_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            var indexBuilder = new IndexDefinitionBuilder<DocWithArray>
             {
-                // Arrange
-                var indexBuilder = new IndexDefinitionBuilder<DocWithArray>
-                {
-                    Map = docs => from doc in docs
-                        select new
-                        {
-                            // ReSharper disable once InvokeAsExtensionMethod
-                            HasTag = MemoryExtensions.Contains(doc.Tags, "csharp"),
-                            // ReSharper disable once InvokeAsExtensionMethod
-                            HasAnyTag = MemoryExtensions.ContainsAny<string>(doc.Tags, new string[] { "csharp", "dotnet" }),
-                            // ReSharper disable once InvokeAsExtensionMethod
-                            HasCategory = MemoryExtensions.Contains(doc.Categories, "backend")
-                        }
-                };
+                Map = docs => from doc in docs
+                    select new
+                    {
+                        HasTag = MemoryExtensions.Contains(doc.Tags, "csharp"),
+                        HasAnyTag = MemoryExtensions.ContainsAny<string>(doc.Tags, new string[] { "csharp", "dotnet" }),
+                        HasCategory = MemoryExtensions.Contains(doc.Categories, "backend")
+                    }
+            };
 
-                var indexDefinition = indexBuilder.ToIndexDefinition(store.Conventions);
-                indexDefinition.Name = "MixedMemoryExtensions";
-
-                // Act & Assert
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                var map = indexDefinition.Maps.First();
-                Assert.DoesNotContain("MemoryExtensions", map);
-                Assert.DoesNotContain("ReadOnlySpan", map);
-            }
+            AssertIndexBuilderRewritesCorrectly(options, indexBuilder);
         }
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapReduceIndex_MixedMemoryExtensionsCalls_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            var indexBuilder = new IndexDefinitionBuilder<DocWithArray, TagCount>
             {
-                // Arrange
-                var indexBuilder = new IndexDefinitionBuilder<DocWithArray, TagCount>
-                {
-                    Map = docs => from doc in docs
-                        // ReSharper disable once InvokeAsExtensionMethod
-                        where MemoryExtensions.ContainsAny<string>(doc.Tags, new string[] { "important", "critical" })
-                        from tag in doc.Tags
-                        select new TagCount
-                        {
-                            Tag = tag,
-                            Count = 1
-                        },
+                Map = docs => from doc in docs
+                    where MemoryExtensions.ContainsAny<string>(doc.Tags, new string[] { "important", "critical" })
+                    from tag in doc.Tags
+                    select new TagCount
+                    {
+                        Tag = tag,
+                        Count = 1
+                    },
 
 
-                    Reduce = results => from result in results
-                        group result by result.Tag
-                        into g
-                        // ReSharper disable once InvokeAsExtensionMethod
-                        where MemoryExtensions.Contains(new string[] { "deprecated", "obsolete" }, (string)g.Key) == false
-                        select new TagCount
-                        {
-                            Tag = g.Key,
-                            Count = g.Sum(x => x.Count)
-                        }
-                };
+                Reduce = results => from result in results
+                    group result by result.Tag
+                    into g
+                    where MemoryExtensions.Contains(new string[] { "deprecated", "obsolete" }, (string)g.Key) == false
+                    select new TagCount
+                    {
+                        Tag = g.Key,
+                        Count = g.Sum(x => x.Count)
+                    }
+            };
 
-                var indexDefinition = indexBuilder.ToIndexDefinition(store.Conventions);
-                indexDefinition.Name = "FilteredTagCounts";
-
-                // Act & Assert
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                var map = indexDefinition.Maps.First();
-                var reduce = indexDefinition.Reduce;
-
-                Assert.DoesNotContain("MemoryExtensions", map);
-                Assert.DoesNotContain("ReadOnlySpan", map);
-                Assert.DoesNotContain("MemoryExtensions", reduce);
-                Assert.DoesNotContain("ReadOnlySpan", reduce);
-            }
+            AssertIndexBuilderRewritesCorrectly(options, indexBuilder);
         }
 
         #endregion
@@ -506,229 +346,105 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_StringBased_MemoryExtensionsContains_StringArray_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            const string map = """
+                               from doc in docs 
+                               select new { 
+                                   HasTag = MemoryExtensions.Contains(doc.Tags, "csharp") 
+                               }
+                               """;
+
+            var docs = new object[]
             {
-                // Arrange
-                var indexDefinition = new IndexDefinition
-                {
-                    Name = "DocsByTag_StringBased",
-                    Maps = ["""
-                            from doc in docs 
-                            select new { 
-                                HasTag = MemoryExtensions.Contains(doc.Tags, "csharp") 
-                            }
-                            """]
-                };
+                new DocWithArray { Tags = ["csharp", "dotnet"] },
+                new DocWithArray { Tags = ["python", "django"] }
+            };
 
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                // Add test documents
-                using (var session = store.OpenSession())
-                {
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/1",
-                        Tags = ["csharp", "dotnet"],
-                        Categories = ["backend"],
-                        Numbers = [1, 2, 3]
-                    });
-
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/2",
-                        Tags = ["python", "django"],
-                        Categories = ["backend"],
-                        Numbers = [4, 5, 6]
-                    });
-
-                    session.SaveChanges();
-                }
-
-                Indexes.WaitForIndexing(store);
-
-                // Act & Assert
-                using (var session = store.OpenSession())
-                {
-                    var results = session.Query<DocWithArray>(indexDefinition.Name)
-                        .Customize(x => x.WaitForNonStaleResults())
-                        .ToList();
-
-                    Assert.NotEmpty(results);
-                }
-
-                var indexStats = store.Maintenance.Send(new GetIndexStatisticsOperation(indexDefinition.Name));
-                Assert.Equal(0, indexStats.ErrorsCount);
-            }
+            AssertStringBasedIndexCompilesAndRuns(options, map, docs);
         }
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_StringBased_MemoryExtensionsContains_IntArray_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            const string map = """
+                               from doc in docs 
+                               select new { 
+                                   HasNumber = MemoryExtensions.Contains(doc.Numbers, 42) 
+                               }
+                               """;
+
+            var docs = new object[]
             {
-                // Arrange
-                var indexDefinition = new IndexDefinition
+                new DocWithArray
                 {
-                    Name = "DocsByNumber_StringBased",
-                    Maps = ["""
-                            from doc in docs 
-                            select new { 
-                                HasNumber = MemoryExtensions.Contains(doc.Numbers, 42) 
-                            }
-                            """]
-                };
-
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                // Add test documents
-                using (var session = store.OpenSession())
+                    Tags = ["csharp"],
+                    Categories = ["backend"],
+                    Numbers = [42, 100]
+                },
+                new DocWithArray
                 {
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/1",
-                        Tags = ["csharp"],
-                        Categories = ["backend"],
-                        Numbers = [42, 100]
-                    });
-
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/2",
-                        Tags = ["python"],
-                        Categories = ["backend"],
-                        Numbers = [1, 2, 3]
-                    });
-
-                    session.SaveChanges();
+                    Tags = ["python"],
+                    Categories = ["backend"],
+                    Numbers = [1, 2, 3]
                 }
+            };
 
-                Indexes.WaitForIndexing(store);
-
-                // Act & Assert
-                using (var session = store.OpenSession())
-                {
-                    var results = session.Query<DocWithArray>(indexDefinition.Name)
-                        .Customize(x => x.WaitForNonStaleResults())
-                        .ToList();
-
-                    Assert.NotEmpty(results);
-                }
-
-                var indexStats = store.Maintenance.Send(new GetIndexStatisticsOperation(indexDefinition.Name));
-                Assert.Equal(0, indexStats.ErrorsCount);
-            }
+            AssertStringBasedIndexCompilesAndRuns(options, map, docs);
         }
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_StringBased_MemoryExtensionsContains_MultipleFields_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            const string map = """
+                               from doc in docs 
+                               select new { 
+                                   HasTag = MemoryExtensions.Contains(doc.Tags, "csharp"), 
+                                   HasCategory = MemoryExtensions.Contains(doc.Categories, "backend") 
+                               }
+                               """;
+
+            var docs = new object[]
             {
-                // Arrange
-                var indexDefinition = new IndexDefinition
+                new DocWithArray
                 {
-                    Name = "DocsByTagAndCategory_StringBased",
-                    Maps = ["""
-                            from doc in docs 
-                            select new { 
-                                HasTag = MemoryExtensions.Contains(doc.Tags, "csharp"), 
-                                HasCategory = MemoryExtensions.Contains(doc.Categories, "backend") 
-                            }
-                            """]
-                };
-
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                // Add test documents
-                using (var session = store.OpenSession())
-                {
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/1",
-                        Tags = ["csharp", "dotnet"],
-                        Categories = ["backend", "database"],
-                        Numbers = [1]
-                    });
-
-                    session.SaveChanges();
+                    Tags = ["csharp", "dotnet"],
+                    Categories = ["backend", "database"],
+                    Numbers = [1]
                 }
+            };
 
-                Indexes.WaitForIndexing(store);
-
-                // Act & Assert
-                using (var session = store.OpenSession())
-                {
-                    var results = session.Query<DocWithArray>(indexDefinition.Name)
-                        .Customize(x => x.WaitForNonStaleResults())
-                        .ToList();
-
-                    Assert.NotEmpty(results);
-                }
-
-                var indexStats = store.Maintenance.Send(new GetIndexStatisticsOperation(indexDefinition.Name));
-                Assert.Equal(0, indexStats.ErrorsCount);
-            }
+            AssertStringBasedIndexCompilesAndRuns(options, map, docs);
         }
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_StringBased_MemoryExtensionsContains_WithNegation_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            const string map = """
+                               from doc in docs 
+                               select new { 
+                                   DoesNotHaveTag = MemoryExtensions.Contains(doc.Tags, "deprecated") == false 
+                               }
+                               """;
+
+            var docs = new object[]
             {
-                // Arrange
-                var indexDefinition = new IndexDefinition
+                new DocWithArray
                 {
-                    Name = "DocsWithoutDeprecatedTag_StringBased",
-                    Maps = ["""
-                            from doc in docs 
-                            select new { 
-                                DoesNotHaveTag = MemoryExtensions.Contains(doc.Tags, "deprecated") == false 
-                            }
-                            """]
-                };
-
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                // Add test documents
-                using (var session = store.OpenSession())
+                    Tags = ["csharp"],
+                    Categories = ["backend"],
+                    Numbers = [1]
+                },
+                new DocWithArray
                 {
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/1",
-                        Tags = ["csharp"],
-                        Categories = ["backend"],
-                        Numbers = [1]
-                    });
-
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/2",
-                        Tags = ["deprecated"],
-                        Categories = ["backend"],
-                        Numbers = [2]
-                    });
-
-                    session.SaveChanges();
+                    Tags = ["deprecated"],
+                    Categories = ["backend"],
+                    Numbers = [2]
                 }
+            };
 
-                Indexes.WaitForIndexing(store);
-
-                // Act & Assert
-                using (var session = store.OpenSession())
-                {
-                    var results = session.Query<DocWithArray>(indexDefinition.Name)
-                        .Customize(x => x.WaitForNonStaleResults())
-                        .ToList();
-
-                    Assert.NotEmpty(results);
-                }
-
-                var indexStats = store.Maintenance.Send(new GetIndexStatisticsOperation(indexDefinition.Name));
-                Assert.Equal(0, indexStats.ErrorsCount);
-            }
+            AssertStringBasedIndexCompilesAndRuns(options, map, docs);
         }
 
         #endregion
@@ -739,177 +455,90 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_StringBased_MemoryExtensionsContainsAny_IntArrays_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            const string map = """
+                               from doc in docs 
+                               select new { 
+                                   HasAnyNumber = MemoryExtensions.ContainsAny(doc.Numbers, new int[] { 1, 2, 3, 42 }) 
+                               }
+                               """;
+
+            var docs = new object[]
             {
-                // Arrange
-                var indexDefinition = new IndexDefinition
+                new DocWithArray
                 {
-                    Name = "DocsByAnyNumber_StringBased",
-                    Maps = ["""
-                            from doc in docs 
-                            select new { 
-                                HasAnyNumber = MemoryExtensions.ContainsAny(doc.Numbers, new int[] { 1, 2, 3, 42 }) 
-                            }
-                            """]
-                };
-
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                // Add test documents
-                using (var session = store.OpenSession())
+                    Tags = ["csharp"],
+                    Categories = ["backend"],
+                    Numbers = [42, 100]
+                },
+                new DocWithArray
                 {
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/1",
-                        Tags = ["csharp"],
-                        Categories = ["backend"],
-                        Numbers = [42, 100]
-                    });
-
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/2",
-                        Tags = ["python"],
-                        Categories = ["backend"],
-                        Numbers = [7, 8, 9]
-                    });
-
-                    session.SaveChanges();
+                    Tags = ["python"],
+                    Categories = ["backend"],
+                    Numbers = [7, 8, 9]
                 }
+            };
 
-                Indexes.WaitForIndexing(store);
-
-                // Act & Assert
-                using (var session = store.OpenSession())
-                {
-                    var results = session.Query<DocWithArray>(indexDefinition.Name)
-                        .Customize(x => x.WaitForNonStaleResults())
-                        .ToList();
-
-                    Assert.NotEmpty(results);
-                }
-
-                var indexStats = store.Maintenance.Send(new GetIndexStatisticsOperation(indexDefinition.Name));
-                Assert.Equal(0, indexStats.ErrorsCount);
-            }
+            AssertStringBasedIndexCompilesAndRuns(options, map, docs);
         }
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_StringBased_MemoryExtensionsContainsAny_StringArrays_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            const string map = """
+                               from doc in docs 
+                               select new { 
+                                   HasAnyTag = MemoryExtensions.ContainsAny(doc.Tags, new string[] { "csharp", "dotnet", "ravendb" }) 
+                               }
+                               """;
+
+            var docs = new object[]
             {
-                // Arrange
-                var indexDefinition = new IndexDefinition
+                new DocWithArray
                 {
-                    Name = "DocsByAnyTag_StringBased",
-                    Maps = ["""
-                            from doc in docs 
-                            select new { 
-                                HasAnyTag = MemoryExtensions.ContainsAny(doc.Tags, new string[] { "csharp", "dotnet", "ravendb" }) 
-                            }
-                            """]
-                };
-
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                // Add test documents
-                using (var session = store.OpenSession())
+                    Tags = ["csharp", "aspnet"],
+                    Categories = ["backend"],
+                    Numbers = [1]
+                },
+                new DocWithArray
                 {
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/1",
-                        Tags = ["csharp", "aspnet"],
-                        Categories = ["backend"],
-                        Numbers = [1]
-                    });
-
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/2",
-                        Tags = ["python", "django"],
-                        Categories = ["backend"],
-                        Numbers = [2]
-                    });
-
-                    session.SaveChanges();
+                    Tags = ["python", "django"],
+                    Categories = ["backend"],
+                    Numbers = [2]
                 }
+            };
 
-                Indexes.WaitForIndexing(store);
-
-                // Act & Assert
-                using (var session = store.OpenSession())
-                {
-                    var results = session.Query<DocWithArray>(indexDefinition.Name)
-                        .Customize(x => x.WaitForNonStaleResults())
-                        .ToList();
-
-                    Assert.NotEmpty(results);
-                }
-
-                var indexStats = store.Maintenance.Send(new GetIndexStatisticsOperation(indexDefinition.Name));
-                Assert.Equal(0, indexStats.ErrorsCount);
-            }
+            AssertStringBasedIndexCompilesAndRuns(options, map, docs);
         }
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_StringBased_MemoryExtensionsContainsAny_WithNegation_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            const string map = """
+                               from doc in docs 
+                               select new { 
+                                   IsValid = MemoryExtensions.ContainsAny(doc.Tags, new string[] { "deprecated", "obsolete" }) == false 
+                               }
+                               """;
+
+            var docs = new object[]
             {
-                // Arrange
-                var indexDefinition = new IndexDefinition
+                new DocWithArray
                 {
-                    Name = "ValidDocs_StringBased",
-                    Maps = ["""
-                            from doc in docs 
-                            select new { 
-                                IsValid = MemoryExtensions.ContainsAny(doc.Tags, new string[] { "deprecated", "obsolete" }) == false 
-                            }
-                            """]
-                };
-
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                // Add test documents
-                using (var session = store.OpenSession())
+                    Tags = ["csharp", "active"],
+                    Categories = ["backend"],
+                    Numbers = [1]
+                },
+                new DocWithArray
                 {
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/1",
-                        Tags = ["csharp", "active"],
-                        Categories = ["backend"],
-                        Numbers = [1]
-                    });
-
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/2",
-                        Tags = ["deprecated"],
-                        Categories = ["backend"],
-                        Numbers = [2]
-                    });
-
-                    session.SaveChanges();
+                    Tags = ["deprecated"],
+                    Categories = ["backend"],
+                    Numbers = [2]
                 }
+            };
 
-                Indexes.WaitForIndexing(store);
-
-                // Act & Assert
-                using (var session = store.OpenSession())
-                {
-                    var results = session.Query<DocWithArray>(indexDefinition.Name)
-                        .Customize(x => x.WaitForNonStaleResults())
-                        .ToList();
-
-                    Assert.NotEmpty(results);
-                }
-
-                var indexStats = store.Maintenance.Send(new GetIndexStatisticsOperation(indexDefinition.Name));
-                Assert.Equal(0, indexStats.ErrorsCount);
-            }
+            AssertStringBasedIndexCompilesAndRuns(options, map, docs);
         }
 
         #endregion
@@ -920,67 +549,50 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapReduceIndex_StringBased_MemoryExtensionsContains_InMap_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
-            {
-                // Arrange
-                var indexDefinition = new IndexDefinition
-                {
-                    Name = "TagCounts_StringBased",
-                    Maps = ["""
-                            from doc in docs 
-                            where MemoryExtensions.Contains(doc.Tags, "csharp") 
-                            select new { 
-                                Tag = "csharp", Count = 1 
-                            }
-                            """],
-                    Reduce = """
+            const string map = """
+                               from doc in docs 
+                               where MemoryExtensions.Contains(doc.Tags, "csharp") 
+                               select new { 
+                                   Tag = "csharp", 
+                                   Count = 1 
+                               }
+                               """;
+            const string reduce = """
                              from result in results 
                              group result by result.Tag into g 
                              select new { 
                                 Tag = g.Key, 
                                 Count = g.Sum(x => x.Count) 
                              }
-                             """
-                };
+                             """;
 
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                // Add test documents
-                using (var session = store.OpenSession())
+            var docs = new object[]
+            {
+                new DocWithArray
                 {
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/1",
-                        Tags = ["csharp", "dotnet"],
-                        Categories = ["backend"],
-                        Numbers = [1]
-                    });
-
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/2",
-                        Tags = ["csharp", "aspnet"],
-                        Categories = ["web"],
-                        Numbers = [2]
-                    });
-
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/3",
-                        Tags = ["python"],
-                        Categories = ["backend"],
-                        Numbers = [3]
-                    });
-
-                    session.SaveChanges();
+                    Tags = ["csharp", "dotnet"],
+                    Categories = ["backend"],
+                    Numbers = [1]
+                },
+                new DocWithArray
+                {
+                    Tags = ["csharp", "aspnet"],
+                    Categories = ["web"],
+                    Numbers = [2]
+                },
+                new DocWithArray
+                {
+                    Tags = ["python"],
+                    Categories = ["backend"],
+                    Numbers = [3]
                 }
+            };
 
-                Indexes.WaitForIndexing(store);
-
-                // Act & Assert
+            AssertStringBasedIndexCompilesAndRuns(options, map, docs, reduce, additionalAsserts: (store, indexName) =>
+            {
                 using (var session = store.OpenSession())
                 {
-                    var results = session.Query<TagCount>(indexDefinition.Name)
+                    var results = session.Query<TagCount>(indexName)
                         .Customize(x => x.WaitForNonStaleResults())
                         .ToList();
 
@@ -989,31 +601,22 @@ namespace SlowTests.Client.Indexing
                     Assert.NotNull(csharpCount);
                     Assert.Equal(2, csharpCount.Count);
                 }
-
-                var indexStats = store.Maintenance.Send(new GetIndexStatisticsOperation(indexDefinition.Name));
-                Assert.Equal(0, indexStats.ErrorsCount);
-            }
+            });
         }
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapReduceIndex_StringBased_MemoryExtensionsContains_InReduce_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
-            {
-                // Arrange
-                var indexDefinition = new IndexDefinition
-                {
-                    Name = "ActiveTagCounts_StringBased",
-                    Maps = ["""
+            const string map = """
                             from doc in docs 
                             from tag in doc.Tags 
                             select new { 
                                 Tag = tag, 
                                 Count = 1 
                             }
-                            """],
-                    Reduce = """
+                            """;
+            const string reduce = """
                              from result in results 
                              group result by result.Tag into g 
                              where MemoryExtensions.Contains(new string[] { "deprecated", "obsolete" }, g.Key) == false 
@@ -1021,47 +624,35 @@ namespace SlowTests.Client.Indexing
                                 Tag = g.Key, 
                                 Count = g.Sum(x => x.Count) 
                              }
-                             """
-                };
+                             """;
 
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                // Add test documents
-                using (var session = store.OpenSession())
+            var docs = new object[]
+            {
+                new DocWithArray
                 {
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/1",
-                        Tags = ["csharp", "active"],
-                        Categories = ["backend"],
-                        Numbers = [1]
-                    });
-
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/2",
-                        Tags = ["deprecated"],
-                        Categories = ["backend"],
-                        Numbers = [2]
-                    });
-
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/3",
-                        Tags = ["csharp", "modern"],
-                        Categories = ["web"],
-                        Numbers = [3]
-                    });
-
-                    session.SaveChanges();
+                    Tags = ["csharp", "active"],
+                    Categories = ["backend"],
+                    Numbers = [1]
+                },
+                new DocWithArray
+                {
+                    Tags = ["deprecated"],
+                    Categories = ["backend"],
+                    Numbers = [2]
+                },
+                new DocWithArray
+                {
+                    Tags = ["csharp", "modern"],
+                    Categories = ["web"],
+                    Numbers = [3]
                 }
+            };
 
-                Indexes.WaitForIndexing(store);
-
-                // Act & Assert
+            AssertStringBasedIndexCompilesAndRuns(options, map, docs: docs, reduce: reduce, additionalAsserts: (store, indexName) =>
+            {
                 using (var session = store.OpenSession())
                 {
-                    var results = session.Query<TagCount>(indexDefinition.Name)
+                    var results = session.Query<TagCount>(indexName)
                         .Customize(x => x.WaitForNonStaleResults())
                         .ToList();
 
@@ -1069,10 +660,7 @@ namespace SlowTests.Client.Indexing
                     Assert.DoesNotContain(results, x => x.Tag == "deprecated");
                     Assert.Contains(results, x => x.Tag == "csharp");
                 }
-
-                var indexStats = store.Maintenance.Send(new GetIndexStatisticsOperation(indexDefinition.Name));
-                Assert.Equal(0, indexStats.ErrorsCount);
-            }
+            });
         }
 
         #endregion
@@ -1083,68 +671,50 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapReduceIndex_StringBased_MemoryExtensionsContainsAny_InMap_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
-            {
-                // Arrange
-                var indexDefinition = new IndexDefinition
-                {
-                    Name = "ImportantDocCounts_StringBased",
-                    Maps = ["""
+            const string map = """
                             from doc in docs 
                             where MemoryExtensions.ContainsAny(doc.Tags, new string[] { "csharp", "dotnet", "ravendb" }) 
                             select new { 
                                 Tag = "important", 
                                 Count = 1 
                             }
-                            """],
-                    Reduce = """
+                            """;
+            const string reduce = """
                              from result in results 
                              group result by result.Tag into g 
                              select new { 
                                  Tag = g.Key, 
                                  Count = g.Sum(x => x.Count) 
                              }
-                             """
-                };
+                             """;
 
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                // Add test documents
-                using (var session = store.OpenSession())
+            var docs = new object[]
+            {
+                new DocWithArray
                 {
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/1",
-                        Tags = ["csharp", "backend"],
-                        Categories = ["backend"],
-                        Numbers = [1]
-                    });
-
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/2",
-                        Tags = ["python", "django"],
-                        Categories = ["backend"],
-                        Numbers = [2]
-                    });
-
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/3",
-                        Tags = ["ravendb", "database"],
-                        Categories = ["database"],
-                        Numbers = [3]
-                    });
-
-                    session.SaveChanges();
+                    Tags = ["csharp", "backend"],
+                    Categories = ["backend"],
+                    Numbers = [1]
+                },
+                new DocWithArray
+                {
+                    Tags = ["python", "django"],
+                    Categories = ["backend"],
+                    Numbers = [2]
+                },
+                new DocWithArray
+                {
+                    Tags = ["ravendb", "database"],
+                    Categories = ["database"],
+                    Numbers = [3]
                 }
+            };
 
-                Indexes.WaitForIndexing(store);
-
-                // Act & Assert
+            AssertStringBasedIndexCompilesAndRuns(options, map, docs: docs, reduce: reduce, additionalAsserts: (store, indexName) =>
+            {
                 using (var session = store.OpenSession())
                 {
-                    var results = session.Query<TagCount>(indexDefinition.Name)
+                    var results = session.Query<TagCount>(indexName)
                         .Customize(x => x.WaitForNonStaleResults())
                         .ToList();
 
@@ -1153,31 +723,22 @@ namespace SlowTests.Client.Indexing
                     Assert.NotNull(importantCount);
                     Assert.Equal(2, importantCount.Count); // docs/1 + docs/3
                 }
-
-                var indexStats = store.Maintenance.Send(new GetIndexStatisticsOperation(indexDefinition.Name));
-                Assert.Equal(0, indexStats.ErrorsCount);
-            }
+            });
         }
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapReduceIndex_StringBased_MemoryExtensionsContainsAny_InReduce_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
-            {
-                // Arrange
-                var indexDefinition = new IndexDefinition
-                {
-                    Name = "ValidCategoryCounts_StringBased",
-                    Maps = ["""
+            const string map = """
                             from doc in docs 
                             from category in doc.Categories 
                             select new { 
                                 Category = category, 
                                 Count = 1 
                             }
-                            """],
-                    Reduce = """
+                            """;
+            const string reduce = """
                              from result in results 
                              group result by result.Category into g 
                              where MemoryExtensions.ContainsAny(new string[] { "backend", "frontend", "database" }, new string[] { g.Key }) 
@@ -1185,47 +746,35 @@ namespace SlowTests.Client.Indexing
                                  Category = g.Key, 
                                  Count = g.Sum(x => x.Count) 
                              }
-                             """
-                };
+                             """;
 
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                // Add test documents
-                using (var session = store.OpenSession())
+            var docs = new object[]
+            {
+                new DocWithArray
                 {
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/1",
-                        Tags = ["csharp"],
-                        Categories = ["backend"],
-                        Numbers = [1]
-                    });
-
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/2",
-                        Tags = ["react"],
-                        Categories = ["frontend"],
-                        Numbers = [2]
-                    });
-
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/3",
-                        Tags = ["mobile"],
-                        Categories = ["mobile"],
-                        Numbers = [3]
-                    });
-
-                    session.SaveChanges();
+                    Tags = ["csharp"],
+                    Categories = ["backend"],
+                    Numbers = [1]
+                },
+                new DocWithArray
+                {
+                    Tags = ["react"],
+                    Categories = ["frontend"],
+                    Numbers = [2]
+                },
+                new DocWithArray
+                {
+                    Tags = ["mobile"],
+                    Categories = ["mobile"],
+                    Numbers = [3]
                 }
+            };
 
-                Indexes.WaitForIndexing(store);
-
-                // Act & Assert
+            AssertStringBasedIndexCompilesAndRuns(options, map, docs: docs, reduce: reduce, additionalAsserts: (store, indexName) =>
+            {
                 using (var session = store.OpenSession())
                 {
-                    var results = session.Query<CategoryCount>(indexDefinition.Name)
+                    var results = session.Query<CategoryCount>(indexName)
                         .Customize(x => x.WaitForNonStaleResults())
                         .ToList();
 
@@ -1234,10 +783,7 @@ namespace SlowTests.Client.Indexing
                     Assert.Contains(results, x => x.Category == "frontend");
                     Assert.DoesNotContain(results, x => x.Category == "mobile");
                 }
-
-                var indexStats = store.Maintenance.Send(new GetIndexStatisticsOperation(indexDefinition.Name));
-                Assert.Equal(0, indexStats.ErrorsCount);
-            }
+            });
         }
 
         #endregion
@@ -1248,77 +794,39 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_StringBased_MixedMemoryExtensionsCalls_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
-            {
-                // Arrange
-                var indexDefinition = new IndexDefinition
-                {
-                    Name = "MixedMemoryExtensions_StringBased",
-                    Maps =
-                    [
-                        """
+            const string map = """
                         from doc in docs 
                         select new { 
                             HasTag = MemoryExtensions.Contains(doc.Tags, "csharp"), 
                             HasAnyTag = MemoryExtensions.ContainsAny(doc.Tags, new string[] { "csharp", "dotnet" }), 
                             HasCategory = MemoryExtensions.Contains(doc.Categories, "backend") 
                         }
-                        """
-                    ]
-                };
+                        """;
 
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                // Add test documents
-                using (var session = store.OpenSession())
+            var docs = new object[]
+            {
+                new DocWithArray
                 {
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/1",
-                        Tags = ["csharp", "dotnet"],
-                        Categories = ["backend"],
-                        Numbers = [1]
-                    });
-
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/2",
-                        Tags = ["python"],
-                        Categories = ["frontend"],
-                        Numbers = [2]
-                    });
-
-                    session.SaveChanges();
-                }
-
-                Indexes.WaitForIndexing(store);
-
-                // Act & Assert
-                using (var session = store.OpenSession())
+                    Tags = ["csharp", "dotnet"],
+                    Categories = ["backend"],
+                    Numbers = [1]
+                },
+                new DocWithArray
                 {
-                    var results = session.Query<DocWithArray>(indexDefinition.Name)
-                        .Customize(x => x.WaitForNonStaleResults())
-                        .ToList();
-
-                    Assert.NotEmpty(results);
+                    Tags = ["python"],
+                    Categories = ["frontend"],
+                    Numbers = [2]
                 }
+            };
 
-                var indexStats = store.Maintenance.Send(new GetIndexStatisticsOperation(indexDefinition.Name));
-                Assert.Equal(0, indexStats.ErrorsCount);
-            }
+            AssertStringBasedIndexCompilesAndRuns(options, map, docs);
         }
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapReduceIndex_StringBased_MixedMemoryExtensionsCalls_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
-            {
-                // Arrange
-                var indexDefinition = new IndexDefinition
-                {
-                    Name = "FilteredTagCounts_StringBased",
-                    Maps = ["""
+            const string map = """
                             from doc in docs 
                             where MemoryExtensions.ContainsAny(doc.Tags, new string[] { "important", "critical" }) 
                             from tag in doc.Tags 
@@ -1326,8 +834,8 @@ namespace SlowTests.Client.Indexing
                                 Tag = tag, 
                                 Count = 1 
                             }
-                            """],
-                    Reduce = """
+                            """;
+            const string reduce = """
                              from result in results 
                              group result by result.Tag into g 
                              where MemoryExtensions.Contains(new string[] { "deprecated", "obsolete" }, (string)g.Key) == false 
@@ -1335,47 +843,35 @@ namespace SlowTests.Client.Indexing
                                  Tag = g.Key, 
                                  Count = g.Sum(x => x.Count) 
                              }
-                             """
-                };
+                             """;
 
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                // Add test documents
-                using (var session = store.OpenSession())
+            var docs = new object[]
+            {
+                new DocWithArray
                 {
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/1",
-                        Tags = ["important", "csharp"],
-                        Categories = ["backend"],
-                        Numbers = [1]
-                    });
-
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/2",
-                        Tags = ["critical", "deprecated"],
-                        Categories = ["backend"],
-                        Numbers = [2]
-                    });
-
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/3",
-                        Tags = ["normal"],
-                        Categories = ["backend"],
-                        Numbers = [3]
-                    });
-
-                    session.SaveChanges();
+                    Tags = ["important", "csharp"],
+                    Categories = ["backend"],
+                    Numbers = [1]
+                },
+                new DocWithArray
+                {
+                    Tags = ["critical", "deprecated"],
+                    Categories = ["backend"],
+                    Numbers = [2]
+                },
+                new DocWithArray
+                {
+                    Tags = ["normal"],
+                    Categories = ["backend"],
+                    Numbers = [3]
                 }
+            };
 
-                Indexes.WaitForIndexing(store);
-
-                // Act & Assert
+            AssertStringBasedIndexCompilesAndRuns(options, map, docs, reduce: reduce, additionalAsserts: (store, indexName) =>
+            {
                 using (var session = store.OpenSession())
                 {
-                    var results = session.Query<TagCount>(indexDefinition.Name)
+                    var results = session.Query<TagCount>(indexName)
                         .Customize(x => x.WaitForNonStaleResults())
                         .ToList();
 
@@ -1385,10 +881,7 @@ namespace SlowTests.Client.Indexing
                     Assert.Contains(results, x => x.Tag == "critical");
                     Assert.DoesNotContain(results, x => x.Tag == "deprecated");
                 }
-
-                var indexStats = store.Maintenance.Send(new GetIndexStatisticsOperation(indexDefinition.Name));
-                Assert.Equal(0, indexStats.ErrorsCount);
-            }
+            });
         }
 
         #endregion
@@ -1399,80 +892,44 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_MemoryExtensionsContains_DateTimeArray_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            var indexBuilder = new IndexDefinitionBuilder<DocWithDates>
             {
-                var indexBuilder = new IndexDefinitionBuilder<DocWithDates>
-                {
-                    Map = docs => from doc in docs
-                        select new
-                        {
-                            HasDate = MemoryExtensions.Contains(doc.ImportantDates, new DateTime(2024, 1, 1))
-                        }
-                };
+                Map = docs => from doc in docs
+                    select new
+                    {
+                        HasDate = MemoryExtensions.Contains(doc.ImportantDates, new DateTime(2024, 1, 1))
+                    }
+            };
 
-                var indexDefinition = indexBuilder.ToIndexDefinition(store.Conventions);
-                indexDefinition.Name = "DocsByDate";
-
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                var map = indexDefinition.Maps.First();
-                Assert.DoesNotContain("MemoryExtensions", map);
-                Assert.DoesNotContain("ReadOnlySpan", map);
-            }
+            AssertIndexBuilderRewritesCorrectly(options, indexBuilder);
         }
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_StringBased_MemoryExtensionsContains_DateTimeArray_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
-            {
-                var indexDefinition = new IndexDefinition
-                {
-                    Name = "DocsByDate_StringBased",
-                    Maps = ["""
+            const string map = """
                             from doc in docs 
                             select new { 
                                 HasDate = MemoryExtensions.Contains(doc.ImportantDates, DateTime.Parse("2024-01-01")) 
                             }
-                            """]
-                };
+                            """;
 
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                using (var session = store.OpenSession())
+            var docs = new object[]
+            {
+                new DocWithDates
                 {
-                    session.Store(new DocWithDates
-                    {
-                        Id = "docs/1",
-                        ImportantDates = [
-                            new DateTime(2024, 1, 1),
-                            new DateTime(2024, 12, 31)]
-                    });
-
-                    session.Store(new DocWithDates
-                    {
-                        Id = "docs/2",
-                        ImportantDates = [new DateTime(2023, 6, 15)]
-                    });
-
-                    session.SaveChanges();
-                }
-
-                Indexes.WaitForIndexing(store);
-
-                using (var session = store.OpenSession())
+                    ImportantDates = [
+                        new DateTime(2024, 1, 1),
+                        new DateTime(2024, 12, 31)]
+                },
+                new DocWithDates
                 {
-                    var results = session.Query<DocWithDates>(indexDefinition.Name)
-                        .Customize(x => x.WaitForNonStaleResults())
-                        .ToList();
-
-                    Assert.NotEmpty(results);
+                    ImportantDates = [new DateTime(2023, 6, 15)]
                 }
+            };
 
-                var indexStats = store.Maintenance.Send(new GetIndexStatisticsOperation(indexDefinition.Name));
-                Assert.Equal(0, indexStats.ErrorsCount);
-            }
+            AssertStringBasedIndexCompilesAndRuns(options, map, docs);
         }
 
         #endregion
@@ -1483,85 +940,42 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_MemoryExtensionsContains_DoubleArray_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            var indexBuilder = new IndexDefinitionBuilder<DocWithDoubles>
             {
-                var indexBuilder = new IndexDefinitionBuilder<DocWithDoubles>
-                {
-                    Map = docs => from doc in docs
-                        select new
-                        {
-                            HasValue = MemoryExtensions.Contains(doc.Values, 3.14)
-                        }
-                };
+                Map = docs => from doc in docs
+                    select new
+                    {
+                        HasValue = MemoryExtensions.Contains(doc.Values, 3.14)
+                    }
+            };
 
-                var indexDefinition = indexBuilder.ToIndexDefinition(store.Conventions);
-                indexDefinition.Name = "DocsByDouble";
-
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                var map = indexDefinition.Maps.First();
-                Assert.DoesNotContain("MemoryExtensions", map);
-                Assert.DoesNotContain("ReadOnlySpan", map);
-            }
+            AssertIndexBuilderRewritesCorrectly(options, indexBuilder);
         }
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_StringBased_MemoryExtensionsContains_DoubleArray_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
-            {
-                var indexDefinition = new IndexDefinition
-                {
-                    Name = "DocsByDouble_StringBased",
-                    Maps = ["""
+            const string map = """
                             from doc in docs 
                             select new { 
                                 HasValue = MemoryExtensions.Contains(doc.Values, 3.14) 
                             }
-                            """]
-                };
+                            """;
 
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                using (var session = store.OpenSession())
+            var docs = new object[]
+            {
+                new DocWithDoubles
                 {
-                    session.Store(new DocWithDoubles
-                    {
-                        Id = "docs/1",
-                        Values = [
-                            3.14,
-                            2.71,
-                            1.41
-                        ]
-                    });
-                    session.Store(new DocWithDoubles
-                    {
-                        Id = "docs/2",
-                        Values = [
-                            1.0,
-                            2.0,
-                            3.0
-                        ]
-                    });
-
-                    session.SaveChanges();
-                }
-
-                Indexes.WaitForIndexing(store);
-
-                using (var session = store.OpenSession())
+                    Values = [3.14, 2.71, 1.41]
+                },
+                new DocWithDoubles
                 {
-                    var results = session.Query<DocWithDoubles>(indexDefinition.Name)
-                        .Customize(x => x.WaitForNonStaleResults())
-                        .ToList();
-
-                    Assert.NotEmpty(results);
+                    Values = [1.0, 2.0, 3.0]
                 }
+            };
 
-                var indexStats = store.Maintenance.Send(new GetIndexStatisticsOperation(indexDefinition.Name));
-                Assert.Equal(0, indexStats.ErrorsCount);
-            }
+            AssertStringBasedIndexCompilesAndRuns(options, map, docs);
         }
 
         #endregion
@@ -1572,75 +986,38 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_MemoryExtensionsContains_LongArray_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            var indexBuilder = new IndexDefinitionBuilder<DocWithLongs>
             {
-                var indexBuilder = new IndexDefinitionBuilder<DocWithLongs>
-                {
-                    Map = docs => from doc in docs
-                        select new
-                        {
-                            HasValue = MemoryExtensions.Contains(doc.Values, 9223372036854775807L)
-                        }
-                };
+                Map = docs => from doc in docs
+                    select new
+                    {
+                        HasValue = MemoryExtensions.Contains(doc.Values, 9223372036854775807L)
+                    }
+            };
 
-                var indexDefinition = indexBuilder.ToIndexDefinition(store.Conventions);
-                indexDefinition.Name = "DocsByLong";
-
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                var map = indexDefinition.Maps.First();
-                Assert.DoesNotContain("MemoryExtensions", map);
-                Assert.DoesNotContain("ReadOnlySpan", map);
-            }
+            AssertIndexBuilderRewritesCorrectly(options, indexBuilder);
         }
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_StringBased_MemoryExtensionsContains_LongArray_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
-            {
-                var indexDefinition = new IndexDefinition
-                {
-                    Name = "DocsByLong_StringBased",
-                    Maps = ["""
+            const string map = """
                             from doc in docs 
                             select new { 
                                 HasValue = MemoryExtensions.Contains(doc.Values, 9223372036854775807L) 
                             }
-                            """]
-                };
+                            """;
 
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                using (var session = store.OpenSession())
+            var docs = new object[]
+            {
+                new DocWithLongs
                 {
-                    session.Store(new DocWithLongs
-                    {
-                        Id = "docs/1",
-                        Values = [
-                            100L,
-                            200L,
-                            9223372036854775807L
-                        ]
-                    });
-                    session.SaveChanges();
+                    Values = [100L, 200L, 9223372036854775807L]
                 }
+            };
 
-                Indexes.WaitForIndexing(store);
-
-                using (var session = store.OpenSession())
-                {
-                    var results = session.Query<DocWithLongs>(indexDefinition.Name)
-                        .Customize(x => x.WaitForNonStaleResults())
-                        .ToList();
-
-                    Assert.NotEmpty(results);
-                }
-
-                var indexStats = store.Maintenance.Send(new GetIndexStatisticsOperation(indexDefinition.Name));
-                Assert.Equal(0, indexStats.ErrorsCount);
-            }
+            AssertStringBasedIndexCompilesAndRuns(options, map, docs);
         }
 
         #endregion
@@ -1651,71 +1028,38 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_MemoryExtensionsContains_EmptyArray_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            var indexBuilder = new IndexDefinitionBuilder<DocWithArray>
             {
-                var indexBuilder = new IndexDefinitionBuilder<DocWithArray>
-                {
-                    Map = docs => from doc in docs
-                        select new
-                        {
-                            HasTag = MemoryExtensions.Contains(Array.Empty<string>(), "test")
-                        }
-                };
+                Map = docs => from doc in docs
+                    select new
+                    {
+                        HasTag = MemoryExtensions.Contains(Array.Empty<string>(), "test")
+                    }
+            };
 
-                var indexDefinition = indexBuilder.ToIndexDefinition(store.Conventions);
-                indexDefinition.Name = "EmptyArrayTest";
-
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                var map = indexDefinition.Maps.First();
-                Assert.DoesNotContain("MemoryExtensions", map);
-            }
+            AssertIndexBuilderRewritesCorrectly(options, indexBuilder);
         }
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_StringBased_MemoryExtensionsContains_EmptyArray_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
-            {
-                var indexDefinition = new IndexDefinition
-                {
-                    Name = "EmptyArrayTest_StringBased",
-                    Maps = ["""
+            const string map = """
                             from doc in docs 
                             select new { 
                                 HasTag = MemoryExtensions.Contains(new string[] { }, "test") 
                             }
-                            """]
-                };
+                            """;
 
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                using (var session = store.OpenSession())
+            var docs = new object[]
+            {
+                new DocWithArray
                 {
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/1",
-                        Tags = ["test"]
-                    });
-
-                    session.SaveChanges();
+                    Tags = ["test"]
                 }
+            };
 
-                Indexes.WaitForIndexing(store);
-
-                using (var session = store.OpenSession())
-                {
-                    var results = session.Query<DocWithArray>(indexDefinition.Name)
-                        .Customize(x => x.WaitForNonStaleResults())
-                        .ToList();
-
-                    Assert.NotEmpty(results);
-                }
-
-                var indexStats = store.Maintenance.Send(new GetIndexStatisticsOperation(indexDefinition.Name));
-                Assert.Equal(0, indexStats.ErrorsCount);
-            }
+            AssertStringBasedIndexCompilesAndRuns(options, map, docs);
         }
 
         #endregion
@@ -1726,87 +1070,48 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_MemoryExtensions_WithOrOperator_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            var indexBuilder = new IndexDefinitionBuilder<DocWithArray>
             {
-                var indexBuilder = new IndexDefinitionBuilder<DocWithArray>
-                {
-                    Map = docs => from doc in docs
-                        select new
-                        {
-                            Match = MemoryExtensions.Contains(doc.Tags, "csharp") ||
-                                    MemoryExtensions.Contains(doc.Categories, "backend")
-                        }
-                };
+                Map = docs => from doc in docs
+                    select new
+                    {
+                        Match = MemoryExtensions.Contains(doc.Tags, "csharp") ||
+                                MemoryExtensions.Contains(doc.Categories, "backend")
+                    }
+            };
 
-                var indexDefinition = indexBuilder.ToIndexDefinition(store.Conventions);
-                indexDefinition.Name = "OrOperatorTest";
-
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                var map = indexDefinition.Maps.First();
-                Assert.DoesNotContain("MemoryExtensions", map);
-                Assert.DoesNotContain("ReadOnlySpan", map);
-            }
+            AssertIndexBuilderRewritesCorrectly(options, indexBuilder);
         }
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_StringBased_MemoryExtensions_WithOrOperator_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
-            {
-                var indexDefinition = new IndexDefinition
-                {
-                    Name = "OrOperatorTest_StringBased",
-                    Maps =
-                    [
-                        """
+            const string map = """
                         from doc in docs 
                         select new { 
                             Match = MemoryExtensions.Contains(doc.Tags, "csharp") || 
                             MemoryExtensions.Contains(doc.Categories, "backend") 
                         }
-                        """
-                    ]
-                };
+                        """;
 
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                using (var session = store.OpenSession())
+            var docs = new object[]
+            {
+                new DocWithArray
                 {
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/1",
-                        Tags = ["csharp"],
-                        Categories = ["frontend"],
-                        Numbers = [1]
-                    });
-
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/2",
-                        Tags = ["python"],
-                        Categories = ["backend"],
-                        Numbers = [2]
-                    });
-
-                    session.SaveChanges();
-                }
-
-                Indexes.WaitForIndexing(store);
-
-                using (var session = store.OpenSession())
+                    Tags = ["csharp"],
+                    Categories = ["frontend"],
+                    Numbers = [1]
+                },
+                new DocWithArray
                 {
-                    var results = session.Query<DocWithArray>(indexDefinition.Name)
-                        .Customize(x => x.WaitForNonStaleResults())
-                        .ToList();
-
-                    Assert.NotEmpty(results);
+                    Tags = ["python"],
+                    Categories = ["backend"],
+                    Numbers = [2]
                 }
+            };
 
-                var indexStats = store.Maintenance.Send(new GetIndexStatisticsOperation(indexDefinition.Name));
-                Assert.Equal(0, indexStats.ErrorsCount);
-            }
+            AssertStringBasedIndexCompilesAndRuns(options, map, docs);
         }
 
         #endregion
@@ -1817,84 +1122,48 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_MemoryExtensions_WithAndOperator_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            var indexBuilder = new IndexDefinitionBuilder<DocWithArray>
             {
-                var indexBuilder = new IndexDefinitionBuilder<DocWithArray>
-                {
-                    Map = docs => from doc in docs
-                        select new
-                        {
-                            Match = MemoryExtensions.Contains(doc.Tags, "csharp") &&
-                                    MemoryExtensions.ContainsAny<string>(doc.Categories, new string[] { "backend", "frontend" })
-                        }
-                };
+                Map = docs => from doc in docs
+                    select new
+                    {
+                        Match = MemoryExtensions.Contains(doc.Tags, "csharp") &&
+                                MemoryExtensions.ContainsAny<string>(doc.Categories, new string[] { "backend", "frontend" })
+                    }
+            };
 
-                var indexDefinition = indexBuilder.ToIndexDefinition(store.Conventions);
-                indexDefinition.Name = "AndOperatorTest";
-
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                var map = indexDefinition.Maps.First();
-                Assert.DoesNotContain("MemoryExtensions", map);
-                Assert.DoesNotContain("ReadOnlySpan", map);
-            }
+            AssertIndexBuilderRewritesCorrectly(options, indexBuilder);
         }
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_StringBased_MemoryExtensions_WithAndOperator_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
-            {
-                var indexDefinition = new IndexDefinition
-                {
-                    Name = "AndOperatorTest_StringBased",
-                    Maps = ["""
+            const string map = """
                             from doc in docs 
                             select new { 
                                 Match = MemoryExtensions.Contains(doc.Tags, "csharp") && 
                                 MemoryExtensions.ContainsAny(doc.Categories, new string[] { "backend", "frontend" }) 
                             }
-                            """]
-                };
+                            """;
 
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                using (var session = store.OpenSession())
+            var docs = new object[]
+            {
+                new DocWithArray
                 {
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/1",
-                        Tags = ["csharp", "dotnet"],
-                        Categories = ["backend"],
-                        Numbers = [1]
-                    });
-
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/2",
-                        Tags = ["csharp"],
-                        Categories = ["mobile"],
-                        Numbers = [2]
-                    });
-
-                    session.SaveChanges();
-                }
-
-                Indexes.WaitForIndexing(store);
-
-                using (var session = store.OpenSession())
+                    Tags = ["csharp", "dotnet"],
+                    Categories = ["backend"],
+                    Numbers = [1]
+                },
+                new DocWithArray
                 {
-                    var results = session.Query<DocWithArray>(indexDefinition.Name)
-                        .Customize(x => x.WaitForNonStaleResults())
-                        .ToList();
-
-                    Assert.NotEmpty(results);
+                    Tags = ["csharp"],
+                    Categories = ["mobile"],
+                    Numbers = [2]
                 }
+            };
 
-                var indexStats = store.Maintenance.Send(new GetIndexStatisticsOperation(indexDefinition.Name));
-                Assert.Equal(0, indexStats.ErrorsCount);
-            }
+            AssertStringBasedIndexCompilesAndRuns(options, map, docs);
         }
 
         #endregion
@@ -1905,41 +1174,26 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_MemoryExtensions_NestedCollections_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
+            var indexBuilder = new IndexDefinitionBuilder<DocWithNestedArray>
             {
-                var indexBuilder = new IndexDefinitionBuilder<DocWithNestedArray>
-                {
-                    Map = docs => from doc in docs
-                        from item in doc.Items
-                        where MemoryExtensions.Contains(item.Tags, "important")
-                        select new
-                        {
-                            ItemId = item.Id,
-                            IsImportant = true
-                        }
-                };
+                Map = docs => from doc in docs
+                    from item in doc.Items
+                    where MemoryExtensions.Contains(item.Tags, "important")
+                    select new
+                    {
+                        ItemId = item.Id,
+                        IsImportant = true
+                    }
+            };
 
-                var indexDefinition = indexBuilder.ToIndexDefinition(store.Conventions);
-                indexDefinition.Name = "NestedArrayTest";
-
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                var map = indexDefinition.Maps.First();
-                Assert.DoesNotContain("MemoryExtensions", map);
-                Assert.DoesNotContain("ReadOnlySpan", map);
-            }
+            AssertIndexBuilderRewritesCorrectly(options, indexBuilder);
         }
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_StringBased_MemoryExtensions_NestedCollections_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
-            {
-                var indexDefinition = new IndexDefinition
-                {
-                    Name = "NestedArrayTest_StringBased",
-                    Maps = ["""
+            const string map = """
                             from doc in docs 
                             from item in doc.Items 
                             where MemoryExtensions.Contains(item.Tags, "important") 
@@ -1947,40 +1201,21 @@ namespace SlowTests.Client.Indexing
                                 ItemId = item.Id, 
                                 IsImportant = true 
                             }
-                            """]
-                };
+                            """;
 
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                using (var session = store.OpenSession())
+            var docs = new object[]
+            {
+                new DocWithNestedArray
                 {
-                    session.Store(new DocWithNestedArray
-                    {
-                        Id = "docs/1",
-                        Items =
-                        [
-                            new ItemWithTags { Id = "item1", Tags = ["important", "urgent"] },
-                            new ItemWithTags { Id = "item2", Tags = ["normal"] }
-                        ]
-                    });
-
-                    session.SaveChanges();
+                    Items =
+                    [
+                        new ItemWithTags { Tags = ["important", "urgent"] },
+                        new ItemWithTags { Tags = ["normal"] }
+                    ]
                 }
+            };
 
-                Indexes.WaitForIndexing(store);
-
-                using (var session = store.OpenSession())
-                {
-                    var results = session.Query<dynamic>(indexDefinition.Name)
-                        .Customize(x => x.WaitForNonStaleResults())
-                        .ToList();
-
-                    Assert.NotEmpty(results);
-                }
-
-                var indexStats = store.Maintenance.Send(new GetIndexStatisticsOperation(indexDefinition.Name));
-                Assert.Equal(0, indexStats.ErrorsCount);
-            }
+            AssertStringBasedIndexCompilesAndRuns(options, map, docs);
         }
 
         #endregion
@@ -1991,70 +1226,59 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_StringBased_MemoryExtensions_CorrectResults_ShouldWork(Options options)
         {
-            using (var store = GetDocumentStore(options))
-            {
-                var indexDefinition = new IndexDefinition
-                {
-                    Name = "CorrectnessTest",
-                    Maps = ["""
+            const string map = """
                             from doc in docs 
                             select new { 
                                 HasCSharp = MemoryExtensions.Contains(doc.Tags, "csharp"), 
                                 HasAny = MemoryExtensions.ContainsAny(doc.Tags, new string[] { "java", "python" }) 
                             }
-                            """]
-                };
+                            """;
 
-                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
-
-                using (var session = store.OpenSession())
+            var docs = new object[]
+            {
+                new DocWithArray
                 {
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/1",
-                        Tags = ["csharp", "dotnet"],
-                        Categories = ["backend"],
-                        Numbers = [1]
-                    });
-
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/2",
-                        Tags = ["java", "spring"],
-                        Categories = ["backend"],
-                        Numbers = [2]
-                    });
-
-                    session.Store(new DocWithArray
-                    {
-                        Id = "docs/3",
-                        Tags = ["rust", "go"],
-                        Categories = ["systems"],
-                        Numbers = [3]
-                    });
-
-                    session.SaveChanges();
+                    Tags = ["csharp", "dotnet"],
+                    Categories = ["backend"],
+                    Numbers = [1]
+                },
+                new DocWithArray
+                {
+                    Tags = ["java", "spring"],
+                    Categories = ["backend"],
+                    Numbers = [2]
+                },
+                new DocWithArray
+                {
+                    Tags = ["rust", "go"],
+                    Categories = ["systems"],
+                    Numbers = [3]
                 }
+            };
 
-                Indexes.WaitForIndexing(store);
-
+            AssertStringBasedIndexCompilesAndRuns(options, map, docs, additionalAsserts: (store, indexName) =>
+            {
                 using (var session = store.OpenSession())
                 {
-                    var results = session.Advanced.DocumentQuery<dynamic>(indexDefinition.Name)
-                        .WaitForNonStaleResults()
+                    var results = session.Query<DocWithArray>(indexName)
+                        .Customize(x => x.WaitForNonStaleResults())
                         .ToList();
 
-                    Assert.Equal(3, results.Count);
+                    Assert.Equal(4, results.Count); // 3 docs + hilo
                 }
-
-                var indexStats = store.Maintenance.Send(new GetIndexStatisticsOperation(indexDefinition.Name));
-                Assert.Equal(0, indexStats.ErrorsCount);
-            }
+            });
         }
 
         #endregion
 
-        #region Helper Classes
+        #region Document Types
+
+        private class DocWithArray
+        {
+            public string[] Tags { get; set; }
+            public string[] Categories { get; set; }
+            public int[] Numbers { get; set; }
+        }
 
         private class TagCount
         {
@@ -2096,6 +1320,95 @@ namespace SlowTests.Client.Indexing
         {
             public string Id { get; set; }
             public ItemWithTags[] Items { get; set; }
+        }
+
+        #endregion
+
+        #region Test Helpers
+
+        private const string MemoryExtensionsMethodName = "MemoryExtensions";
+        private const string ReadOnlySpanMethodName = "ReadOnlySpan";
+
+        private void AssertIndexBuilderRewritesCorrectly<TDoc, TReduce>(
+            Options options,
+            IndexDefinitionBuilder<TDoc, TReduce> indexBuilder,
+            [CallerMemberName] string indexName = null,
+            Action<string> additionalMapAsserts = null,
+            Action<string> additionalReduceAsserts = null)
+        {
+            using (var store = GetDocumentStore(options))
+            {
+                var indexDefinition = indexBuilder.ToIndexDefinition(store.Conventions);
+                indexDefinition.Name = indexName;
+
+                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
+
+                if (indexDefinition.Maps.Count != 0)
+                {
+                    var map = indexDefinition.Maps.First();
+                    Assert.True(map.Contains(MemoryExtensionsMethodName) == false, $"Map should not contain '{MemoryExtensionsMethodName}'. Map: '{map}'");
+                    Assert.True(map.Contains(ReadOnlySpanMethodName) == false, $"Map should not contain '{ReadOnlySpanMethodName}'. Map: '{map}'");
+
+                    additionalMapAsserts?.Invoke(map);
+                }
+
+                if (string.IsNullOrEmpty(indexDefinition.Reduce) == false)
+                {
+                    var reduce = indexDefinition.Reduce;
+                    Assert.True(reduce.Contains(MemoryExtensionsMethodName) == false, $"Reduce should not contain '{MemoryExtensionsMethodName}'. Reduce: '{reduce}'");
+                    Assert.True(reduce.Contains(ReadOnlySpanMethodName) == false, $"Reduce should not contain '{ReadOnlySpanMethodName}'. Reduce: '{reduce}'");
+
+                    additionalReduceAsserts?.Invoke(reduce);
+                }
+            }
+        }
+
+        private void AssertStringBasedIndexCompilesAndRuns(
+            Options options,
+            string map,
+            object[] docs = null,
+            string reduce = null,
+            [CallerMemberName] string indexName = null,
+            Action<IDocumentStore, string> additionalAsserts = null)
+        {
+            using (var store = GetDocumentStore(options))
+            {
+                var indexDefinition = new IndexDefinition
+                {
+                    Name = indexName,
+                    Maps = { map },
+                    Reduce = reduce
+                };
+
+                store.Maintenance.Send(new PutIndexesOperation(indexDefinition));
+
+                if (docs is { Length: > 0 })
+                {
+                    using (var session = store.OpenSession())
+                    {
+                        foreach (var doc in docs)
+                            session.Store(doc);
+
+                        session.SaveChanges();
+                    }
+
+                    Indexes.WaitForIndexing(store);
+
+                    using (var session = store.OpenSession())
+                    {
+                        var results = session.Query<object>(indexName)
+                            .Customize(x => x.WaitForNonStaleResults())
+                            .ToList();
+
+                        Assert.NotEmpty(results);
+                    }
+                }
+
+                var indexStats = store.Maintenance.Send(new GetIndexStatisticsOperation(indexName));
+                Assert.Equal(0, indexStats.ErrorsCount);
+
+                additionalAsserts?.Invoke(store, indexName);
+            }
         }
 
         #endregion
