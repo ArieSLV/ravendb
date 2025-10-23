@@ -1168,6 +1168,201 @@ namespace SlowTests.Client.Indexing
 
         #endregion
 
+        #region Let Clause Tests
+
+        [RavenTheory(RavenTestCategory.Indexes)]
+        [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
+        public void MapIndex_WithLetClause_MemoryExtensionsContains_ShouldWork(Options options)
+        {
+            var indexBuilder = new IndexDefinitionBuilder<DocWithArray>
+            {
+                Map = docs => from doc in docs
+                    let hasTag = MemoryExtensions.Contains(doc.Tags, "csharp")
+                    where hasTag
+                    select new
+                    {
+                        HasTag = hasTag
+                    }
+            };
+
+            AssertIndexBuilderRewritesCorrectly(options, indexBuilder);
+        }
+
+        [RavenTheory(RavenTestCategory.Indexes)]
+        [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
+        public void MapIndex_StringBased_WithLetClause_MemoryExtensionsContains_ShouldWork(Options options)
+        {
+            const string map = """
+                            from doc in docs
+                            let hasTag = MemoryExtensions.Contains(doc.Tags, "csharp")
+                            where hasTag
+                            select new { HasTag = hasTag }
+                            """;
+
+            var docs = new object[]
+            {
+                new DocWithArray { Tags = ["csharp", "dotnet"] },
+                new DocWithArray { Tags = ["python"] }
+            };
+
+            AssertStringBasedIndexCompilesAndRuns(options, map, docs, additionalAsserts: (store, indexName) =>
+            {
+                using (var session = store.OpenSession())
+                {
+                    var results = session.Query<object>(indexName)
+                        .Customize(x => x.WaitForNonStaleResults())
+                        .ToList();
+                    Assert.Equal(1, results.Count);
+                }
+            });
+        }
+
+        [RavenTheory(RavenTestCategory.Indexes)]
+        [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
+        public void MapReduceIndex_WithLetClauseInMap_MemoryExtensionsContains_ShouldWork(Options options)
+        {
+            var indexBuilder = new IndexDefinitionBuilder<DocWithArray, TagCount>
+            {
+                Map = docs => from doc in docs
+                    let hasTag = MemoryExtensions.Contains(doc.Tags, "csharp")
+                    where hasTag
+                    select new TagCount
+                    {
+                        Tag = "csharp",
+                        Count = 1
+                    },
+
+                Reduce = results => from result in results
+                    group result by result.Tag
+                    into g
+                    select new TagCount
+                    {
+                        Tag = g.Key,
+                        Count = g.Sum(x => x.Count)
+                    }
+            };
+
+            AssertIndexBuilderRewritesCorrectly(options, indexBuilder);
+        }
+
+        [RavenTheory(RavenTestCategory.Indexes)]
+        [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
+        public void MapReduceIndex_StringBased_WithLetClauseInMap_MemoryExtensionsContains_ShouldWork(Options options)
+        {
+            const string map = """
+                            from doc in docs
+                            let hasTag = MemoryExtensions.Contains(doc.Tags, "csharp")
+                            where hasTag
+                            select new { Tag = "csharp", Count = 1 }
+                            """;
+            const string reduce = """
+                             from result in results
+                             group result by result.Tag into g
+                             select new {
+                                 Tag = g.Key,
+                                 Count = g.Sum(x => x.Count)
+                             }
+                             """;
+
+            var docs = new object[]
+            {
+                new DocWithArray { Tags = ["csharp", "active"] },
+                new DocWithArray { Tags = ["python"] },
+                new DocWithArray { Tags = ["csharp", "modern"] }
+            };
+
+            AssertStringBasedIndexCompilesAndRuns(options, map, docs, reduce, additionalAsserts: (store, indexName) =>
+            {
+                using (var session = store.OpenSession())
+                {
+                    var results = session.Query<TagCount>(indexName)
+                        .Customize(x => x.WaitForNonStaleResults())
+                        .ToList();
+
+                    Assert.NotEmpty(results);
+                    Assert.Equal(1, results.Count);
+                    Assert.Equal("csharp", results[0].Tag);
+                    Assert.Equal(2, results[0].Count);
+                }
+            });
+        }
+
+        [RavenTheory(RavenTestCategory.Indexes)]
+        [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
+        public void MapReduceIndex_WithLetClauseInReduce_MemoryExtensionsContains_ShouldWork(Options options)
+        {
+            var indexBuilder = new IndexDefinitionBuilder<DocWithArray, TagCount>
+            {
+                Map = docs => from doc in docs
+                    from tag in doc.Tags
+                    select new TagCount
+                    {
+                        Tag = tag,
+                        Count = 1
+                    },
+
+                Reduce = results => from result in results
+                    group result by result.Tag
+                    into g
+                    let isDeprecated = MemoryExtensions.Contains(new string[] { "deprecated", "obsolete" }, (string)g.Key)
+                    where isDeprecated == false
+                    select new TagCount
+                    {
+                        Tag = g.Key,
+                        Count = g.Sum(x => x.Count)
+                    }
+            };
+
+            AssertIndexBuilderRewritesCorrectly(options, indexBuilder,
+                additionalReduceAsserts: reduce => Assert.True(reduce.Contains(nameof(Enumerable.Contains)), $"The reduce should have been rewritten to use '{nameof(Enumerable.Contains)}', but it did not. Reduce: '{reduce}'"));
+        }
+
+        [RavenTheory(RavenTestCategory.Indexes)]
+        [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
+        public void MapReduceIndex_StringBased_WithLetClauseInReduce_MemoryExtensionsContains_ShouldWork(Options options)
+        {
+            const string map = """
+                            from doc in docs
+                            from tag in doc.Tags
+                            select new { Tag = tag, Count = 1 }
+                            """;
+            const string reduce = """
+                             from result in results
+                             group result by result.Tag into g
+                             let isDeprecated = MemoryExtensions.Contains(new string[] { "deprecated", "obsolete" }, g.Key)
+                             where isDeprecated == false
+                             select new {
+                                 Tag = g.Key,
+                                 Count = g.Sum(x => x.Count)
+                             }
+                             """;
+
+            var docs = new object[]
+            {
+                new DocWithArray { Tags = ["csharp", "active"] },
+                new DocWithArray { Tags = ["deprecated"] },
+                new DocWithArray { Tags = ["csharp", "modern"] }
+            };
+
+            AssertStringBasedIndexCompilesAndRuns(options, map, docs, reduce, additionalAsserts: (store, indexName) =>
+            {
+                using (var session = store.OpenSession())
+                {
+                    var results = session.Query<TagCount>(indexName)
+                        .Customize(x => x.WaitForNonStaleResults())
+                        .ToList();
+
+                    Assert.NotEmpty(results);
+                    Assert.DoesNotContain(results, x => x.Tag == "deprecated");
+                    Assert.Contains(results, x => x.Tag == "csharp");
+                    var csharpResult = results.Single(x => x.Tag == "csharp");
+                    Assert.Equal(2, csharpResult.Count);
+                }
+            });
+        }
+
+        #endregion
+
         #region Nested Collections Tests
 
         [RavenTheory(RavenTestCategory.Indexes)]
