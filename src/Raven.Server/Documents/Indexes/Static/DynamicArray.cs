@@ -235,7 +235,7 @@ namespace Raven.Server.Documents.Indexes.Static
         {
             var itemToWorkOn = InternalConvert(item);
 
-            return Enumerable.Contains(this, itemToWorkOn, new LazyStringAwareEqualityComparerForDistinct(CurrentIndexingScope.Current?.IndexContext));
+            return Enumerable.Contains(this, itemToWorkOn);
         }
 
         public int Sum(Func<dynamic, int> selector)
@@ -779,10 +779,6 @@ namespace Raven.Server.Documents.Indexes.Static
             return new DynamicArray(Enumerable.Intersect(this, second.Cast<object>()));
         }
 
-        public bool ContainsAny(IEnumerable second)
-        {
-            return Enumerable.Intersect(this, second.Cast<object>(), new LazyStringAwareEqualityComparerForDistinct(CurrentIndexingScope.Current?.IndexContext)).Any();
-        }
 
         public struct DynamicArrayIterator<T> : IEnumerator<object>
             where T : struct, IEnumerator<object>
