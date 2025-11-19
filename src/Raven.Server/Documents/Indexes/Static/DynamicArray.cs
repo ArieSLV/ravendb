@@ -528,20 +528,24 @@ namespace Raven.Server.Documents.Indexes.Static
             return count == -1 ? items.LastIndexOf(itemToWorkOn, index) : items.LastIndexOf(itemToWorkOn, index, count);
         }
 
-        private static dynamic InternalConvert(dynamic item)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static object InternalConvert(object item)
         {
-            switch (item)
+            return item switch
             {
-                case int _:
-                case short _:
-                    return Convert.ToInt64(item);
-                case float _:
-                    return Convert.ToDouble(item);
-                case char _:
-                    return Convert.ToString(item);
-                default:
-                    return item;
-            }
+                null => null,
+                sbyte sb => (long)sb,
+                byte b => (long)b,
+                short s => (long)s,
+                ushort us => (long)us,
+                int i => (long)i,
+                uint ui => (long)ui,
+                long _ => item,
+                ulong ul and <= long.MaxValue => (long)ul,
+                float f => (double)f,
+                char c => c.ToString(),
+                _ => item
+            };
         }
 
         public IEnumerable<dynamic> Take(int count)
@@ -596,7 +600,7 @@ namespace Raven.Server.Documents.Indexes.Static
 
         public IEnumerable<object> Distinct()
         {
-            return new DynamicArray(Enumerable.Distinct(this, new LazyStringAwareEqualityComparerForDistinct(CurrentIndexingScope.Current?.IndexContext)));
+            return new DynamicArray(Enumerable.Distinct(this, new DynamicArrayValueEqualityComparer(CurrentIndexingScope.Current?.IndexContext)));
         }
 
         public dynamic DefaultIfEmpty(object defaultValue = null)
@@ -604,9 +608,9 @@ namespace Raven.Server.Documents.Indexes.Static
             return Enumerable.DefaultIfEmpty(this, defaultValue ?? DynamicNullObject.Null);
         }
 
-        public IEnumerable<dynamic> Except(IEnumerable<dynamic> except)
+        public IEnumerable<dynamic> Except(IEnumerable second)
         {
-            return new DynamicArray(Enumerable.Except(this, except));
+            return new DynamicArray(Enumerable.Except(this, second.Cast<object>(), new DynamicArrayValueEqualityComparer(CurrentIndexingScope.Current?.IndexContext)));
         }
 
         public IEnumerable<dynamic> Reverse()
@@ -614,9 +618,9 @@ namespace Raven.Server.Documents.Indexes.Static
             return new DynamicArray(Enumerable.Reverse(this));
         }
 
-        public bool SequenceEqual(IEnumerable<dynamic> second)
+        public bool SequenceEqual(IEnumerable second)
         {
-            return Enumerable.SequenceEqual(this, second);
+            return Enumerable.SequenceEqual(this, second.Cast<object>(), new DynamicArrayValueEqualityComparer(CurrentIndexingScope.Current?.IndexContext));
         }
 
         public IEnumerable<dynamic> AsEnumerable()
@@ -771,14 +775,13 @@ namespace Raven.Server.Documents.Indexes.Static
 
         public IEnumerable<dynamic> Union(IEnumerable second)
         {
-            return new DynamicArray(Enumerable.Union(this, second.Cast<object>()));
+            return new DynamicArray(Enumerable.Union(this, second.Cast<object>(), new DynamicArrayValueEqualityComparer(CurrentIndexingScope.Current?.IndexContext)));
         }
 
         public IEnumerable<dynamic> Intersect(IEnumerable second)
         {
-            return new DynamicArray(Enumerable.Intersect(this, second.Cast<object>()));
+            return new DynamicArray(Enumerable.Intersect(this, second.Cast<object>(), new DynamicArrayValueEqualityComparer(CurrentIndexingScope.Current?.IndexContext)));
         }
-
 
         public struct DynamicArrayIterator<T> : IEnumerator<object>
             where T : struct, IEnumerator<object>
@@ -884,22 +887,31 @@ namespace Raven.Server.Documents.Indexes.Static
             }
         }
 
-        private sealed class LazyStringAwareEqualityComparerForDistinct : IEqualityComparer<object>
+        internal sealed class DynamicArrayValueEqualityComparer : IEqualityComparer<object>
         {
             private readonly JsonOperationContext _context;
 
-            public LazyStringAwareEqualityComparerForDistinct(JsonOperationContext context)
+            public DynamicArrayValueEqualityComparer(JsonOperationContext context)
             {
                 _context = context;
             }
 
             public new bool Equals(object x, object y)
             {
+                if (ReferenceEquals(x, y))
+                    return true;
+
+                if (x is null || y is null)
+                    return false;
+
+                x = InternalConvert(x);
+                y = InternalConvert(y);
+
                 if (_context == null)
                     return EqualityComparer<object>.Default.Equals(x, y);
 
                 if (x is string xAsString && y is string yAsString)
-                    return xAsString.Equals(yAsString);
+                    return xAsString.Equals(yAsString, StringComparison.Ordinal);
 
                 if (x is LazyStringValue xLsv && y is string yAsString2)
                 {
@@ -932,6 +944,10 @@ namespace Raven.Server.Documents.Indexes.Static
 
             public int GetHashCode(object obj)
             {
+                obj = InternalConvert(obj);
+                if (obj is null)
+                    return 0;
+
                 if (_context == null || obj is not string s)
                     return EqualityComparer<object>.Default.GetHashCode(obj);
 
@@ -939,6 +955,5 @@ namespace Raven.Server.Documents.Indexes.Static
                     return lsv.GetHashCode();
             }
         }
-
     }
 }

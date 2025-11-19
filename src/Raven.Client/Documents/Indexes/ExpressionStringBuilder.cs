@@ -1559,7 +1559,7 @@ namespace Raven.Client.Documents.Indexes
             }
 
             if (node.Method.DeclaringType == typeof(MemoryExtensions) &&
-                node.Method.Name is "Contains" or "ContainsAny" &&
+                node.Method.Name is "Contains" or "ContainsAny" or "SequenceEqual" &&
                 node.Arguments.Count > 1)
             {
                 var firstArgument = node.Arguments[0];
@@ -1613,8 +1613,29 @@ namespace Raven.Client.Documents.Indexes
                         Out("(");
                         Out(")");
                         break;
+                    case "SequenceEqual": // array.SequenceEqual(otherArray)
+                        Visit(firstArgument);
+                        Out(".");
+                        Out("SequenceEqual");
+                        Out("(");
+                        Visit(secondArgument);
+                        Out(")");
+                        break;
                 }
 
+                return node;
+            }
+
+            if (node.Method.DeclaringType == typeof(Enumerable) &&
+                node.Method.Name == "Contains" &&
+                node.Arguments.Count == 2)
+            {
+                Out("DynamicEnumerable.Contains"); // Enumerable.Contains(source, value) into DynamicEnumerable.Contains(source, value)
+                Out("(");
+                Visit(node.Arguments[0]);
+                Out(", ");
+                Visit(node.Arguments[1]);
+                Out(")");
                 return node;
             }
 
