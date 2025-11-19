@@ -170,10 +170,7 @@ namespace Raven.Client.Documents.Indexes
             try
             {
                 if (Reduce != null)
-                {
-                    Reduce = SpanToEnumerableVisitor.Convert(Reduce);
                     IndexDefinitionHelper.ValidateReduce(Reduce);
-                }
 
                 CompoundFieldsStrings ??= new();
                 var indexDefinition = new TIndexDefinition
@@ -436,8 +433,6 @@ namespace Raven.Client.Documents.Indexes
         {
             if (Map == null)
                 return;
-
-            Map = SpanToEnumerableVisitor.Convert(Map);
 
             var querySource = GetQuerySource(conventions);
 
