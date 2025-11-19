@@ -87,7 +87,7 @@ namespace SlowTests.Tests.Linq
                 using (var session = store.OpenSession())
                 {
                     var docs = session.Query<TestDoc>()
-                        .Where(doc => MemoryExtensions.ContainsAny(doc.StringArray, new[] { "frontend", "mobile", "cloud" }))
+                        .Where(doc => MemoryExtensions.ContainsAny<string>(doc.StringArray, new[] { "frontend", "mobile", "cloud" }))
                         .ToList();
 
                     Assert.Equal(2, docs.Count);

@@ -203,7 +203,7 @@ namespace SlowTests.Client.Indexing
                               select new
                               {
                                   doc.Id,
-                                  HasAnyNumber = MemoryExtensions.ContainsAny(doc.Numbers, new[] { 42, 100 })
+                                  HasAnyNumber = MemoryExtensions.ContainsAny<int>(doc.Numbers, new[] { 42, 100 })
                               }
             };
 
@@ -249,7 +249,7 @@ namespace SlowTests.Client.Indexing
                               select new
                               {
                                   doc.Id,
-                                  HasAnyTag = MemoryExtensions.ContainsAny(doc.Tags, new[] { "csharp", "dotnet", "ravendb" })
+                                  HasAnyTag = MemoryExtensions.ContainsAny<string>(doc.Tags, new[] { "csharp", "dotnet", "ravendb" })
                               }
             };
 
@@ -295,7 +295,7 @@ namespace SlowTests.Client.Indexing
                               {
                                   doc.Id,
                                   DoesNotHaveAnyDeprecatedTag =
-                                      MemoryExtensions.ContainsAny(doc.Tags, new[] { "deprecated", "obsolete" }) == false
+                                      MemoryExtensions.ContainsAny<string>(doc.Tags, new[] { "deprecated", "obsolete" }) == false
                               }
             };
 
@@ -452,7 +452,7 @@ namespace SlowTests.Client.Indexing
             var indexBuilder = new IndexDefinitionBuilder<DocWithArray, TagCount>
             {
                 Map = docs => from doc in docs
-                              where MemoryExtensions.ContainsAny(doc.Tags, new[] { "csharp", "dotnet", "ravendb" })
+                              where MemoryExtensions.ContainsAny<string>(doc.Tags, new[] { "csharp", "dotnet", "ravendb" })
                               select new TagCount
                               {
                                   Tag = "important",
@@ -516,7 +516,7 @@ namespace SlowTests.Client.Indexing
                 Reduce = results => from result in results
                                     group result by result.Category
                     into g
-                                    where MemoryExtensions.ContainsAny(new[] { "backend", "system" }, new[] { g.Key })
+                                    where MemoryExtensions.ContainsAny<string>(new[] { "backend", "system" }, new[] { g.Key })
                                     select new CategoryCount
                                     {
                                         Category = g.Key,
@@ -574,7 +574,7 @@ namespace SlowTests.Client.Indexing
                                   doc.Id,
                                   HasTag = MemoryExtensions.Contains(doc.Tags, "csharp"),
                                   HasAnyImportantTag =
-                                      MemoryExtensions.ContainsAny(doc.Tags, new[] { "csharp", "dotnet" })
+                                      MemoryExtensions.ContainsAny<string>(doc.Tags, new[] { "csharp", "dotnet" })
                               }
             };
 
@@ -619,7 +619,7 @@ namespace SlowTests.Client.Indexing
             {
                 Map = docs => from doc in docs
                               where MemoryExtensions.Contains(doc.Tags, "csharp")
-                                    || MemoryExtensions.ContainsAny(doc.Tags, new[] { "dotnet" })
+                                    || MemoryExtensions.ContainsAny<string>(doc.Tags, new[] { "dotnet" })
                               select new TagCount
                               {
                                   Tag = "important",
