@@ -1626,19 +1626,6 @@ namespace Raven.Client.Documents.Indexes
                 return node;
             }
 
-            if (node.Method.DeclaringType == typeof(Enumerable) &&
-                node.Method.Name == "Contains" &&
-                node.Arguments.Count == 2)
-            {
-                Out("DynamicEnumerable.Contains"); // Enumerable.Contains(source, value) into DynamicEnumerable.Contains(source, value)
-                Out("(");
-                Visit(node.Arguments[0]);
-                Out(", ");
-                Visit(node.Arguments[1]);
-                Out(")");
-                return node;
-            }
-
             if (node.Method.Name == "GetValueOrDefault" && Nullable.GetUnderlyingType(node.Method.DeclaringType) != null)
             {
                 if (TypeExistsOnServer(node.Type) == false)
@@ -2040,6 +2027,7 @@ namespace Raven.Client.Documents.Indexes
                     case nameof(Enumerable.Intersect):
                     case nameof(Enumerable.Distinct):
                     case nameof(Enumerable.Except):
+                    case nameof(Enumerable.Contains):
                         return true;
                     case nameof(Enumerable.OrderBy):
                     case nameof(Enumerable.OrderByDescending):
