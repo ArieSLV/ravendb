@@ -2,6 +2,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+// ReSharper disable InvokeAsExtensionMethod
 
 namespace Raven.Server.Documents.Indexes.Static.Linq
 {
@@ -234,10 +235,11 @@ namespace Raven.Server.Documents.Indexes.Static.Linq
             if (source is DynamicArray dynamicArray)
                 return dynamicArray.SequenceEqual((IEnumerable)other);
 
-            var first = (IEnumerable)source;
-            var second = (IEnumerable)other;
+            if (source is not IEnumerable first ||
+                other is not IEnumerable second)
+                return false;
 
-            return Enumerable.SequenceEqual(first.Cast<object>(), second.Cast<object>());
+            return Enumerable.SequenceEqual(first.Cast<object>(), second.Cast<object>(), new DynamicArray.DynamicArrayValueEqualityComparer(CurrentIndexingScope.Current?.IndexContext));
         }
 
         public static IOrderedEnumerable<dynamic> OrderBy(IEnumerable source, Func<dynamic, dynamic> keySelector)

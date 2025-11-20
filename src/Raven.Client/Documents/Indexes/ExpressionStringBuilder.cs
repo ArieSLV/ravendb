@@ -2008,31 +2008,33 @@ namespace Raven.Client.Documents.Indexes
             var declaringType = node.Method.DeclaringType;
             if (declaringType == null)
                 return false;
-            if (declaringType.Name == nameof(Enumerable))
+
+            if (declaringType.Name != nameof(Enumerable))
+                return false;
+
+            switch (node.Method.Name)
             {
-                switch (node.Method.Name)
-                {
-                    case nameof(Enumerable.First):
-                    case nameof(Enumerable.FirstOrDefault):
-                    case nameof(Enumerable.Single):
-                    case nameof(Enumerable.SingleOrDefault):
-                    case nameof(Enumerable.Last):
-                    case nameof(Enumerable.LastOrDefault):
-                    case nameof(Enumerable.ElementAt):
-                    case nameof(Enumerable.ElementAtOrDefault):
-                    case nameof(Enumerable.Min):
-                    case nameof(Enumerable.Max):
-                    case nameof(Enumerable.Union):
-                    case nameof(Enumerable.Concat):
-                    case nameof(Enumerable.Intersect):
-                    case nameof(Enumerable.Distinct):
-                    case nameof(Enumerable.Except):
-                    case nameof(Enumerable.Contains):
-                        return true;
-                    case nameof(Enumerable.OrderBy):
-                    case nameof(Enumerable.OrderByDescending):
-                        return _isReduce;
-                }
+                case nameof(Enumerable.First):
+                case nameof(Enumerable.FirstOrDefault):
+                case nameof(Enumerable.Single):
+                case nameof(Enumerable.SingleOrDefault):
+                case nameof(Enumerable.Last):
+                case nameof(Enumerable.LastOrDefault):
+                case nameof(Enumerable.ElementAt):
+                case nameof(Enumerable.ElementAtOrDefault):
+                case nameof(Enumerable.Min):
+                case nameof(Enumerable.Max):
+                case nameof(Enumerable.Union):
+                case nameof(Enumerable.Concat):
+                case nameof(Enumerable.Intersect):
+                case nameof(Enumerable.Distinct):
+                case nameof(Enumerable.Except):
+                case nameof(Enumerable.Contains):
+                case nameof(Enumerable.SequenceEqual):
+                    return true;
+                case nameof(Enumerable.OrderBy):
+                case nameof(Enumerable.OrderByDescending):
+                    return _isReduce;
             }
 
             return false;
