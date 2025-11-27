@@ -10,7 +10,17 @@ using Sparrow.Json;
 
 namespace Raven.Server.Documents.Indexes.Static
 {
-    public class DynamicArray : DynamicObject, IOrderedEnumerable<object>
+    public class DynamicArray : DynamicObject,
+        IOrderedEnumerable<object>,
+        IEnumerable<long>,
+        IEnumerable<int>,
+        IEnumerable<double>,
+        IEnumerable<float>,
+        IEnumerable<decimal>,
+        IEnumerable<ulong>,
+        IEnumerable<uint>,
+        IEnumerable<bool>,
+        IEnumerable<string>
     {
         private readonly IEnumerable<object> _inner;
 
@@ -135,6 +145,86 @@ namespace Raven.Server.Documents.Indexes.Static
             return new DynamicArrayIterator(_inner);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        IEnumerator<int> IEnumerable<int>.GetEnumerator()
+        {
+            foreach (var item in this)
+            {
+                yield return Convert.ToInt32(InternalConvert(item));
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        IEnumerator<long> IEnumerable<long>.GetEnumerator()
+        {
+            foreach (var item in this)
+            {
+                yield return Convert.ToInt64(InternalConvert(item));
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        IEnumerator<ulong> IEnumerable<ulong>.GetEnumerator()
+        {
+            foreach (var item in this)
+            {
+                yield return Convert.ToUInt64(InternalConvert(item));
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        IEnumerator<uint> IEnumerable<uint>.GetEnumerator()
+        {
+            foreach (var item in this)
+            {
+                yield return Convert.ToUInt32(InternalConvert(item));
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        IEnumerator<double> IEnumerable<double>.GetEnumerator()
+        {
+            foreach (var item in this)
+            {
+                yield return Convert.ToDouble(InternalConvert(item));
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        IEnumerator<float> IEnumerable<float>.GetEnumerator()
+        {
+            foreach (var item in this)
+            {
+                yield return Convert.ToSingle(InternalConvert(item));
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        IEnumerator<decimal> IEnumerable<decimal>.GetEnumerator()
+        {
+            foreach (var item in this)
+            {
+                yield return Convert.ToDecimal(InternalConvert(item));
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        IEnumerator<bool> IEnumerable<bool>.GetEnumerator()
+        {
+            foreach (var item in this)
+            {
+                yield return Convert.ToBoolean(InternalConvert(item));
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        IEnumerator<string> IEnumerable<string>.GetEnumerator()
+        {
+            foreach (var item in this)
+            {
+                yield return Convert.ToString(InternalConvert(item));
+            }
+        }
 
         public int Count() => _inner.Count();
 
@@ -142,7 +232,7 @@ namespace Raven.Server.Documents.Indexes.Static
 
         public dynamic Any()
         {
-            return Enumerable.Any(this);
+            return Enumerable.Any((IEnumerable<object>)this);
         }
 
         public dynamic Any(Func<dynamic, bool> predicate)
@@ -157,43 +247,43 @@ namespace Raven.Server.Documents.Indexes.Static
 
         public int FindIndex(Predicate<dynamic> match)
         {
-            var items = Enumerable.ToList(this);
+            var items = Enumerable.ToList((IEnumerable<object>)this);
             return items.FindIndex(match);
         }
 
         public int FindIndex(int startIndex, Predicate<dynamic> match)
         {
-            var items = Enumerable.ToList(this);
+            var items = Enumerable.ToList((IEnumerable<object>)this);
             return items.FindIndex(startIndex, match);
         }
 
         public int FindIndex(int startIndex, int count, Predicate<dynamic> match)
         {
-            var items = Enumerable.ToList(this);
+            var items = Enumerable.ToList((IEnumerable<object>)this);
             return items.FindIndex(startIndex, count, match);
         }
 
         public int FindLastIndex(Predicate<dynamic> match)
         {
-            var items = Enumerable.ToList(this);
+            var items = Enumerable.ToList((IEnumerable<object>)this);
             return items.FindLastIndex(match);
         }
 
         public int FindLastIndex(int startIndex, Predicate<dynamic> match)
         {
-            var items = Enumerable.ToList(this);
+            var items = Enumerable.ToList((IEnumerable<object>)this);
             return items.FindLastIndex(startIndex, match);
         }
 
         public int FindLastIndex(int startIndex, int count, Predicate<dynamic> match)
         {
-            var items = Enumerable.ToList(this);
+            var items = Enumerable.ToList((IEnumerable<object>)this);
             return items.FindLastIndex(startIndex, count, match);
         }
 
         public dynamic First()
         {
-            return Enumerable.First(this);
+            return Enumerable.First((IEnumerable<object>)this);
         }
 
         public dynamic First(Func<dynamic, bool> predicate)
@@ -203,7 +293,7 @@ namespace Raven.Server.Documents.Indexes.Static
 
         public dynamic FirstOrDefault()
         {
-            return Enumerable.FirstOrDefault(this) ?? DynamicNullObject.Null;
+            return Enumerable.FirstOrDefault((IEnumerable<object>)this) ?? DynamicNullObject.Null;
         }
 
         public dynamic FirstOrDefault(Func<dynamic, bool> predicate)
@@ -213,7 +303,7 @@ namespace Raven.Server.Documents.Indexes.Static
 
         public dynamic Single()
         {
-            return Enumerable.Single(this);
+            return Enumerable.Single((IEnumerable<object>)this);
         }
 
         public dynamic Single(Func<dynamic, bool> predicate)
@@ -223,7 +313,7 @@ namespace Raven.Server.Documents.Indexes.Static
 
         public dynamic SingleOrDefault()
         {
-            return Enumerable.SingleOrDefault(this) ?? DynamicNullObject.Null;
+            return Enumerable.SingleOrDefault((IEnumerable<object>)this) ?? DynamicNullObject.Null;
         }
 
         public dynamic SingleOrDefault(Func<dynamic, bool> predicate)
@@ -231,11 +321,16 @@ namespace Raven.Server.Documents.Indexes.Static
             return Enumerable.SingleOrDefault(this, predicate) ?? DynamicNullObject.Null;
         }
 
-        public bool Contains(object item)
+        public bool Contains<T>(T item)
         {
             var itemToWorkOn = InternalConvert(item);
 
             return Enumerable.Contains(this, itemToWorkOn);
+        }
+
+        public bool ContainsAny<T>(IEnumerable<T> second)
+        {
+            return Enumerable.Intersect(this, second.Cast<object>(), new DynamicArrayValueEqualityComparer(CurrentIndexingScope.Current?.IndexContext)).Any();
         }
 
         public int Sum(Func<dynamic, int> selector)
@@ -290,7 +385,7 @@ namespace Raven.Server.Documents.Indexes.Static
 
         public dynamic Min()
         {
-            return Enumerable.Min(this) ?? DynamicNullObject.Null;
+            return Enumerable.Min((IEnumerable<object>)this) ?? DynamicNullObject.Null;
         }
 
         public dynamic Min<TResult>(Func<dynamic, TResult> selector)
@@ -305,7 +400,7 @@ namespace Raven.Server.Documents.Indexes.Static
 
         public dynamic Max()
         {
-            return Enumerable.Max(this) ?? DynamicNullObject.Null;
+            return Enumerable.Max((IEnumerable<object>)this) ?? DynamicNullObject.Null;
         }
 
         public dynamic Max<TResult>(Func<dynamic, TResult> selector)
@@ -450,12 +545,12 @@ namespace Raven.Server.Documents.Indexes.Static
 
         public dynamic Last()
         {
-            return Enumerable.Last(this);
+            return Enumerable.Last((IEnumerable<object>)this);
         }
 
         public dynamic LastOrDefault()
         {
-            return Enumerable.LastOrDefault(this) ?? DynamicNullObject.Null;
+            return Enumerable.LastOrDefault((IEnumerable<object>)this) ?? DynamicNullObject.Null;
         }
 
         public dynamic Last(Func<dynamic, bool> predicate)
@@ -480,7 +575,7 @@ namespace Raven.Server.Documents.Indexes.Static
 
         public dynamic IndexOf(dynamic item, int index, int count)
         {
-            var items = Enumerable.ToList(this);
+            var items = Enumerable.ToList((IEnumerable<object>)this);
 
             if (index > -1 && count > -1)
                 return IndexOfInternal(item, items, index, count);
@@ -513,7 +608,7 @@ namespace Raven.Server.Documents.Indexes.Static
 
         public dynamic LastIndexOf(dynamic item, int index, int count)
         {
-            var items = Enumerable.ToList(this);
+            var items = Enumerable.ToList((IEnumerable<object>)this);
 
             if (index > -1 && count > -1)
                 return LastIndexOfInternal(item, items, index, count);
@@ -528,30 +623,34 @@ namespace Raven.Server.Documents.Indexes.Static
             return count == -1 ? items.LastIndexOf(itemToWorkOn, index) : items.LastIndexOf(itemToWorkOn, index, count);
         }
 
-        private static dynamic InternalConvert(dynamic item)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static object InternalConvert(object item)
         {
-            switch (item)
+            return item switch
             {
-                case int _:
-                case short _:
-                    return Convert.ToInt64(item);
-                case float _:
-                    return Convert.ToDouble(item);
-                case char _:
-                    return Convert.ToString(item);
-                default:
-                    return item;
-            }
+                null => null,
+                sbyte sb => (long)sb,
+                byte b => (long)b,
+                short s => (long)s,
+                ushort us => (long)us,
+                int i => (long)i,
+                uint ui => (long)ui,
+                long _ => item,
+                ulong ul and <= long.MaxValue => (long)ul,
+                float f => (double)f,
+                char c => c.ToString(),
+                _ => item
+            };
         }
 
         public IEnumerable<dynamic> Take(int count)
         {
-            return new DynamicArray(Enumerable.Take(this, count));
+            return new DynamicArray(Enumerable.Take((IEnumerable<object>)this, count));
         }
 
         public IEnumerable<dynamic> Skip(int count)
         {
-            return new DynamicArray(Enumerable.Skip(this, count));
+            return new DynamicArray(Enumerable.Skip((IEnumerable<object>)this, count));
         }
 
         public IEnumerable<object> Select(Func<object, object> func)
@@ -561,7 +660,7 @@ namespace Raven.Server.Documents.Indexes.Static
 
         public IEnumerable<object> Select(Func<IGrouping<object, object>, object> func)
         {
-            return new DynamicArray(Enumerable.Select(this, o => func((IGrouping<object, object>)o)));
+            return new DynamicArray(Enumerable.Select((IEnumerable<object>)this, o => func((IGrouping<object, object>)o)));
         }
 
         public IEnumerable<object> Select(Func<object, int, object> func)
@@ -596,7 +695,7 @@ namespace Raven.Server.Documents.Indexes.Static
 
         public IEnumerable<object> Distinct()
         {
-            return new DynamicArray(Enumerable.Distinct(this, new LazyStringAwareEqualityComparerForDistinct(CurrentIndexingScope.Current?.IndexContext)));
+            return new DynamicArray(Enumerable.Distinct(this, new DynamicArrayValueEqualityComparer(CurrentIndexingScope.Current?.IndexContext)));
         }
 
         public dynamic DefaultIfEmpty(object defaultValue = null)
@@ -604,19 +703,19 @@ namespace Raven.Server.Documents.Indexes.Static
             return Enumerable.DefaultIfEmpty(this, defaultValue ?? DynamicNullObject.Null);
         }
 
-        public IEnumerable<dynamic> Except(IEnumerable<dynamic> except)
+        public IEnumerable<dynamic> Except(IEnumerable except)
         {
-            return new DynamicArray(Enumerable.Except(this, except));
+            return new DynamicArray(Enumerable.Except(this, except.Cast<object>(), new DynamicArrayValueEqualityComparer(CurrentIndexingScope.Current?.IndexContext)));
         }
 
         public IEnumerable<dynamic> Reverse()
         {
-            return new DynamicArray(Enumerable.Reverse(this));
+            return new DynamicArray(Enumerable.Reverse((IEnumerable<object>)this));
         }
 
-        public bool SequenceEqual(IEnumerable<dynamic> second)
+        public bool SequenceEqual(IEnumerable second)
         {
-            return Enumerable.SequenceEqual(this, second);
+            return Enumerable.SequenceEqual(this, second.Cast<object>(), new DynamicArrayValueEqualityComparer(CurrentIndexingScope.Current?.IndexContext));
         }
 
         public IEnumerable<dynamic> AsEnumerable()
@@ -626,32 +725,32 @@ namespace Raven.Server.Documents.Indexes.Static
 
         public dynamic[] ToArray()
         {
-            return Enumerable.ToArray(this);
+            return Enumerable.ToArray((IEnumerable<object>)this);
         }
 
         public List<dynamic> ToList()
         {
-            return Enumerable.ToList(this);
+            return Enumerable.ToList((IEnumerable<object>)this);
         }
 
         public IDictionary<dynamic, dynamic> ToDictionary(Func<IGrouping<dynamic, dynamic>, dynamic> keySelector)
         {
-            return new DynamicDictionary(Enumerable.ToDictionary(this, o => keySelector((IGrouping<object, object>)o)));
+            return new DynamicDictionary(Enumerable.ToDictionary((IEnumerable<object>)this, o => keySelector((IGrouping<object, object>)o)));
         }
 
         public IDictionary<dynamic, dynamic> ToDictionary(Func<IGrouping<dynamic, dynamic>, dynamic> keySelector, IEqualityComparer<dynamic> comparer)
         {
-            return new DynamicDictionary(Enumerable.ToDictionary(this, o => keySelector((IGrouping<object, object>)o), comparer));
+            return new DynamicDictionary(Enumerable.ToDictionary((IEnumerable<object>)this, o => keySelector((IGrouping<object, object>)o), comparer));
         }
 
         public IDictionary<dynamic, dynamic> ToDictionary(Func<IGrouping<dynamic, dynamic>, dynamic> keySelector, Func<IGrouping<dynamic, dynamic>, dynamic> elementSelector)
         {
-            return new DynamicDictionary(Enumerable.ToDictionary(this, o => keySelector((IGrouping<object, object>)o), u => elementSelector((IGrouping<object, object>)u)));
+            return new DynamicDictionary(Enumerable.ToDictionary((IEnumerable<object>)this, o => keySelector((IGrouping<object, object>)o), u => elementSelector((IGrouping<object, object>)u)));
         }
 
         public IDictionary<dynamic, dynamic> ToDictionary(Func<IGrouping<dynamic, dynamic>, dynamic> keySelector, Func<IGrouping<dynamic, dynamic>, dynamic> elementSelector, IEqualityComparer<dynamic> comparer)
         {
-            return new DynamicDictionary(Enumerable.ToDictionary(this, o => keySelector((IGrouping<object, object>)o), u => elementSelector((IGrouping<object, object>)u), comparer));
+            return new DynamicDictionary(Enumerable.ToDictionary((IEnumerable<object>)this, o => keySelector((IGrouping<object, object>)o), u => elementSelector((IGrouping<object, object>)u), comparer));
         }
 
         public IDictionary<dynamic, dynamic> ToDictionary(Func<dynamic, dynamic> keySelector)
@@ -694,17 +793,17 @@ namespace Raven.Server.Documents.Indexes.Static
 
         public dynamic ElementAt(int index)
         {
-            return Enumerable.ElementAt(this, index);
+            return Enumerable.ElementAt((IEnumerable<object>)this, index);
         }
 
         public dynamic ElementAtOrDefault(int index)
         {
-            return Enumerable.ElementAtOrDefault(this, index) ?? DynamicNullObject.Null;
+            return Enumerable.ElementAtOrDefault((IEnumerable<object>)this, index) ?? DynamicNullObject.Null;
         }
 
         public long LongCount()
         {
-            return Enumerable.LongCount(this);
+            return Enumerable.LongCount((IEnumerable<object>)this);
         }
 
         public long LongCount(Func<dynamic, bool> predicate)
@@ -776,9 +875,8 @@ namespace Raven.Server.Documents.Indexes.Static
 
         public IEnumerable<dynamic> Intersect(IEnumerable second)
         {
-            return new DynamicArray(Enumerable.Intersect(this, second.Cast<object>()));
+            return new DynamicArray(Enumerable.Intersect(this, second.Cast<object>(), new DynamicArrayValueEqualityComparer(CurrentIndexingScope.Current?.IndexContext)));
         }
-
 
         public struct DynamicArrayIterator<T> : IEnumerator<object>
             where T : struct, IEnumerator<object>
@@ -884,22 +982,31 @@ namespace Raven.Server.Documents.Indexes.Static
             }
         }
 
-        private sealed class LazyStringAwareEqualityComparerForDistinct : IEqualityComparer<object>
+        internal sealed class DynamicArrayValueEqualityComparer : IEqualityComparer<object>
         {
             private readonly JsonOperationContext _context;
 
-            public LazyStringAwareEqualityComparerForDistinct(JsonOperationContext context)
+            public DynamicArrayValueEqualityComparer(JsonOperationContext context)
             {
                 _context = context;
             }
 
             public new bool Equals(object x, object y)
             {
+                if (ReferenceEquals(x, y))
+                    return true;
+
+                if (x is null || y is null)
+                    return false;
+
+                x = InternalConvert(x);
+                y = InternalConvert(y);
+
                 if (_context == null)
                     return EqualityComparer<object>.Default.Equals(x, y);
 
                 if (x is string xAsString && y is string yAsString)
-                    return xAsString.Equals(yAsString);
+                    return xAsString.Equals(yAsString, StringComparison.Ordinal);
 
                 if (x is LazyStringValue xLsv && y is string yAsString2)
                 {
@@ -932,6 +1039,10 @@ namespace Raven.Server.Documents.Indexes.Static
 
             public int GetHashCode(object obj)
             {
+                obj = InternalConvert(obj);
+                if (obj is null)
+                    return 0;
+
                 if (_context == null || obj is not string s)
                     return EqualityComparer<object>.Default.GetHashCode(obj);
 
@@ -939,6 +1050,5 @@ namespace Raven.Server.Documents.Indexes.Static
                     return lsv.GetHashCode();
             }
         }
-
     }
 }

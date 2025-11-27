@@ -2,6 +2,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+// ReSharper disable InvokeAsExtensionMethod
 
 namespace Raven.Server.Documents.Indexes.Static.Linq
 {
@@ -12,12 +13,29 @@ namespace Raven.Server.Documents.Indexes.Static.Linq
             if (source is DynamicArray array)
                 return array.Distinct();
 
-            return new DynamicArray((IEnumerable<object>)source).Distinct();
+            return new DynamicArray(source.Cast<object>()).Distinct();
         }
 
         public static IEnumerable<dynamic> Union(object source, object other)
         {
-            return new DynamicArray(((IEnumerable<object>)source).Union((IEnumerable<object>)other));
+            if (source is DynamicArray dynamicArray)
+                return dynamicArray.Union((IEnumerable)other);
+
+            var first = (IEnumerable)source;
+            var dynFirst = new DynamicArray(first.Cast<object>());
+
+            return dynFirst.Union((IEnumerable)other);
+        }
+
+        public static IEnumerable<dynamic> Except(object source, object other)
+        {
+            if (source is DynamicArray dynamicArray)
+                return dynamicArray.Except((IEnumerable)other);
+
+            var first = (IEnumerable)source;
+            var dynFirst = new DynamicArray(first.Cast<object>());
+
+            return dynFirst.Except((IEnumerable)other);
         }
 
         public static dynamic First(IEnumerable source)
@@ -117,7 +135,6 @@ namespace Raven.Server.Documents.Indexes.Static.Linq
         public static dynamic ElementAt(IEnumerable source, int index)
         {
             return ElementAtOrDefault(source, index);
-
         }
 
         public static dynamic ElementAtOrDefault(IEnumerable source, int index)
@@ -180,12 +197,35 @@ namespace Raven.Server.Documents.Indexes.Static.Linq
 
         public static IEnumerable<dynamic> Concat(object source, object other)
         {
-            return new DynamicArray(((IEnumerable<object>)source).Concat((IEnumerable<object>)other));
+            if (source is DynamicArray dynamicArray)
+                return dynamicArray.Concat((IEnumerable)other);
+
+            var first = (IEnumerable)source;
+
+            return new DynamicArray(first.Cast<object>()).Concat((IEnumerable)other);
         }
 
         public static IEnumerable<dynamic> Intersect(object source, object other)
         {
-            return new DynamicArray(((IEnumerable<object>)source).Intersect((IEnumerable<object>)other));
+            if (source is DynamicArray dynamicArray)
+                return dynamicArray.Intersect((IEnumerable)other);
+
+            var first = (IEnumerable)source;
+            var dynFirst = new DynamicArray(first.Cast<object>());
+
+            return dynFirst.Intersect((IEnumerable)other);
+        }
+
+        public static bool SequenceEqual(object source, object other)
+        {
+            if (source is DynamicArray dynamicArray)
+                return dynamicArray.SequenceEqual((IEnumerable)other);
+
+            if (source is not IEnumerable first ||
+                other is not IEnumerable second)
+                return false;
+
+            return Enumerable.SequenceEqual(first.Cast<object>(), second.Cast<object>(), new DynamicArray.DynamicArrayValueEqualityComparer(CurrentIndexingScope.Current?.IndexContext));
         }
 
         public static IOrderedEnumerable<dynamic> OrderBy(IEnumerable source, Func<dynamic, dynamic> keySelector)
