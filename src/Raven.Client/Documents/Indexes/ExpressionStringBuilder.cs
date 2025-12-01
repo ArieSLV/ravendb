@@ -1833,7 +1833,19 @@ namespace Raven.Client.Documents.Indexes
                             _isDictionary = true;
                             goto default;
                         }
-                        Out("Where");
+
+                        var ofTypeArgument = node.Method.GetGenericArguments()[0];
+                        if (IsUseOfGetTypeNeeded(ofTypeArgument))
+                        {
+                            Out("Where");
+                        }
+                        else
+                        {
+                            Out("OfType");
+                            Out("<");
+                            VisitType(ofTypeArgument);
+                            Out(">");
+                        }
                         break;
                     case nameof(ILoadCommonApiForIndexes.LoadDocument):
                         Out(nameof(ILoadCommonApiForIndexes.LoadDocument));
@@ -1929,10 +1941,13 @@ namespace Raven.Client.Documents.Indexes
             if (node.Method.Name == "OfType" && _isDictionary == false)
             {
                 var type = node.Method.GetGenericArguments()[0];
-                var typeFullName = ReflectionUtil.GetFullNameWithoutVersionInformation(type);
-                Out("_itemRaven => string.Equals(_itemRaven[\"$type\"], \"");
-                Out(typeFullName);
-                Out("\", StringComparison.Ordinal)");
+                if (IsUseOfGetTypeNeeded(type))
+                {
+                    var typeFullName = ReflectionUtil.GetFullNameWithoutVersionInformation(type);
+                    Out("_itemRaven => string.Equals(_itemRaven[\"$type\"], \"");
+                    Out(typeFullName);
+                    Out("\", StringComparison.Ordinal)");
+                }
             }
 
             if (node.Method.Name == nameof(ILoadCommonApiForIndexes.LoadDocument))
@@ -2691,6 +2706,16 @@ namespace Raven.Client.Documents.Indexes
                 return true;
 
             return nonNullableType.Assembly == typeof(string).Assembly && (nonNullableType.IsGenericType == false);
+        }
+
+        private static bool IsUseOfGetTypeNeeded(Type type)
+        {
+            if (type.IsPrimitive || type == typeof(string) || type == typeof(decimal) || type == typeof(Guid) || type == typeof(DateTime) || type == typeof(DateTimeOffset) || type == typeof(TimeSpan))
+                return false;
+
+            var underlying = Nullable.GetUnderlyingType(type);
+
+            return underlying == null || IsUseOfGetTypeNeeded(underlying);
         }
     }
 }

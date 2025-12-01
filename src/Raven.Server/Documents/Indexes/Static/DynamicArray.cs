@@ -717,7 +717,43 @@ namespace Raven.Server.Documents.Indexes.Static
 
         public IEnumerable<dynamic> OfType<T>()
         {
-            return new DynamicArray(Enumerable.OfType<T>(this));
+            if (ShouldUseCustomIterator(typeof(T)) == false)
+                return new DynamicArray(Enumerable.OfType<T>(this));
+
+            return OfTypeIterator<T>();
+        }
+
+        private IEnumerable<dynamic> OfTypeIterator<T>()
+        {
+            foreach (var item in this)
+            {
+                switch (item)
+                {
+                    case T t:
+                        yield return t;
+                        continue;
+
+                    case LazyStringValue lsv:
+                        if (typeof(T) == typeof(string))
+                            yield return (T)(object)(string)lsv;
+                        break;
+
+                    case LazyCompressedStringValue lcsv:
+                        if (typeof(T) == typeof(string))
+                            yield return (T)(object)lcsv.ToString();
+                        break;
+
+                    case LazyNumberValue lnv:
+                        if (TryConvertLazyNumberValue<T>(lnv, out var val))
+                            yield return val;
+                        break;
+
+                    case long l:
+                        if (TryConvertLong<T>(l, out var longVal))
+                            yield return longVal;
+                        break;
+                }
+            }
         }
 
         public IEnumerable<dynamic> Cast<T>()
@@ -892,6 +928,121 @@ namespace Raven.Server.Documents.Indexes.Static
                 return Equals(_inner, array._inner);
 
             return Equals(_inner, obj);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool TryConvertLazyNumberValue<T>(LazyNumberValue lnv, out T result)
+        {
+            result = default;
+
+            if (typeof(T) == typeof(decimal))
+            {
+                if (lnv.TryParseDecimal(out var val))
+                {
+                    result = (T)(object)val;
+                    return true;
+                }
+            }
+            else if (typeof(T) == typeof(double))
+            {
+                if (lnv.TryParseDouble(out var val))
+                {
+                    result = (T)(object)val;
+                    return true;
+                }
+            }
+            else if (typeof(T) == typeof(float))
+            {
+                if (lnv.TryParseFloat(out var val))
+                {
+                    result = (T)(object)val;
+                    return true;
+                }
+            }
+            else if (typeof(T) == typeof(long))
+            {
+                if (lnv.TryParseLong(out var val))
+                {
+                    result = (T)(object)val;
+                    return true;
+                }
+            }
+            else if (typeof(T) == typeof(int))
+            {
+                // Parse as long first, then check bounds for int
+                if (lnv.TryParseLong(out var val) && val is >= int.MinValue and <= int.MaxValue)
+                {
+                    result = (T)(object)(int)val;
+                    return true;
+                }
+            }
+            else if (typeof(T) == typeof(ulong))
+            {
+                if (lnv.TryParseULong(out var val))
+                {
+                    result = (T)(object)val;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool TryConvertLong<T>(long l, out T result)
+        {
+            result = default;
+
+            if (typeof(T) == typeof(int))
+            {
+                if (l >= int.MinValue && l <= int.MaxValue)
+                {
+                    result = (T)(object)(int)l;
+                    return true;
+                }
+                return false;
+            }
+
+            if (typeof(T) == typeof(double))
+            {
+                result = (T)(object)(double)l;
+                return true;
+            }
+
+            if (typeof(T) == typeof(decimal))
+            {
+                result = (T)(object)(decimal)l;
+                return true;
+            }
+
+            if (typeof(T) == typeof(float))
+            {
+                result = (T)(object)(float)l;
+                return true;
+            }
+
+            if (typeof(T) == typeof(ulong))
+            {
+                if (l >= 0)
+                {
+                    result = (T)(object)(ulong)l;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool ShouldUseCustomIterator(Type t)
+        {
+            return t == typeof(string) ||
+                   t == typeof(decimal) ||
+                   t == typeof(double) ||
+                   t == typeof(float) ||
+                   t == typeof(long) ||
+                   t == typeof(int) ||
+                   t == typeof(ulong);
         }
 
         public override int GetHashCode()

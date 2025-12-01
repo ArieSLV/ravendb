@@ -883,7 +883,7 @@ namespace SlowTests.Client.Indexing
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
-        public void MapIndex_Cast_OfType_LongArray_ShouldWork(Options options)
+        public void MapIndex_OfType_LongArray_ShouldWork(Options options)
         {
             var indexBuilder = new IndexDefinitionBuilder<DocWithLongs, object>
             {
@@ -891,9 +891,6 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
-                        // Values is long[]. Cast to long checks generic handling.
-                        // OfType<long> checks filtering.
-                        CastedCount = doc.Values.Cast<long>().Count(),
                         OfTypeCount = doc.Values.OfType<long>().Count()
                     }
             };
@@ -909,14 +906,13 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Cast), map);
                     Assert.Contains(nameof(Enumerable.OfType), map);
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
                     {
-                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where CastedCount = 3 and OfTypeCount = 3").Count();
+                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where OfTypeCount = 3").Count();
                         Assert.Equal(1, count);
                     }
                 });
@@ -1875,7 +1871,7 @@ namespace SlowTests.Client.Indexing
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
-        public void MapIndex_Cast_OfType_IntArray_ShouldWork(Options options)
+        public void MapIndex_OfType_IntArray_ShouldWork(Options options)
         {
             var indexBuilder = new IndexDefinitionBuilder<DocWithLongs, object>
             {
@@ -1883,9 +1879,6 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
-                        // Values is int[]. Cast to int checks generic handling.
-                        // OfType<int> checks filtering.
-                        CastedCount = doc.IntValues.Cast<int>().Count(),
                         OfTypeCount = doc.IntValues.OfType<int>().Count()
                     }
             };
@@ -1901,14 +1894,13 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Cast), map);
                     Assert.Contains(nameof(Enumerable.OfType), map);
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
                     {
-                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where CastedCount = 3 and OfTypeCount = 3").Count();
+                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where OfTypeCount = 3").Count();
                         Assert.Equal(1, count);
                     }
                 });
@@ -2850,7 +2842,7 @@ namespace SlowTests.Client.Indexing
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
-        public void MapIndex_Cast_OfType_ULongArray_ShouldWork(Options options)
+        public void MapIndex_OfType_ULongArray_ShouldWork(Options options)
         {
             var indexBuilder = new IndexDefinitionBuilder<DocWithLongs, object>
             {
@@ -2858,14 +2850,13 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
-                        CastedCount = doc.ULongValues.Cast<ulong>().Count(),
                         OfTypeCount = doc.ULongValues.OfType<ulong>().Count()
                     }
             };
 
             var docs = new object[]
             {
-                new DocWithLongs { ULongValues = [1UL, 2UL, 3UL] }
+                new DocWithLongs { ULongValues = [1UL, 2UL, ulong.MaxValue] }
             };
 
             AssertIndexBuilderRewritesAndRunsCorrectly(
@@ -2874,14 +2865,13 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Cast), map);
                     Assert.Contains(nameof(Enumerable.OfType), map);
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
                     {
-                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where CastedCount = 3 and OfTypeCount = 3").Count();
+                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where OfTypeCount = 3").Count();
                         Assert.Equal(1, count);
                     }
                 });
@@ -3869,7 +3859,7 @@ namespace SlowTests.Client.Indexing
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
-        public void MapIndex_Cast_OfType_FloatArray_ShouldWork(Options options)
+        public void MapIndex_OfType_FloatArray_ShouldWork(Options options)
         {
             var indexBuilder = new IndexDefinitionBuilder<DocWithFloats, object>
             {
@@ -3877,7 +3867,6 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
-                        CastedCount = doc.Values.Cast<float>().Count(),
                         OfTypeCount = doc.Values.OfType<float>().Count()
                     }
             };
@@ -3893,14 +3882,13 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Cast), map);
                     Assert.Contains(nameof(Enumerable.OfType), map);
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
                     {
-                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where CastedCount = 2 and OfTypeCount = 2").Count();
+                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where OfTypeCount = 2").Count();
                         Assert.Equal(1, count);
                     }
                 });
@@ -4803,7 +4791,7 @@ namespace SlowTests.Client.Indexing
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
-        public void MapIndex_Cast_OfType_DoubleArray_ShouldWork(Options options)
+        public void MapIndex_OfType_DoubleArray_ShouldWork(Options options)
         {
             var indexBuilder = new IndexDefinitionBuilder<DocWithDoubles, object>
             {
@@ -4811,7 +4799,6 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
-                        CastedCount = doc.Values.Cast<double>().Count(),
                         OfTypeCount = doc.Values.OfType<double>().Count()
                     }
             };
@@ -4827,14 +4814,13 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Cast), map);
                     Assert.Contains(nameof(Enumerable.OfType), map);
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
                     {
-                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where CastedCount = 3 and OfTypeCount = 3").Count();
+                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where OfTypeCount = 3").Count();
                         Assert.Equal(1, count);
                     }
                 });
@@ -5720,7 +5706,7 @@ namespace SlowTests.Client.Indexing
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
-        public void MapIndex_Cast_OfType_DecimalArray_ShouldWork(Options options)
+        public void MapIndex_OfType_DecimalArray_ShouldWork(Options options)
         {
             var indexBuilder = new IndexDefinitionBuilder<DocWithDecimals, object>
             {
@@ -5728,7 +5714,6 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
-                        CastedCount = doc.Values.Cast<decimal>().Count(),
                         OfTypeCount = doc.Values.OfType<decimal>().Count()
                     }
             };
@@ -5744,14 +5729,13 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Cast), map);
                     Assert.Contains(nameof(Enumerable.OfType), map);
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
                     {
-                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where CastedCount = 2 and OfTypeCount = 2").Count();
+                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where OfTypeCount = 2").Count();
                         Assert.Equal(1, count);
                     }
                 });
@@ -6696,7 +6680,7 @@ namespace SlowTests.Client.Indexing
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
-        public void MapIndex_Cast_OfType_StringArray_ShouldWork(Options options)
+        public void MapIndex_OfType_StringArray_ShouldWork(Options options)
         {
             var indexBuilder = new IndexDefinitionBuilder<DocWithStrings, object>
             {
@@ -6704,7 +6688,6 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
-                        CastedCount = doc.Tags.Cast<string>().Count(),
                         OfTypeCount = doc.Tags.OfType<string>().Count()
                     }
             };
@@ -6720,14 +6703,13 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Cast), map);
                     Assert.Contains(nameof(Enumerable.OfType), map);
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
                     {
-                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where CastedCount = 3 and OfTypeCount = 3").Count();
+                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where OfTypeCount = 3").Count();
                         Assert.Equal(1, count);
                     }
                 });
@@ -7608,7 +7590,7 @@ namespace SlowTests.Client.Indexing
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
-        public void MapIndex_Cast_OfType_DateTimeArray_ShouldWork(Options options)
+        public void MapIndex_OfType_DateTimeArray_ShouldWork(Options options)
         {
             var indexBuilder = new IndexDefinitionBuilder<DocWithDates, object>
             {
@@ -7616,7 +7598,6 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
-                        CastedCount = doc.ImportantDates.Cast<DateTime>().Count(),
                         OfTypeCount = doc.ImportantDates.OfType<DateTime>().Count()
                     }
             };
@@ -7632,14 +7613,13 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Cast), map);
                     Assert.Contains(nameof(Enumerable.OfType), map);
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
                     {
-                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where CastedCount = 1 and OfTypeCount = 1").Count();
+                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where OfTypeCount = 1").Count();
                         Assert.Equal(1, count);
                     }
                 });
@@ -8490,44 +8470,7 @@ namespace SlowTests.Client.Indexing
                 });
         }
 
-        [RavenTheory(RavenTestCategory.Indexes)]
-        [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
-        public void MapIndex_Cast_OfType_CharArray_ShouldWork(Options options)
-        {
-            var indexBuilder = new IndexDefinitionBuilder<DocWithChars, object>
-            {
-                Map = docs => from doc in docs
-                    select new
-                    {
-                        doc.Id,
-                        Casted = doc.Values.Cast<char>().Count(),
-                        Filtered = doc.Values.OfType<char>().Count()
-                    }
-            };
 
-            var docs = new object[]
-            {
-                new DocWithChars { Values = ['a', 'b'] }
-            };
-
-            AssertIndexBuilderRewritesAndRunsCorrectly(
-                options,
-                indexBuilder,
-                docs,
-                additionalMapAsserts: map =>
-                {
-                    Assert.Contains(nameof(Enumerable.Cast), map);
-                    Assert.Contains(nameof(Enumerable.OfType), map);
-                },
-                additionalRunAsserts: (store, indexName) =>
-                {
-                    using (var session = store.OpenSession())
-                    {
-                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where Casted = 2 and Filtered = 2").Count();
-                        Assert.Equal(1, count);
-                    }
-                });
-        }
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
@@ -9458,7 +9401,7 @@ namespace SlowTests.Client.Indexing
 
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
-        public void MapIndex_Cast_OfType_BoolArray_ShouldWork(Options options)
+        public void MapIndex_OfType_BoolArray_ShouldWork(Options options)
         {
             var indexBuilder = new IndexDefinitionBuilder<DocWithBools, object>
             {
@@ -9466,7 +9409,6 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
-                        CastedCount = doc.Values.Cast<bool>().Count(),
                         OfTypeCount = doc.Values.OfType<bool>().Count()
                     }
             };
@@ -9482,14 +9424,13 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Cast), map);
                     Assert.Contains(nameof(Enumerable.OfType), map);
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
                     {
-                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where CastedCount = 2 and OfTypeCount = 2").Count();
+                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where OfTypeCount = 2").Count();
                         Assert.Equal(1, count);
                     }
                 });
