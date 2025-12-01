@@ -380,16 +380,8 @@ namespace Raven.Client.Documents.Indexes
                     break;
 
                 case ExpressionType.And:
-                    if ((node.Type != typeof(bool)) && (node.Type != typeof(bool?)))
-                    {
-                        str = "&";
-                        innerPrecedence = ExpressionOperatorPrecedence.LogicalAND;
-                    }
-                    else
-                    {
-                        str = "And";
-                        innerPrecedence = ExpressionOperatorPrecedence.ConditionalAND;
-                    }
+                    str = "&";
+                    innerPrecedence = ExpressionOperatorPrecedence.LogicalAND;
                     break;
 
                 case ExpressionType.AndAlso:
@@ -463,16 +455,8 @@ namespace Raven.Client.Documents.Indexes
                     break;
 
                 case ExpressionType.Or:
-                    if ((node.Type != typeof(bool)) && (node.Type != typeof(bool?)))
-                    {
-                        str = "|";
-                        innerPrecedence = ExpressionOperatorPrecedence.LogicalOR;
-                    }
-                    else
-                    {
-                        str = "Or";
-                        innerPrecedence = ExpressionOperatorPrecedence.LogicalOR;
-                    }
+                    str = "|";
+                    innerPrecedence = ExpressionOperatorPrecedence.LogicalOR;
                     break;
 
                 case ExpressionType.OrElse:
@@ -511,16 +495,8 @@ namespace Raven.Client.Documents.Indexes
                     break;
 
                 case ExpressionType.AndAssign:
-                    if ((node.Type != typeof(bool)) && (node.Type != typeof(bool?)))
-                    {
-                        str = "&=";
-                        innerPrecedence = ExpressionOperatorPrecedence.Assignment;
-                    }
-                    else
-                    {
-                        str = "&&=";
-                        innerPrecedence = ExpressionOperatorPrecedence.Assignment;
-                    }
+                    str = "&=";
+                    innerPrecedence = ExpressionOperatorPrecedence.Assignment;
                     break;
 
                 case ExpressionType.DivideAssign:
@@ -549,16 +525,8 @@ namespace Raven.Client.Documents.Indexes
                     break;
 
                 case ExpressionType.OrAssign:
-                    if ((node.Type != typeof(bool)) && (node.Type != typeof(bool?)))
-                    {
-                        str = "|=";
-                        innerPrecedence = ExpressionOperatorPrecedence.Assignment;
-                    }
-                    else
-                    {
-                        str = "||=";
-                        innerPrecedence = ExpressionOperatorPrecedence.Assignment;
-                    }
+                    str = "|=";
+                    innerPrecedence = ExpressionOperatorPrecedence.Assignment;
                     break;
 
                 case ExpressionType.PowerAssign:
@@ -1572,7 +1540,7 @@ namespace Raven.Client.Documents.Indexes
             }
 
             if (node.Method.DeclaringType == typeof(MemoryExtensions) &&
-                node.Method.Name is "Contains" or "ContainsAny" &&
+                node.Method.Name is "Contains" or "ContainsAny" or "SequenceEqual" &&
                 node.Arguments.Count > 1)
             {
                 var firstArgument = node.Arguments[0];
@@ -1624,6 +1592,14 @@ namespace Raven.Client.Documents.Indexes
                         Out(".");
                         Out("Any");
                         Out("(");
+                        Out(")");
+                        break;
+                    case "SequenceEqual": // array.SequenceEqual(otherArray)
+                        Visit(firstArgument);
+                        Out(".");
+                        Out("SequenceEqual");
+                        Out("(");
+                        Visit(secondArgument);
                         Out(")");
                         break;
                 }
@@ -1909,23 +1885,34 @@ namespace Raven.Client.Documents.Indexes
                         _isProjectionPart = true;
                     }
 
-                    if (node.Arguments[num2].NodeType == ExpressionType.MemberAccess)
+                    var parameter = node.Method.GetParameters()[num2];
+                    if (parameter.ParameterType == typeof(char) &&
+                        node.Arguments[num2].NodeType != ExpressionType.Constant)
                     {
-                        var methodArgType = node.Method.GetParameters()[num2].ParameterType;
-                        if (methodArgType.IsPrimitive || methodArgType == typeof(string))
-                        {
-                            // now we need to figure out if this method has overloads,
-                            // for example, we may call Convert.ToInt64(Int64), but we want to
-                            // compile on the server to Convert.ToInt64(object);
-                            if (node.Method.DeclaringType.GetMethods().Count(m => node.Method.Name == m.Name) == 1)
-                                Out("(" + methodArgType.FullName + ")");
-                        }
+                        Out("Convert.ToChar(");
+                        Visit(node.Arguments[num2]);
+                        Out(")");
                     }
+                    else
+                    {
+                        if (node.Arguments[num2].NodeType == ExpressionType.MemberAccess)
+                        {
+                            var methodArgType = parameter.ParameterType;
+                            if (methodArgType.IsPrimitive || methodArgType == typeof(string))
+                            {
+                                // now we need to figure out if this method has overloads,
+                                // for example, we may call Convert.ToInt64(Int64), but we want to
+                                // compile on the server to Convert.ToInt64(object);
+                                if (node.Method.DeclaringType.GetMethods().Count(m => node.Method.Name == m.Name) == 1)
+                                    Out("(" + methodArgType.FullName + ")");
+                            }
+                        }
 
-                    Visit(node.Arguments[num2]);
+                        Visit(node.Arguments[num2]);
 
-                    if (isConvertToDictionary)
-                        Out(".ToDictionary(eg => eg.Key, or => or.Value)");
+                        if (isConvertToDictionary)
+                            Out(".ToDictionary(eg => eg.Key, or => or.Value)");
+                    }
 
                     _isSelectMany = oldIsSelectMany;
                     _avoidDuplicatedParameters = oldAvoidDuplicateParameters;
@@ -2039,29 +2026,34 @@ namespace Raven.Client.Documents.Indexes
             var declaringType = node.Method.DeclaringType;
             if (declaringType == null)
                 return false;
-            if (declaringType.Name == "Enumerable")
+
+            if (declaringType.Name != nameof(Enumerable))
+                return false;
+
+            switch (node.Method.Name)
             {
-                switch (node.Method.Name)
-                {
-                    case "First":
-                    case "FirstOrDefault":
-                    case "Single":
-                    case "SingleOrDefault":
-                    case "Last":
-                    case "LastOrDefault":
-                    case "ElementAt":
-                    case "ElementAtOrDefault":
-                    case "Min":
-                    case "Max":
-                    case "Union":
-                    case "Concat":
-                    case "Intersect":
-                    case nameof(Enumerable.Distinct):
-                        return true;
-                    case nameof(Enumerable.OrderBy):
-                    case nameof(Enumerable.OrderByDescending):
-                        return _isReduce;
-                }
+                case nameof(Enumerable.First):
+                case nameof(Enumerable.FirstOrDefault):
+                case nameof(Enumerable.Single):
+                case nameof(Enumerable.SingleOrDefault):
+                case nameof(Enumerable.Last):
+                case nameof(Enumerable.LastOrDefault):
+                case nameof(Enumerable.ElementAt):
+                case nameof(Enumerable.ElementAtOrDefault):
+                case nameof(Enumerable.Min):
+                case nameof(Enumerable.Max):
+                case nameof(Enumerable.Union):
+                case nameof(Enumerable.Concat):
+                case nameof(Enumerable.Intersect):
+                case nameof(Enumerable.Distinct):
+                case nameof(Enumerable.Except):
+                case nameof(Enumerable.Contains):
+                case nameof(Enumerable.Sum):
+                case nameof(Enumerable.Average):
+                    return true;
+                case nameof(Enumerable.OrderBy):
+                case nameof(Enumerable.OrderByDescending):
+                    return _isReduce;
             }
 
             return false;
@@ -2625,7 +2617,21 @@ namespace Raven.Client.Documents.Indexes
                     break;
             }
 
-            SometimesParenthesis(outerPrecedence, innerPrecedence, () => Visit(node.Operand, innerPrecedence));
+            SometimesParenthesis(outerPrecedence, innerPrecedence, () =>
+            {
+                if ((node.NodeType == ExpressionType.Convert || node.NodeType == ExpressionType.ConvertChecked) &&
+                    node.Operand.Type == typeof(char) &&
+                    node.Operand.NodeType != ExpressionType.Constant)
+                {
+                    Out("Convert.ToChar(");
+                    Visit(node.Operand, innerPrecedence);
+                    Out(")");
+                }
+                else
+                {
+                    Visit(node.Operand, innerPrecedence);
+                }
+            });
 
             switch (node.NodeType)
             {
