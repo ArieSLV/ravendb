@@ -7008,15 +7008,13 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_Concat_DateTimeArray_ShouldWork(Options options)
         {
-            var extraDate = new DateTime(2025, 1, 1);
-
             var indexBuilder = new IndexDefinitionBuilder<DocWithDates, object>
             {
                 Map = docs => from doc in docs
                     select new
                     {
                         doc.Id,
-                        TotalCount = doc.ImportantDates.Concat(new[] { extraDate }).Count()
+                        TotalCount = doc.ImportantDates.Concat(new[] { new DateTime(2025, 1, 1) }).Count()
                     }
             };
 
