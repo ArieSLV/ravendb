@@ -826,13 +826,13 @@ namespace Raven.Server.Documents.Indexes.Static
         public IEnumerable<dynamic> Join(IEnumerable<dynamic> items, Func<dynamic, dynamic> outerKeySelector, Func<dynamic, dynamic> innerKeySelector,
                                             Func<dynamic, dynamic, dynamic> resultSelector)
         {
-            return new DynamicArray(Enumerable.Join(this, items, outerKeySelector, innerKeySelector, resultSelector));
+            return new DynamicArray(Enumerable.Join<object, object, object, object>(this, items, outerKeySelector, innerKeySelector, resultSelector, new DynamicArrayValueEqualityComparer(CurrentIndexingScope.Current?.IndexContext)));
         }
 
         public IEnumerable<dynamic> GroupJoin(IEnumerable<dynamic> items, Func<dynamic, dynamic> outerKeySelector, Func<dynamic, dynamic> innerKeySelector,
                                             Func<dynamic, dynamic, dynamic> resultSelector)
         {
-            return new DynamicArray(Enumerable.GroupJoin(this, items, outerKeySelector, innerKeySelector, resultSelector));
+            return new DynamicArray(Enumerable.GroupJoin<object, object, object, object>(this, items, outerKeySelector, innerKeySelector, resultSelector, new DynamicArrayValueEqualityComparer(CurrentIndexingScope.Current?.IndexContext)));
         }
 
         public IEnumerable<dynamic> Concat(IEnumerable second)

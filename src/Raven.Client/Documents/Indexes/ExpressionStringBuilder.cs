@@ -33,6 +33,7 @@ namespace Raven.Client.Documents.Indexes
         private bool _castLambdas;
         private bool _isDictionary;
         private bool _isReduce;
+        private bool _isParameterDeclaration;
 
         // Methods
         private ExpressionStringBuilder(DocumentConventions conventions, bool translateIdentityProperty, Type queryRoot,
@@ -679,12 +680,23 @@ namespace Raven.Client.Documents.Indexes
         protected override Expression VisitBlock(BlockExpression node)
         {
             Out("{");
-            foreach (var expression in node.Variables)
+
+            var old = _isParameterDeclaration;
+            _isParameterDeclaration = true;
+            try
             {
-                Out("var ");
-                Visit(expression);
-                Out(";");
+                foreach (var expression in node.Variables)
+                {
+                    Out("var ");
+                    Visit(expression);
+                    Out(";");
+                }
             }
+            finally
+            {
+                _isParameterDeclaration = old;
+            }
+
             Out(" ... }");
             return node;
         }
@@ -1228,14 +1240,24 @@ namespace Raven.Client.Documents.Indexes
         /// <returns></returns>
         protected override Expression VisitLambda<T>(Expression<T> node)
         {
-            if (node.Parameters.Count == 1)
+            var old = _isParameterDeclaration;
+            _isParameterDeclaration = true;
+            try
             {
-                Visit(node.Parameters[0]);
+                if (node.Parameters.Count == 1)
+                {
+                    Visit(node.Parameters[0]);
+                }
+                else
+                {
+                    VisitExpressions('(', node.Parameters, ')');
+                }
             }
-            else
+            finally
             {
-                VisitExpressions('(', node.Parameters, ')');
+                _isParameterDeclaration = old;
             }
+
             Out(" => ");
             var body = node.Body;
             if (_castLambdas)
@@ -2065,6 +2087,8 @@ namespace Raven.Client.Documents.Indexes
                 case nameof(Enumerable.Contains):
                 case nameof(Enumerable.Sum):
                 case nameof(Enumerable.Average):
+                case nameof(Enumerable.Join):
+                case nameof(Enumerable.GroupJoin):
                     return true;
                 case nameof(Enumerable.OrderBy):
                 case nameof(Enumerable.OrderByDescending):
@@ -2428,9 +2452,20 @@ namespace Raven.Client.Documents.Indexes
             {
                 Out("ref ");
             }
+
+            bool shouldCast = node.IsByRef == false && _isParameterDeclaration == false && ShouldCastParameter(node.Type);
+
+            if (shouldCast)
+            {
+                Out("((");
+                Out(ConvertTypeToCSharpKeyword(node.Type, out _));
+                Out(")");
+            }
+
             if (string.IsNullOrEmpty(node.Name))
             {
                 Out("Param_" + GetParamId(node));
+                if (shouldCast) Out(")");
                 return node;
             }
 
@@ -2454,6 +2489,12 @@ namespace Raven.Client.Documents.Indexes
             if (KeywordsInCSharp.Contains(name))
                 Out('@');
             Out(name);
+
+            if (shouldCast)
+            {
+                Out(")");
+            }
+
             return node;
         }
 
@@ -2716,6 +2757,13 @@ namespace Raven.Client.Documents.Indexes
             var underlying = Nullable.GetUnderlyingType(type);
 
             return underlying == null || IsUseOfGetTypeNeeded(underlying);
+        }
+
+        private bool ShouldCastParameter(Type type)
+        {
+            var nonNullable = Nullable.GetUnderlyingType(type);
+            type = nonNullable ?? type;
+            return type == typeof(double) || type == typeof(decimal) || type == typeof(float);
         }
     }
 }

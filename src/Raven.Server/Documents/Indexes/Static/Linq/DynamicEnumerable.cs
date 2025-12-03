@@ -217,6 +217,24 @@ namespace Raven.Server.Documents.Indexes.Static.Linq
             return new DynamicArray(first.Cast<object>()).Concat((IEnumerable)other);
         }
 
+        public static IEnumerable<dynamic> Join(object outer, object inner, Func<dynamic, dynamic> outerKeySelector, Func<dynamic, dynamic> innerKeySelector,
+            Func<dynamic, dynamic, dynamic> resultSelector)
+        {
+            var daOuter = outer as DynamicArray ?? new DynamicArray((IEnumerable)outer);
+            var daInner = inner as IEnumerable<object> ?? new DynamicArray((IEnumerable)inner);
+
+            return daOuter.Join(daInner, outerKeySelector, innerKeySelector, resultSelector);
+        }
+
+        public static IEnumerable<dynamic> GroupJoin(object outer, object inner, Func<dynamic, dynamic> outerKeySelector, Func<dynamic, dynamic> innerKeySelector,
+            Func<dynamic, dynamic, dynamic> resultSelector)
+        {
+            var daOuter = outer as DynamicArray ?? new DynamicArray((IEnumerable)outer);
+            var daInner = inner as IEnumerable<object> ?? new DynamicArray((IEnumerable)inner);
+
+            return daOuter.GroupJoin(daInner, outerKeySelector, innerKeySelector, resultSelector);
+        }
+
         public static IEnumerable<dynamic> Intersect(object source, object other)
         {
             if (source is DynamicArray dynamicArray)

@@ -976,9 +976,9 @@ namespace SlowTests.Client.Indexing
                     {
                         doc.Id,
                         // Key is value, Value is value*10.
-                        DictCount = doc.Values.ToDictionary(k => k, v => v * 10).Count,
+                        DictCount = doc.Values.ToDictionary(k => k, v => v * 10).Count(),
                         // Lookup by Modulo 2. [1, 2, 3, 4] -> Keys: 1 (vals 1,3), 0 (vals 2,4)
-                        LookupCount = doc.Values.ToLookup(k => k % 2).Count
+                        LookupCount = doc.Values.ToLookup(k => k % 2).Count()
                     }
             };
 
@@ -1964,9 +1964,9 @@ namespace SlowTests.Client.Indexing
                     {
                         doc.Id,
                         // Key is value, Value is value*10.
-                        DictCount = doc.IntValues.ToDictionary(k => k, v => v * 10).Count,
+                        DictCount = doc.IntValues.ToDictionary(k => k, v => v * 10).Count(),
                         // Lookup by Modulo 2. [1, 2, 3, 4] -> Keys: 1 (vals 1,3), 0 (vals 2,4)
-                        LookupCount = doc.IntValues.ToLookup(k => k % 2).Count
+                        LookupCount = doc.IntValues.ToLookup(k => k % 2).Count()
                     }
             };
 
@@ -2933,9 +2933,9 @@ namespace SlowTests.Client.Indexing
                     {
                         doc.Id,
                         // Key is value, Value is value*10.
-                        DictCount = doc.ULongValues.ToDictionary(k => k, v => v * 10).Count,
+                        DictCount = doc.ULongValues.ToDictionary(k => k, v => v * 10).Count(),
                         // Lookup by Modulo 2.
-                        LookupCount = doc.ULongValues.ToLookup(k => k % 2).Count
+                        LookupCount = doc.ULongValues.ToLookup(k => k % 2).Count()
                     }
             };
 
@@ -3905,9 +3905,9 @@ namespace SlowTests.Client.Indexing
                     {
                         doc.Id,
                         // Key x, Value x+1
-                        DictCount = doc.Values.ToDictionary(k => k, v => v + 1.0f).Count,
+                        DictCount = doc.Values.ToDictionary(k => k, v => v + 1.0f).Count(),
                         // Lookup by integer part
-                        LookupCount = doc.Values.ToLookup(k => (int)k).Count
+                        LookupCount = doc.Values.ToLookup(k => (int)k).Count()
                     }
             };
 
@@ -4881,9 +4881,9 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
-                        DictCount = doc.Values.ToDictionary(k => k, v => v * 10).Count,
+                        DictCount = doc.Values.ToDictionary(k => k, v => v * 10).Count(),
                         // Lookup by Math.Floor. [1.1, 1.9, 2.2] -> Keys: 1 (vals 1.1,1.9), 2 (val 2.2)
-                        LookupCount = doc.Values.ToLookup(k => Math.Floor((double)k)).Count
+                        LookupCount = doc.Values.ToLookup(k => Math.Floor((double)k)).Count()
                     }
             };
 
@@ -5751,9 +5751,9 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
-                        DictCount = doc.Values.ToDictionary(k => k, v => v * 10).Count,
+                        DictCount = doc.Values.ToDictionary(k => k, v => v * 10).Count(),
                         // Lookup by integer part. [1.1, 1.9, 2.5] -> Keys: 1, 2
-                        LookupCount = doc.Values.ToLookup(k => (int)k).Count
+                        LookupCount = doc.Values.ToLookup(k => (int)k).Count()
                     }
             };
 
@@ -6643,11 +6643,8 @@ namespace SlowTests.Client.Indexing
                 {
                     using (var session = store.OpenSession())
                     {
-                        var result = session.Advanced.RawQuery<dynamic>($"from index '{indexName}'").First();
-                        Assert.Equal(1, result.MinLen);
-                        Assert.Equal(2, result.MaxLen);
-                        Assert.Equal(1.5, result.AvgLen);
-                        Assert.Equal(3, result.SumLen);
+                        var result = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where MinLen == 1 and MaxLen == 2 and AvgLen == 1.5 and SumLen == 3").Count();
+                        Assert.Equal(1, result);
                     }
                 });
         }
@@ -6741,9 +6738,9 @@ namespace SlowTests.Client.Indexing
                     {
                         doc.Id,
                         // Key is string, Value is Length.
-                        DictCount = doc.Tags.ToDictionary(k => k, v => v.Length).Count,
+                        DictCount = doc.Tags.ToDictionary(k => k, v => v.Length).Count(),
                         // Lookup by first char.
-                        LookupCount = doc.Tags.ToLookup(k => k[0]).Count
+                        LookupCount = doc.Tags.ToLookup(k => k[0]).Count()
                     }
             };
 
@@ -6821,24 +6818,21 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_SequenceEqual_DateTimeArray_ShouldWork(Options options)
         {
-            var date1 = new DateTime(2020, 1, 1);
-            var date2 = new DateTime(2021, 1, 1);
-
             var indexBuilder = new IndexDefinitionBuilder<DocWithDates, object>
             {
                 Map = docs => from doc in docs
                     select new
                     {
                         doc.Id,
-                        IsExact = doc.ImportantDates.SequenceEqual(new[] { date1, date2 })
+                        IsExact = doc.ImportantDates.SequenceEqual(new[] { new DateTime(2020, 1, 1), new DateTime(2021, 1, 1) })
                     }
             };
 
             var docs = new object[]
             {
-                new DocWithDates { ImportantDates = [date1, date2] },
-                new DocWithDates { ImportantDates = [date1] },
-                new DocWithDates { ImportantDates = [date2, date1] } // Wrong order
+                new DocWithDates { ImportantDates = [new DateTime(2020, 1, 1), new DateTime(2021, 1, 1)] },
+                new DocWithDates { ImportantDates = [new DateTime(2020, 1, 1)] },
+                new DocWithDates { ImportantDates = [new DateTime(2021, 1, 1), new DateTime(2020, 1, 1)] } // Wrong order
             };
 
             AssertIndexBuilderRewritesAndRunsCorrectly(
@@ -6900,23 +6894,20 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_Union_DateTimeArray_ShouldWork(Options options)
         {
-            var date1 = new DateTime(2000, 1, 1);
-            var date2 = new DateTime(2099, 12, 31);
-
             var indexBuilder = new IndexDefinitionBuilder<DocWithDates, object>
             {
                 Map = docs => from doc in docs
                     select new
                     {
                         doc.Id,
-                        HasUnionValue = doc.ImportantDates.Union(new[] { date2 }).Contains(date2)
+                        HasUnionValue = doc.ImportantDates.Union(new[] { new DateTime(2099, 12, 31) }).Contains(new DateTime(2099, 12, 31))
                     }
             };
 
             var docs = new object[]
             {
-                new DocWithDates { ImportantDates = [date1] }, // Will have date2 after Union
-                new DocWithDates { ImportantDates = [date2] } // Already has it
+                new DocWithDates { ImportantDates = [new DateTime(2000, 1, 1)] }, // Will have date2 after Union
+                new DocWithDates { ImportantDates = [new DateTime(2099, 12, 31)] } // Already has it
             };
 
             AssertIndexBuilderRewritesAndRunsCorrectly(
@@ -7507,13 +7498,10 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_Join_GroupJoin_DateTimeArray_ShouldWork(Options options)
         {
-            var d1 = new DateTime(2000, 1, 1);
-            var d2 = new DateTime(2010, 1, 1);
-
             var indexBuilder = new IndexDefinitionBuilder<DocWithDates, object>
             {
                 Map = docs => from doc in docs
-                    let other = new DateTime[] { d1, d2 }
+                    let other = new DateTime[] { new DateTime(2000, 1, 1), new DateTime(2010, 1, 1) }
                     select new
                     {
                         doc.Id,
@@ -7524,7 +7512,7 @@ namespace SlowTests.Client.Indexing
 
             var docs = new object[]
             {
-                new DocWithDates { ImportantDates = [d1, d2] }
+                new DocWithDates { ImportantDates = [new DateTime(2000, 1, 1), new DateTime(2010, 1, 1)] }
             };
 
             AssertIndexBuilderRewritesAndRunsCorrectly(
@@ -7704,8 +7692,8 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
-                        DictCount = doc.ImportantDates.ToDictionary(k => k.Year, v => v.Month).Count,
-                        LookupCount = doc.ImportantDates.ToLookup(k => k.Year).Count
+                        DictCount = doc.ImportantDates.ToDictionary(k => k.Year, v => v.Month).Count(),
+                        LookupCount = doc.ImportantDates.ToLookup(k => k.Year).Count()
                     }
             };
 
@@ -8481,8 +8469,8 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
-                        DictSize = doc.Values.ToDictionary(c => c.ToString(), c => (int)c).Count,
-                        LookupSize = doc.Values.ToLookup(c => char.IsDigit(c)).Count
+                        DictSize = doc.Values.ToDictionary(c => c.ToString(), c => (int)c).Count(),
+                        LookupSize = doc.Values.ToLookup(c => char.IsDigit(c)).Count()
                     }
             };
 
@@ -9491,9 +9479,9 @@ namespace SlowTests.Client.Indexing
                     {
                         doc.Id,
                         // Keys: true, false
-                        DictCount = doc.Values.ToDictionary(k => k, v => v).Count,
+                        DictCount = doc.Values.ToDictionary(k => k, v => v).Count(),
                         // Lookup: true group, false group
-                        LookupCount = doc.Values.ToLookup(k => k).Count
+                        LookupCount = doc.Values.ToLookup(k => k).Count()
                     }
             };
 
