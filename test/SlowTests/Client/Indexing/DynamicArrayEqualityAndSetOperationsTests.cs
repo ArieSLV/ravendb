@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using Raven.Client.Documents.Indexes;
 using Tests.Infrastructure;
@@ -10,6 +11,7 @@ using Xunit.Abstractions;
 
 namespace SlowTests.Client.Indexing
 {
+    [SuppressMessage("Performance", "CA1861:Avoid constant arrays as arguments")]
     public class DynamicArrayEqualityAndSetOperationsTests : IndexDefinitionTests
     {
         public DynamicArrayEqualityAndSetOperationsTests(ITestOutputHelper output) : base(output)
@@ -28,7 +30,7 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
-                        HasAny = doc.Values.Intersect(new long[] { 42L, 100L }).Any()
+                        HasAny = doc.Values.Intersect(new[] { 42L, 100L }).Any()
                     }
             };
 
@@ -45,8 +47,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Intersect), map);
-                    Assert.Contains(nameof(Enumerable.Any), map);
+                    AssertMapContains(map, nameof(Enumerable.Intersect), nameof(Enumerable.Any));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -71,7 +72,7 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
-                        IsExact = doc.Values.SequenceEqual(new long[] { 1L, 2L, 3L })
+                        IsExact = doc.Values.SequenceEqual(new[] { 1L, 2L, 3L })
                     }
             };
 
@@ -87,7 +88,7 @@ namespace SlowTests.Client.Indexing
                 indexBuilder,
                 docs,
                 additionalMapAsserts: map =>
-                    Assert.Contains(nameof(Enumerable.SequenceEqual), map),
+                    AssertMapContains(map, nameof(Enumerable.SequenceEqual)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -112,7 +113,7 @@ namespace SlowTests.Client.Indexing
                     {
                         doc.Id,
                         HasRemaining = doc.Values
-                            .Except(new long[] { 1L, 2L })
+                            .Except(new[] { 1L, 2L })
                             .Contains(3L)
                     }
             };
@@ -130,8 +131,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Except), map);
-                    Assert.Contains(nameof(Enumerable.Contains), map);
+                    AssertMapContains(map, nameof(Enumerable.Except), nameof(Enumerable.Contains));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -157,7 +157,7 @@ namespace SlowTests.Client.Indexing
                     {
                         doc.Id,
                         HasUnionValue = doc.Values
-                            .Union(new long[] { 3L })
+                            .Union(new[] { 3L })
                             .Contains(3L)
                     }
             };
@@ -175,8 +175,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Union), map);
-                    Assert.Contains(nameof(Enumerable.Contains), map);
+                    AssertMapContains(map, nameof(Enumerable.Union), nameof(Enumerable.Contains));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -215,7 +214,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Contains), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Contains)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -253,7 +252,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Distinct), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Distinct)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -294,8 +293,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Skip), map);
-                    Assert.Contains(nameof(Enumerable.Take), map);
+                    AssertMapContains(map, nameof(Enumerable.Skip), nameof(Enumerable.Take));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -317,7 +315,7 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
-                        AllValues = doc.Values.Concat(new long[] { 999L }).Count()
+                        AllValues = doc.Values.Concat(new[] { 999L }).Count()
                     }
             };
 
@@ -330,7 +328,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Concat), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Concat)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -368,9 +366,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Where), map);
-                    Assert.Contains(nameof(Enumerable.Select), map);
-                    Assert.Contains(nameof(Enumerable.Sum), map);
+                    AssertMapContains(map, nameof(Enumerable.Where), nameof(Enumerable.Select), nameof(Enumerable.Sum));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -408,8 +404,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.OrderBy), map);
-                    Assert.Contains(nameof(Enumerable.OrderByDescending), map);
+                    AssertMapContains(map, nameof(Enumerable.OrderBy), nameof(Enumerable.OrderByDescending));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -448,9 +443,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Min), map);
-                    Assert.Contains(nameof(Enumerable.Max), map);
-                    Assert.Contains(nameof(Enumerable.Average), map);
+                    AssertMapContains(map, nameof(Enumerable.Min), nameof(Enumerable.Max), nameof(Enumerable.Average));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -496,10 +489,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Min), map);
-                    Assert.Contains(nameof(Enumerable.Max), map);
-                    Assert.Contains(nameof(Enumerable.Average), map);
-                    Assert.Contains(nameof(Enumerable.Sum), map);
+                    AssertMapContains(map, nameof(Enumerable.Min), nameof(Enumerable.Max), nameof(Enumerable.Average), nameof(Enumerable.Sum));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -534,7 +524,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Reverse), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Reverse)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -572,8 +562,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.TakeWhile), map);
-                    Assert.Contains(nameof(Enumerable.SkipWhile), map);
+                    AssertMapContains(map, nameof(Enumerable.TakeWhile), nameof(Enumerable.SkipWhile));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -611,7 +600,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Aggregate), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Aggregate)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -646,7 +635,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Zip), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Zip)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -673,7 +662,7 @@ namespace SlowTests.Client.Indexing
 
             var docs = new object[]
             {
-                new DocWithLongs { Values = new long[0] },
+                new DocWithLongs { Values = [] },
                 new DocWithLongs { Values = [1L] }
             };
 
@@ -681,7 +670,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.DefaultIfEmpty), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.DefaultIfEmpty)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -720,7 +709,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.GroupBy), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.GroupBy)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -744,7 +733,7 @@ namespace SlowTests.Client.Indexing
                         FirstGt = doc.Values.First(x => x > 10),
                         LastGt = doc.Values.Last(x => x > 10),
                         SingleVal = doc.Values.Single(x => x == 20),
-                        SingleOrDefaultVal = doc.Values.SingleOrDefault(x => x == 999) // Should be null (or default)
+                        SingleOrDefaultVal = doc.Values.SingleOrDefault(x => x == 999) // Should be default
                     }
             };
 
@@ -759,10 +748,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.First), map);
-                    Assert.Contains(nameof(Enumerable.Last), map);
-                    Assert.Contains(nameof(Enumerable.Single), map);
-                    Assert.Contains(nameof(Enumerable.SingleOrDefault), map);
+                    AssertMapContains(map, nameof(Enumerable.First), nameof(Enumerable.Last), nameof(Enumerable.Single), nameof(Enumerable.SingleOrDefault));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -771,23 +757,10 @@ namespace SlowTests.Client.Indexing
                         // First > 10 is 20
                         // Last > 10 is 50
                         // Single == 20 is 20
-                        // SingleOrDefault == 999 is 0 (long default) or null in dynamic context, but here treated as 0 in value comparison often
+                        // SingleOrDefault == 999 is 0 (long default)
 
-                        var results = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where FirstGt = 20 and LastGt = 50 and SingleVal = 20").ToList();
+                        var results = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where FirstGt = 20 and LastGt = 50 and SingleVal = 20 and SingleOrDefaultVal = 0").ToList();
                         Assert.Single(results);
-
-                        // Checking SingleOrDefault returning null/0
-                        var doc = results[0];
-                        // In dynamic index context, usually null object or 0 for value types.
-                        // Let's assert strictly on what we can query or if it's stored.
-                        // Querying for it:
-                        var countNull = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where SingleOrDefaultVal = null").Count();
-                        if (countNull == 0)
-                        {
-                            // Could be 0
-                            var countZero = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where SingleOrDefaultVal = 0").Count();
-                            Assert.Equal(1, countZero);
-                        }
                     }
                 });
         }
@@ -823,9 +796,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.All), map);
-                    Assert.Contains(nameof(Enumerable.Any), map);
-                    Assert.Contains(nameof(Enumerable.Count), map);
+                    AssertMapContains(map, nameof(Enumerable.All), nameof(Enumerable.Any), nameof(Enumerable.Count));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -864,19 +835,14 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.ElementAt), map);
-                    Assert.Contains(nameof(Enumerable.ElementAtOrDefault), map);
+                    AssertMapContains(map, nameof(Enumerable.ElementAt), nameof(Enumerable.ElementAtOrDefault));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
                     {
-                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValAt0 = 10 and ValAtIndex1 = 20").Count();
+                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValAt0 = 10 and ValAtIndex1 = 20 and ValAtDef = 0").Count();
                         Assert.Equal(1, count);
-
-                        // Check default
-                        var countDef = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValAtDef = null or ValAtDef = 0").Count();
-                        Assert.Equal(1, countDef);
                     }
                 });
         }
@@ -891,6 +857,7 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
+                        // ReSharper disable once RedundantEnumerableCastCall
                         OfTypeCount = doc.Values.OfType<long>().Count()
                     }
             };
@@ -906,7 +873,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.OfType), map);
+                    AssertMapContains(map, nameof(Enumerable.OfType));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -925,7 +892,7 @@ namespace SlowTests.Client.Indexing
             var indexBuilder = new IndexDefinitionBuilder<DocWithLongs, object>
             {
                 Map = docs => from doc in docs
-                    let other = new long[] { 1L, 3L, 5L }
+                    let other = new[] { 1L, 3L, 5L }
                     select new
                     {
                         doc.Id,
@@ -950,8 +917,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Join), map);
-                    Assert.Contains(nameof(Enumerable.GroupJoin), map);
+                    AssertMapContains(map, nameof(Enumerable.Join), nameof(Enumerable.GroupJoin));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -993,8 +959,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.ToDictionary), map);
-                    Assert.Contains(nameof(Enumerable.ToLookup), map);
+                    AssertMapContains(map, nameof(Enumerable.ToDictionary), nameof(Enumerable.ToLookup));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -1039,8 +1004,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Intersect), map);
-                    Assert.Contains(nameof(Enumerable.Any), map);
+                    AssertMapContains(map, nameof(Enumerable.Intersect), nameof(Enumerable.Any));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -1081,7 +1045,7 @@ namespace SlowTests.Client.Indexing
                 indexBuilder,
                 docs,
                 additionalMapAsserts: map =>
-                    Assert.Contains(nameof(Enumerable.SequenceEqual), map),
+                    AssertMapContains(map, nameof(Enumerable.SequenceEqual)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -1124,8 +1088,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Except), map);
-                    Assert.Contains(nameof(Enumerable.Contains), map);
+                    AssertMapContains(map, nameof(Enumerable.Except), nameof(Enumerable.Contains));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -1169,8 +1132,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Union), map);
-                    Assert.Contains(nameof(Enumerable.Contains), map);
+                    AssertMapContains(map, nameof(Enumerable.Union), nameof(Enumerable.Contains));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -1209,7 +1171,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Contains), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Contains)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -1247,7 +1209,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Distinct), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Distinct)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -1288,8 +1250,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Skip), map);
-                    Assert.Contains(nameof(Enumerable.Take), map);
+                    AssertMapContains(map, nameof(Enumerable.Skip), nameof(Enumerable.Take));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -1324,7 +1285,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Concat), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Concat)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -1362,9 +1323,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Where), map);
-                    Assert.Contains(nameof(Enumerable.Select), map);
-                    Assert.Contains(nameof(Enumerable.Sum), map);
+                    AssertMapContains(map, nameof(Enumerable.Where), nameof(Enumerable.Select), nameof(Enumerable.Sum));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -1402,8 +1361,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.OrderBy), map);
-                    Assert.Contains(nameof(Enumerable.OrderByDescending), map);
+                    AssertMapContains(map, nameof(Enumerable.OrderBy), nameof(Enumerable.OrderByDescending));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -1442,9 +1400,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Min), map);
-                    Assert.Contains(nameof(Enumerable.Max), map);
-                    Assert.Contains(nameof(Enumerable.Average), map);
+                    AssertMapContains(map, nameof(Enumerable.Min), nameof(Enumerable.Max), nameof(Enumerable.Average));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -1490,10 +1446,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Min), map);
-                    Assert.Contains(nameof(Enumerable.Max), map);
-                    Assert.Contains(nameof(Enumerable.Average), map);
-                    Assert.Contains(nameof(Enumerable.Sum), map);
+                    AssertMapContains(map, nameof(Enumerable.Min), nameof(Enumerable.Max), nameof(Enumerable.Average), nameof(Enumerable.Sum));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -1528,7 +1481,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Reverse), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Reverse)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -1566,8 +1519,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.TakeWhile), map);
-                    Assert.Contains(nameof(Enumerable.SkipWhile), map);
+                    AssertMapContains(map, nameof(Enumerable.TakeWhile), nameof(Enumerable.SkipWhile));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -1605,7 +1557,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Aggregate), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Aggregate)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -1640,7 +1592,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Zip), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Zip)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -1667,7 +1619,7 @@ namespace SlowTests.Client.Indexing
 
             var docs = new object[]
             {
-                new DocWithLongs { IntValues = new int[0] },
+                new DocWithLongs { IntValues = [] },
                 new DocWithLongs { IntValues = [1] }
             };
 
@@ -1675,7 +1627,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.DefaultIfEmpty), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.DefaultIfEmpty)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -1714,7 +1666,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.GroupBy), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.GroupBy)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -1738,7 +1690,7 @@ namespace SlowTests.Client.Indexing
                         FirstGt = doc.IntValues.First(x => x > 10),
                         LastGt = doc.IntValues.Last(x => x > 10),
                         SingleVal = doc.IntValues.Single(x => x == 20),
-                        SingleOrDefaultVal = doc.IntValues.SingleOrDefault(x => x == 999) // Should be null (or default)
+                        SingleOrDefaultVal = doc.IntValues.SingleOrDefault(x => x == 999) // Should be default
                     }
             };
 
@@ -1753,10 +1705,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.First), map);
-                    Assert.Contains(nameof(Enumerable.Last), map);
-                    Assert.Contains(nameof(Enumerable.Single), map);
-                    Assert.Contains(nameof(Enumerable.SingleOrDefault), map);
+                    AssertMapContains(map, nameof(Enumerable.First), nameof(Enumerable.Last), nameof(Enumerable.Single), nameof(Enumerable.SingleOrDefault));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -1811,9 +1760,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.All), map);
-                    Assert.Contains(nameof(Enumerable.Any), map);
-                    Assert.Contains(nameof(Enumerable.Count), map);
+                    AssertMapContains(map, nameof(Enumerable.All), nameof(Enumerable.Any), nameof(Enumerable.Count));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -1852,19 +1799,14 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.ElementAt), map);
-                    Assert.Contains(nameof(Enumerable.ElementAtOrDefault), map);
+                    AssertMapContains(map, nameof(Enumerable.ElementAt), nameof(Enumerable.ElementAtOrDefault));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
                     {
-                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValAt0 = 10 and ValAtIndex1 = 20").Count();
+                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValAt0 = 10 and ValAtIndex1 = 20 and ValAtDef = 0").Count();
                         Assert.Equal(1, count);
-
-                        // Check default
-                        var countDef = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValAtDef = null or ValAtDef = 0").Count();
-                        Assert.Equal(1, countDef);
                     }
                 });
         }
@@ -1879,6 +1821,7 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
+                        // ReSharper disable once RedundantEnumerableCastCall
                         OfTypeCount = doc.IntValues.OfType<int>().Count()
                     }
             };
@@ -1894,7 +1837,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.OfType), map);
+                    AssertMapContains(map, nameof(Enumerable.OfType));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -1913,7 +1856,7 @@ namespace SlowTests.Client.Indexing
             var indexBuilder = new IndexDefinitionBuilder<DocWithLongs, object>
             {
                 Map = docs => from doc in docs
-                    let other = new int[] { 1, 3, 5 }
+                    let other = new[] { 1, 3, 5 }
                     select new
                     {
                         doc.Id,
@@ -1938,8 +1881,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Join), map);
-                    Assert.Contains(nameof(Enumerable.GroupJoin), map);
+                    AssertMapContains(map, nameof(Enumerable.Join), nameof(Enumerable.GroupJoin));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -1981,8 +1923,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.ToDictionary), map);
-                    Assert.Contains(nameof(Enumerable.ToLookup), map);
+                    AssertMapContains(map, nameof(Enumerable.ToDictionary), nameof(Enumerable.ToLookup));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -2027,8 +1968,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Intersect), map);
-                    Assert.Contains(nameof(Enumerable.Any), map);
+                    AssertMapContains(map, nameof(Enumerable.Intersect), nameof(Enumerable.Any));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -2069,7 +2009,7 @@ namespace SlowTests.Client.Indexing
                 indexBuilder,
                 docs,
                 additionalMapAsserts: map =>
-                    Assert.Contains(nameof(Enumerable.SequenceEqual), map),
+                    AssertMapContains(map, nameof(Enumerable.SequenceEqual)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -2112,8 +2052,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Except), map);
-                    Assert.Contains(nameof(Enumerable.Contains), map);
+                    AssertMapContains(map, nameof(Enumerable.Except), nameof(Enumerable.Contains));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -2157,8 +2096,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Union), map);
-                    Assert.Contains(nameof(Enumerable.Contains), map);
+                    AssertMapContains(map, nameof(Enumerable.Union), nameof(Enumerable.Contains));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -2197,7 +2135,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Contains), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Contains)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -2235,7 +2173,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Distinct), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Distinct)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -2276,9 +2214,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Skip), map);
-                    Assert.Contains(nameof(Enumerable.Take), map);
-                    Assert.Contains(nameof(Enumerable.Sum), map);
+                    AssertMapContains(map, nameof(Enumerable.Skip), nameof(Enumerable.Take), nameof(Enumerable.Sum));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -2313,7 +2249,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Concat), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Concat)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -2349,9 +2285,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Where), map);
-                    Assert.Contains(nameof(Enumerable.Select), map);
-                    Assert.Contains(nameof(Enumerable.Sum), map);
+                    AssertMapContains(map, nameof(Enumerable.Where), nameof(Enumerable.Select), nameof(Enumerable.Sum));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -2389,8 +2323,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.OrderBy), map);
-                    Assert.Contains(nameof(Enumerable.OrderByDescending), map);
+                    AssertMapContains(map, nameof(Enumerable.OrderBy), nameof(Enumerable.OrderByDescending));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -2430,9 +2363,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Min), map);
-                    Assert.Contains(nameof(Enumerable.Max), map);
-                    Assert.Contains(nameof(Enumerable.Average), map);
+                    AssertMapContains(map, nameof(Enumerable.Min), nameof(Enumerable.Max), nameof(Enumerable.Average));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -2473,10 +2404,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Min), map);
-                    Assert.Contains(nameof(Enumerable.Max), map);
-                    Assert.Contains(nameof(Enumerable.Average), map);
-                    Assert.Contains(nameof(Enumerable.Sum), map);
+                    AssertMapContains(map, nameof(Enumerable.Min), nameof(Enumerable.Max), nameof(Enumerable.Average), nameof(Enumerable.Sum));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -2511,7 +2439,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Reverse), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Reverse)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -2548,8 +2476,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.TakeWhile), map);
-                    Assert.Contains(nameof(Enumerable.SkipWhile), map);
+                    AssertMapContains(map, nameof(Enumerable.TakeWhile), nameof(Enumerable.SkipWhile));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -2587,7 +2514,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Aggregate), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Aggregate)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -2622,7 +2549,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Zip), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Zip)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -2649,7 +2576,7 @@ namespace SlowTests.Client.Indexing
 
             var docs = new object[]
             {
-                new DocWithLongs { ULongValues = new ulong[0] },
+                new DocWithLongs { ULongValues = [] },
                 new DocWithLongs { ULongValues = [1UL] }
             };
 
@@ -2657,7 +2584,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.DefaultIfEmpty), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.DefaultIfEmpty)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -2695,7 +2622,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.GroupBy), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.GroupBy)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -2734,10 +2661,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.First), map);
-                    Assert.Contains(nameof(Enumerable.Last), map);
-                    Assert.Contains(nameof(Enumerable.Single), map);
-                    Assert.Contains(nameof(Enumerable.SingleOrDefault), map);
+                    AssertMapContains(map, nameof(Enumerable.First), nameof(Enumerable.Last), nameof(Enumerable.Single), nameof(Enumerable.SingleOrDefault));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -2783,9 +2707,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.All), map);
-                    Assert.Contains(nameof(Enumerable.Any), map);
-                    Assert.Contains(nameof(Enumerable.Count), map);
+                    AssertMapContains(map, nameof(Enumerable.All), nameof(Enumerable.Any), nameof(Enumerable.Count));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -2824,18 +2746,14 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.ElementAt), map);
-                    Assert.Contains(nameof(Enumerable.ElementAtOrDefault), map);
+                    AssertMapContains(map, nameof(Enumerable.ElementAt), nameof(Enumerable.ElementAtOrDefault));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
                     {
-                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValAt0 = 10 and ValAtIndex1 = 20").Count();
+                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValAt0 = 10 and ValAtIndex1 = 20 and ValAtDef = 0").Count();
                         Assert.Equal(1, count);
-
-                        var countDef = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValAtDef = null or ValAtDef = 0").Count();
-                        Assert.Equal(1, countDef);
                     }
                 });
         }
@@ -2850,6 +2768,7 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
+                        // ReSharper disable once RedundantEnumerableCastCall
                         OfTypeCount = doc.ULongValues.OfType<ulong>().Count()
                     }
             };
@@ -2865,7 +2784,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.OfType), map);
+                    AssertMapContains(map, nameof(Enumerable.OfType));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -2884,7 +2803,7 @@ namespace SlowTests.Client.Indexing
             var indexBuilder = new IndexDefinitionBuilder<DocWithLongs, object>
             {
                 Map = docs => from doc in docs
-                    let other = new ulong[] { 1UL, 3UL, 5UL }
+                    let other = new[] { 1UL, 3UL, 5UL }
                     select new
                     {
                         doc.Id,
@@ -2909,8 +2828,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Join), map);
-                    Assert.Contains(nameof(Enumerable.GroupJoin), map);
+                    AssertMapContains(map, nameof(Enumerable.Join), nameof(Enumerable.GroupJoin));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -2950,8 +2868,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.ToDictionary), map);
-                    Assert.Contains(nameof(Enumerable.ToLookup), map);
+                    AssertMapContains(map, nameof(Enumerable.ToDictionary), nameof(Enumerable.ToLookup));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -2994,8 +2911,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Intersect), map);
-                    Assert.Contains(nameof(Enumerable.Any), map);
+                    AssertMapContains(map, nameof(Enumerable.Intersect), nameof(Enumerable.Any));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -3036,7 +2952,7 @@ namespace SlowTests.Client.Indexing
                 indexBuilder,
                 docs,
                 additionalMapAsserts: map =>
-                    Assert.Contains(nameof(Enumerable.SequenceEqual), map),
+                    AssertMapContains(map, nameof(Enumerable.SequenceEqual)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -3079,8 +2995,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Except), map);
-                    Assert.Contains(nameof(Enumerable.Contains), map);
+                    AssertMapContains(map, nameof(Enumerable.Except), nameof(Enumerable.Contains));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -3124,8 +3039,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Union), map);
-                    Assert.Contains(nameof(Enumerable.Contains), map);
+                    AssertMapContains(map, nameof(Enumerable.Union), nameof(Enumerable.Contains));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -3164,7 +3078,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Contains), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Contains)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -3202,7 +3116,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Distinct), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Distinct)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -3242,9 +3156,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Skip), map);
-                    Assert.Contains(nameof(Enumerable.Take), map);
-                    Assert.Contains(nameof(Enumerable.Sum), map);
+                    AssertMapContains(map, nameof(Enumerable.Skip), nameof(Enumerable.Take), nameof(Enumerable.Sum));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -3280,7 +3192,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Concat), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Concat)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -3317,9 +3229,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Where), map);
-                    Assert.Contains(nameof(Enumerable.Select), map);
-                    Assert.Contains(nameof(Enumerable.Sum), map);
+                    AssertMapContains(map, nameof(Enumerable.Where), nameof(Enumerable.Select), nameof(Enumerable.Sum));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -3357,8 +3267,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.OrderBy), map);
-                    Assert.Contains(nameof(Enumerable.OrderByDescending), map);
+                    AssertMapContains(map, nameof(Enumerable.OrderBy), nameof(Enumerable.OrderByDescending));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -3398,10 +3307,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Sum), map);
-                    Assert.Contains(nameof(Enumerable.Average), map);
-                    Assert.Contains(nameof(Enumerable.Min), map);
-                    Assert.Contains(nameof(Enumerable.Max), map);
+                    AssertMapContains(map, nameof(Enumerable.Sum), nameof(Enumerable.Average), nameof(Enumerable.Min), nameof(Enumerable.Max));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -3447,10 +3353,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Min), map);
-                    Assert.Contains(nameof(Enumerable.Max), map);
-                    Assert.Contains(nameof(Enumerable.Average), map);
-                    Assert.Contains(nameof(Enumerable.Sum), map);
+                    AssertMapContains(map, nameof(Enumerable.Min), nameof(Enumerable.Max), nameof(Enumerable.Average), nameof(Enumerable.Sum));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -3485,7 +3388,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Reverse), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Reverse)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -3522,8 +3425,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.TakeWhile), map);
-                    Assert.Contains(nameof(Enumerable.SkipWhile), map);
+                    AssertMapContains(map, nameof(Enumerable.TakeWhile), nameof(Enumerable.SkipWhile));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -3560,7 +3462,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Aggregate), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Aggregate)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -3594,7 +3496,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Zip), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Zip)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -3613,7 +3515,7 @@ namespace SlowTests.Client.Indexing
             var indexBuilder = new IndexDefinitionBuilder<DocWithFloats, object>
             {
                 Map = docs => from doc in docs
-                    let other = new float[] { 2.0f, 5.0f }
+                    let other = new[] { 2.0f, 5.0f }
                     select new
                     {
                         doc.Id,
@@ -3639,8 +3541,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Join), map);
-                    Assert.Contains(nameof(Enumerable.GroupJoin), map);
+                    AssertMapContains(map, nameof(Enumerable.Join), nameof(Enumerable.GroupJoin));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -3668,7 +3569,7 @@ namespace SlowTests.Client.Indexing
 
             var docs = new object[]
             {
-                new DocWithFloats { Values = new float[0] },
+                new DocWithFloats { Values = [] },
                 new DocWithFloats { Values = [1.1f] }
             };
 
@@ -3676,7 +3577,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.DefaultIfEmpty), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.DefaultIfEmpty)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -3715,7 +3616,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.GroupBy), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.GroupBy)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -3754,10 +3655,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.First), map);
-                    Assert.Contains(nameof(Enumerable.Last), map);
-                    Assert.Contains(nameof(Enumerable.Single), map);
-                    Assert.Contains(nameof(Enumerable.SingleOrDefault), map);
+                    AssertMapContains(map, nameof(Enumerable.First), nameof(Enumerable.Last), nameof(Enumerable.Single), nameof(Enumerable.SingleOrDefault));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -3800,9 +3698,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.All), map);
-                    Assert.Contains(nameof(Enumerable.Any), map);
-                    Assert.Contains(nameof(Enumerable.Count), map);
+                    AssertMapContains(map, nameof(Enumerable.All), nameof(Enumerable.Any), nameof(Enumerable.Count));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -3841,18 +3737,14 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.ElementAt), map);
-                    Assert.Contains(nameof(Enumerable.ElementAtOrDefault), map);
+                    AssertMapContains(map, nameof(Enumerable.ElementAt), nameof(Enumerable.ElementAtOrDefault));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
                     {
-                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValAt0 = 10.5 and ValAtIndex1 = 20.5").Count();
+                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValAt0 = 10.5 and ValAtIndex1 = 20.5 and ValAtDef = 0.0").Count();
                         Assert.Equal(1, count);
-
-                        var countDef = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValAtDef = null or ValAtDef = 0.0").Count();
-                        Assert.Equal(1, countDef);
                     }
                 });
         }
@@ -3867,6 +3759,7 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
+                        // ReSharper disable once RedundantEnumerableCastCall
                         OfTypeCount = doc.Values.OfType<float>().Count()
                     }
             };
@@ -3882,7 +3775,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.OfType), map);
+                    AssertMapContains(map, nameof(Enumerable.OfType));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -3922,8 +3815,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.ToDictionary), map);
-                    Assert.Contains(nameof(Enumerable.ToLookup), map);
+                    AssertMapContains(map, nameof(Enumerable.ToDictionary), nameof(Enumerable.ToLookup));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -3968,8 +3860,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Intersect), map);
-                    Assert.Contains(nameof(Enumerable.Any), map);
+                    AssertMapContains(map, nameof(Enumerable.Intersect), nameof(Enumerable.Any));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -4010,7 +3901,7 @@ namespace SlowTests.Client.Indexing
                 indexBuilder,
                 docs,
                 additionalMapAsserts: map =>
-                    Assert.Contains(nameof(Enumerable.SequenceEqual), map),
+                    AssertMapContains(map, nameof(Enumerable.SequenceEqual)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -4053,8 +3944,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Except), map);
-                    Assert.Contains(nameof(Enumerable.Contains), map);
+                    AssertMapContains(map, nameof(Enumerable.Except), nameof(Enumerable.Contains));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -4098,8 +3988,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Union), map);
-                    Assert.Contains(nameof(Enumerable.Contains), map);
+                    AssertMapContains(map, nameof(Enumerable.Union), nameof(Enumerable.Contains));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -4138,7 +4027,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Contains), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Contains)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -4176,7 +4065,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Distinct), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Distinct)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -4217,8 +4106,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Skip), map);
-                    Assert.Contains(nameof(Enumerable.Take), map);
+                    AssertMapContains(map, nameof(Enumerable.Skip), nameof(Enumerable.Take));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -4253,7 +4141,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Concat), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Concat)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -4290,9 +4178,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Where), map);
-                    Assert.Contains(nameof(Enumerable.Select), map);
-                    Assert.Contains(nameof(Enumerable.Sum), map);
+                    AssertMapContains(map, nameof(Enumerable.Where), nameof(Enumerable.Select), nameof(Enumerable.Sum));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -4331,8 +4217,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.OrderBy), map);
-                    Assert.Contains(nameof(Enumerable.OrderByDescending), map);
+                    AssertMapContains(map, nameof(Enumerable.OrderBy), nameof(Enumerable.OrderByDescending));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -4371,9 +4256,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Min), map);
-                    Assert.Contains(nameof(Enumerable.Max), map);
-                    Assert.Contains(nameof(Enumerable.Average), map);
+                    AssertMapContains(map, nameof(Enumerable.Min), nameof(Enumerable.Max), nameof(Enumerable.Average));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -4419,10 +4302,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Min), map);
-                    Assert.Contains(nameof(Enumerable.Max), map);
-                    Assert.Contains(nameof(Enumerable.Average), map);
-                    Assert.Contains(nameof(Enumerable.Sum), map);
+                    AssertMapContains(map, nameof(Enumerable.Min), nameof(Enumerable.Max), nameof(Enumerable.Average), nameof(Enumerable.Sum));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -4457,7 +4337,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Reverse), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Reverse)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -4495,8 +4375,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.TakeWhile), map);
-                    Assert.Contains(nameof(Enumerable.SkipWhile), map);
+                    AssertMapContains(map, nameof(Enumerable.TakeWhile), nameof(Enumerable.SkipWhile));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -4533,7 +4412,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Aggregate), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Aggregate)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -4567,7 +4446,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Zip), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Zip)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -4594,7 +4473,7 @@ namespace SlowTests.Client.Indexing
 
             var docs = new object[]
             {
-                new DocWithDoubles { Values = new double[0] },
+                new DocWithDoubles { Values = [] },
                 new DocWithDoubles { Values = [1.1] }
             };
 
@@ -4602,7 +4481,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.DefaultIfEmpty), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.DefaultIfEmpty)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -4627,7 +4506,7 @@ namespace SlowTests.Client.Indexing
                     {
                         doc.Id,
                         // Group by Math.Floor. 1.1 and 1.9 -> 1 (count 2). 2.2 -> 2 (count 1).
-                        GroupsCount = doc.Values.GroupBy(x => Math.Floor((double)x)).Count()
+                        GroupsCount = doc.Values.GroupBy(x => Math.Floor(x)).Count()
                     }
             };
 
@@ -4640,7 +4519,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.GroupBy), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.GroupBy)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -4663,8 +4542,10 @@ namespace SlowTests.Client.Indexing
                         doc.Id,
                         FirstGt = doc.Values.First(x => x > 2.0),
                         LastGt = doc.Values.Last(x => x > 2.0),
+                        // ReSharper disable once CompareOfFloatsByEqualityOperator
                         SingleVal = doc.Values.Single(x => x == 3.3),
-                        SingleOrDefaultVal = doc.Values.SingleOrDefault(x => x == 99.9) // Should be null (or default)
+                        // ReSharper disable once CompareOfFloatsByEqualityOperator
+                        SingleOrDefaultVal = doc.Values.SingleOrDefault(x => x == 99.9) // Should be default
                     }
             };
 
@@ -4679,10 +4560,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.First), map);
-                    Assert.Contains(nameof(Enumerable.Last), map);
-                    Assert.Contains(nameof(Enumerable.Single), map);
-                    Assert.Contains(nameof(Enumerable.SingleOrDefault), map);
+                    AssertMapContains(map, nameof(Enumerable.First), nameof(Enumerable.Last), nameof(Enumerable.Single), nameof(Enumerable.SingleOrDefault));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -4732,9 +4610,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.All), map);
-                    Assert.Contains(nameof(Enumerable.Any), map);
-                    Assert.Contains(nameof(Enumerable.Count), map);
+                    AssertMapContains(map, nameof(Enumerable.All), nameof(Enumerable.Any), nameof(Enumerable.Count));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -4773,18 +4649,14 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.ElementAt), map);
-                    Assert.Contains(nameof(Enumerable.ElementAtOrDefault), map);
+                    AssertMapContains(map, nameof(Enumerable.ElementAt), nameof(Enumerable.ElementAtOrDefault));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
                     {
-                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValAt0 = 1.1 and ValAtIndex1 = 2.2").Count();
+                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValAt0 = 1.1 and ValAtIndex1 = 2.2 and ValAtDef = 0").Count();
                         Assert.Equal(1, count);
-
-                        var countDef = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValAtDef = null or ValAtDef = 0").Count();
-                        Assert.Equal(1, countDef);
                     }
                 });
         }
@@ -4799,6 +4671,7 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
+                        // ReSharper disable once RedundantEnumerableCastCall
                         OfTypeCount = doc.Values.OfType<double>().Count()
                     }
             };
@@ -4814,7 +4687,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.OfType), map);
+                    AssertMapContains(map, nameof(Enumerable.OfType));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -4833,7 +4706,7 @@ namespace SlowTests.Client.Indexing
             var indexBuilder = new IndexDefinitionBuilder<DocWithDoubles, object>
             {
                 Map = docs => from doc in docs
-                    let other = new double[] { 1.1, 3.3, 5.5 }
+                    let other = new[] { 1.1, 3.3, 5.5 }
                     select new
                     {
                         doc.Id,
@@ -4856,8 +4729,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Join), map);
-                    Assert.Contains(nameof(Enumerable.GroupJoin), map);
+                    AssertMapContains(map, nameof(Enumerable.Join), nameof(Enumerable.GroupJoin));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -4883,7 +4755,7 @@ namespace SlowTests.Client.Indexing
                         doc.Id,
                         DictCount = doc.Values.ToDictionary(k => k, v => v * 10).Count(),
                         // Lookup by Math.Floor. [1.1, 1.9, 2.2] -> Keys: 1 (vals 1.1,1.9), 2 (val 2.2)
-                        LookupCount = doc.Values.ToLookup(k => Math.Floor((double)k)).Count()
+                        LookupCount = doc.Values.ToLookup(k => Math.Floor(k)).Count()
                     }
             };
 
@@ -4898,8 +4770,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.ToDictionary), map);
-                    Assert.Contains(nameof(Enumerable.ToLookup), map);
+                    AssertMapContains(map, nameof(Enumerable.ToDictionary), nameof(Enumerable.ToLookup));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -4942,8 +4813,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Intersect), map);
-                    Assert.Contains(nameof(Enumerable.Any), map);
+                    AssertMapContains(map, nameof(Enumerable.Intersect), nameof(Enumerable.Any));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -4980,7 +4850,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.SequenceEqual), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.SequenceEqual)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -5018,8 +4888,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Union), map);
-                    Assert.Contains(nameof(Enumerable.Contains), map);
+                    AssertMapContains(map, nameof(Enumerable.Union), nameof(Enumerable.Contains));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -5058,8 +4927,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Except), map);
-                    Assert.Contains(nameof(Enumerable.Contains), map);
+                    AssertMapContains(map, nameof(Enumerable.Except), nameof(Enumerable.Contains));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -5094,7 +4962,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Concat), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Concat)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -5131,8 +4999,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Contains), map);
-                    Assert.Contains(nameof(Enumerable.Distinct), map);
+                    AssertMapContains(map, nameof(Enumerable.Contains), nameof(Enumerable.Distinct));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -5172,10 +5039,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Sum), map);
-                    Assert.Contains(nameof(Enumerable.Average), map);
-                    Assert.Contains(nameof(Enumerable.Min), map);
-                    Assert.Contains(nameof(Enumerable.Max), map);
+                    AssertMapContains(map, nameof(Enumerable.Sum), nameof(Enumerable.Average), nameof(Enumerable.Min), nameof(Enumerable.Max));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -5221,10 +5085,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Min), map);
-                    Assert.Contains(nameof(Enumerable.Max), map);
-                    Assert.Contains(nameof(Enumerable.Average), map);
-                    Assert.Contains(nameof(Enumerable.Sum), map);
+                    AssertMapContains(map, nameof(Enumerable.Min), nameof(Enumerable.Max), nameof(Enumerable.Average), nameof(Enumerable.Sum));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -5261,8 +5122,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Where), map);
-                    Assert.Contains(nameof(Enumerable.Select), map);
+                    AssertMapContains(map, nameof(Enumerable.Where), nameof(Enumerable.Select));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -5297,7 +5157,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Reverse), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Reverse)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -5333,8 +5193,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Skip), map);
-                    Assert.Contains(nameof(Enumerable.Take), map);
+                    AssertMapContains(map, nameof(Enumerable.Skip), nameof(Enumerable.Take));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -5372,8 +5231,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.TakeWhile), map);
-                    Assert.Contains(nameof(Enumerable.SkipWhile), map);
+                    AssertMapContains(map, nameof(Enumerable.TakeWhile), nameof(Enumerable.SkipWhile));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -5410,7 +5268,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Aggregate), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Aggregate)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -5444,7 +5302,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Zip), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Zip)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -5462,7 +5320,7 @@ namespace SlowTests.Client.Indexing
             var indexBuilder = new IndexDefinitionBuilder<DocWithDecimals, object>
             {
                 Map = docs => from doc in docs
-                    let other = new decimal[] { 2.0m, 5.0m }
+                    let other = new[] { 2.0m, 5.0m }
                     select new
                     {
                         doc.Id,
@@ -5486,8 +5344,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Join), map);
-                    Assert.Contains(nameof(Enumerable.GroupJoin), map);
+                    AssertMapContains(map, nameof(Enumerable.Join), nameof(Enumerable.GroupJoin));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -5526,9 +5383,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Any), map);
-                    Assert.Contains(nameof(Enumerable.All), map);
-                    Assert.Contains(nameof(Enumerable.Count), map);
+                    AssertMapContains(map, nameof(Enumerable.Any), nameof(Enumerable.All), nameof(Enumerable.Count));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -5568,10 +5423,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.First), map);
-                    Assert.Contains(nameof(Enumerable.Last), map);
-                    Assert.Contains(nameof(Enumerable.Single), map);
-                    Assert.Contains(nameof(Enumerable.SingleOrDefault), map);
+                    AssertMapContains(map, nameof(Enumerable.First), nameof(Enumerable.Last), nameof(Enumerable.Single), nameof(Enumerable.SingleOrDefault));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -5614,18 +5466,14 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.ElementAt), map);
-                    Assert.Contains(nameof(Enumerable.ElementAtOrDefault), map);
+                    AssertMapContains(map, nameof(Enumerable.ElementAt), nameof(Enumerable.ElementAtOrDefault));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
                     {
-                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValAt1 = 2.0 and ValAtIdx = 1.0").Count();
+                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValAt1 = 2.0 and ValAtIdx = 1.0 and ValDef = 0").Count();
                         Assert.Equal(1, count);
-
-                        var countDef = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValDef = null or ValDef = 0").Count();
-                        Assert.Equal(1, countDef);
                     }
                 });
         }
@@ -5656,8 +5504,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.OrderBy), map);
-                    Assert.Contains(nameof(Enumerable.OrderByDescending), map);
+                    AssertMapContains(map, nameof(Enumerable.OrderBy), nameof(Enumerable.OrderByDescending));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -5693,7 +5540,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.GroupBy), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.GroupBy)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -5714,6 +5561,7 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
+                        // ReSharper disable once RedundantEnumerableCastCall
                         OfTypeCount = doc.Values.OfType<decimal>().Count()
                     }
             };
@@ -5729,7 +5577,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.OfType), map);
+                    AssertMapContains(map, nameof(Enumerable.OfType));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -5768,8 +5616,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.ToDictionary), map);
-                    Assert.Contains(nameof(Enumerable.ToLookup), map);
+                    AssertMapContains(map, nameof(Enumerable.ToDictionary), nameof(Enumerable.ToLookup));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -5797,14 +5644,14 @@ namespace SlowTests.Client.Indexing
 
             var docs = new object[]
             {
-                new DocWithDecimals { Values = new decimal[0] }
+                new DocWithDecimals { Values = [] }
             };
 
             AssertIndexBuilderRewritesAndRunsCorrectly(
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.DefaultIfEmpty), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.DefaultIfEmpty)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -5846,8 +5693,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Intersect), map);
-                    Assert.Contains(nameof(Enumerable.Any), map);
+                    AssertMapContains(map, nameof(Enumerable.Intersect), nameof(Enumerable.Any));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -5888,7 +5734,7 @@ namespace SlowTests.Client.Indexing
                 indexBuilder,
                 docs,
                 additionalMapAsserts: map =>
-                    Assert.Contains(nameof(Enumerable.SequenceEqual), map),
+                    AssertMapContains(map, nameof(Enumerable.SequenceEqual)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -5931,8 +5777,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Except), map);
-                    Assert.Contains(nameof(Enumerable.Contains), map);
+                    AssertMapContains(map, nameof(Enumerable.Except), nameof(Enumerable.Contains));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -5976,8 +5821,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Union), map);
-                    Assert.Contains(nameof(Enumerable.Contains), map);
+                    AssertMapContains(map, nameof(Enumerable.Union), nameof(Enumerable.Contains));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -6016,7 +5860,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Contains), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Contains)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -6054,7 +5898,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Distinct), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Distinct)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -6092,7 +5936,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Reverse), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Reverse)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -6127,7 +5971,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Concat), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Concat)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -6164,8 +6008,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Min), map);
-                    Assert.Contains(nameof(Enumerable.Max), map);
+                    AssertMapContains(map, nameof(Enumerable.Min), nameof(Enumerable.Max));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -6188,6 +6031,7 @@ namespace SlowTests.Client.Indexing
                     {
                         doc.Id,
                         // StartsWith 'a'
+                        // ReSharper disable once ReplaceWithSingleCallToCount
                         ACount = doc.Tags.Where(x => x.StartsWith("a")).Count()
                     }
             };
@@ -6201,7 +6045,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Where), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Where)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -6235,7 +6079,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.OrderBy), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.OrderBy)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -6271,8 +6115,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Skip), map);
-                    Assert.Contains(nameof(Enumerable.Take), map);
+                    AssertMapContains(map, nameof(Enumerable.Skip), nameof(Enumerable.Take));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -6307,7 +6150,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Aggregate), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Aggregate)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -6341,7 +6184,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Zip), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Zip)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -6379,8 +6222,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Join), map);
-                    Assert.Contains(nameof(Enumerable.GroupJoin), map);
+                    AssertMapContains(map, nameof(Enumerable.Join), nameof(Enumerable.GroupJoin));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -6392,14 +6234,6 @@ namespace SlowTests.Client.Indexing
                         Assert.Equal(1, count);
                     }
                 });
-        }
-
-
-        record IndexEntry
-        {
-            public string ValAtIndex { get; set; }
-            public string ValAt { get; set; }
-            public string ValAtDef { get; set; }
         }
 
         [RavenTheory(RavenTestCategory.Indexes)]
@@ -6430,8 +6264,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.ElementAt), map);
-                    Assert.Contains(nameof(Enumerable.ElementAtOrDefault), map);
+                    AssertMapContains(map, nameof(Enumerable.ElementAt), nameof(Enumerable.ElementAtOrDefault));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -6466,7 +6299,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.GroupBy), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.GroupBy)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -6495,14 +6328,14 @@ namespace SlowTests.Client.Indexing
 
             var docs = new object[]
             {
-                new DocWithStrings { Tags = new string[0] }
+                new DocWithStrings { Tags = [] }
             };
 
             AssertIndexBuilderRewritesAndRunsCorrectly(
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.DefaultIfEmpty), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.DefaultIfEmpty)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -6541,10 +6374,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.First), map);
-                    Assert.Contains(nameof(Enumerable.LastOrDefault), map);
-                    Assert.Contains(nameof(Enumerable.Single), map);
-                    Assert.Contains(nameof(Enumerable.SingleOrDefault), map);
+                    AssertMapContains(map, nameof(Enumerable.First), nameof(Enumerable.LastOrDefault), nameof(Enumerable.Single), nameof(Enumerable.SingleOrDefault));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -6592,9 +6422,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.All), map);
-                    Assert.Contains(nameof(Enumerable.Any), map);
-                    Assert.Contains(nameof(Enumerable.Count), map);
+                    AssertMapContains(map, nameof(Enumerable.All), nameof(Enumerable.Any), nameof(Enumerable.Count));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -6634,10 +6462,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Min), map);
-                    Assert.Contains(nameof(Enumerable.Max), map);
-                    Assert.Contains(nameof(Enumerable.Average), map);
-                    Assert.Contains(nameof(Enumerable.Sum), map);
+                    AssertMapContains(map, nameof(Enumerable.Min), nameof(Enumerable.Max), nameof(Enumerable.Average), nameof(Enumerable.Sum));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -6677,8 +6502,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.TakeWhile), map);
-                    Assert.Contains(nameof(Enumerable.SkipWhile), map);
+                    AssertMapContains(map, nameof(Enumerable.TakeWhile), nameof(Enumerable.SkipWhile));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -6700,6 +6524,7 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
+                        // ReSharper disable once RedundantEnumerableCastCall
                         OfTypeCount = doc.Tags.OfType<string>().Count()
                     }
             };
@@ -6715,7 +6540,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.OfType), map);
+                    AssertMapContains(map, nameof(Enumerable.OfType));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -6755,8 +6580,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.ToDictionary), map);
-                    Assert.Contains(nameof(Enumerable.ToLookup), map);
+                    AssertMapContains(map, nameof(Enumerable.ToDictionary), nameof(Enumerable.ToLookup));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -6801,8 +6625,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Intersect), map);
-                    Assert.Contains(nameof(Enumerable.Any), map);
+                    AssertMapContains(map, nameof(Enumerable.Intersect), nameof(Enumerable.Any));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -6839,7 +6662,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.SequenceEqual), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.SequenceEqual)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -6877,8 +6700,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Except), map);
-                    Assert.Contains(nameof(Enumerable.Contains), map);
+                    AssertMapContains(map, nameof(Enumerable.Except), nameof(Enumerable.Contains));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -6916,8 +6738,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Union), map);
-                    Assert.Contains(nameof(Enumerable.Contains), map);
+                    AssertMapContains(map, nameof(Enumerable.Union), nameof(Enumerable.Contains));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -6953,7 +6774,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Contains), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Contains)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -6990,7 +6811,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Distinct), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Distinct)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -7024,7 +6845,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Concat), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Concat)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -7065,8 +6886,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Min), map);
-                    Assert.Contains(nameof(Enumerable.Max), map);
+                    AssertMapContains(map, nameof(Enumerable.Min), nameof(Enumerable.Max));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -7107,10 +6927,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Min), map);
-                    Assert.Contains(nameof(Enumerable.Max), map);
-                    Assert.Contains(nameof(Enumerable.Average), map);
-                    Assert.Contains(nameof(Enumerable.Sum), map);
+                    AssertMapContains(map, nameof(Enumerable.Min), nameof(Enumerable.Max), nameof(Enumerable.Average), nameof(Enumerable.Sum));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -7152,9 +6969,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Where), map);
-                    Assert.Contains(nameof(Enumerable.Select), map);
-                    Assert.Contains(nameof(Enumerable.Sum), map);
+                    AssertMapContains(map, nameof(Enumerable.Where), nameof(Enumerable.Select), nameof(Enumerable.Sum));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -7194,9 +7009,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Any), map);
-                    Assert.Contains(nameof(Enumerable.All), map);
-                    Assert.Contains(nameof(Enumerable.Count), map);
+                    AssertMapContains(map, nameof(Enumerable.Any), nameof(Enumerable.All), nameof(Enumerable.Count));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -7239,10 +7052,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.First), map);
-                    Assert.Contains(nameof(Enumerable.Last), map);
-                    Assert.Contains(nameof(Enumerable.Single), map);
-                    Assert.Contains(nameof(Enumerable.SingleOrDefault), map);
+                    AssertMapContains(map, nameof(Enumerable.First), nameof(Enumerable.Last), nameof(Enumerable.Single), nameof(Enumerable.SingleOrDefault));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -7291,8 +7101,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.OrderBy), map);
-                    Assert.Contains(nameof(Enumerable.OrderByDescending), map);
+                    AssertMapContains(map, nameof(Enumerable.OrderBy), nameof(Enumerable.OrderByDescending));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -7330,7 +7139,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Reverse), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Reverse)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -7370,8 +7179,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Skip), map);
-                    Assert.Contains(nameof(Enumerable.Take), map);
+                    AssertMapContains(map, nameof(Enumerable.Skip), nameof(Enumerable.Take));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -7409,8 +7217,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.TakeWhile), map);
-                    Assert.Contains(nameof(Enumerable.SkipWhile), map);
+                    AssertMapContains(map, nameof(Enumerable.TakeWhile), nameof(Enumerable.SkipWhile));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -7447,7 +7254,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Aggregate), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Aggregate)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -7483,7 +7290,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Zip), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Zip)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -7501,7 +7308,7 @@ namespace SlowTests.Client.Indexing
             var indexBuilder = new IndexDefinitionBuilder<DocWithDates, object>
             {
                 Map = docs => from doc in docs
-                    let other = new DateTime[] { new DateTime(2000, 1, 1), new DateTime(2010, 1, 1) }
+                    let other = new[] { new DateTime(2000, 1, 1), new DateTime(2010, 1, 1) }
                     select new
                     {
                         doc.Id,
@@ -7521,8 +7328,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Join), map);
-                    Assert.Contains(nameof(Enumerable.GroupJoin), map);
+                    AssertMapContains(map, nameof(Enumerable.Join), nameof(Enumerable.GroupJoin));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -7561,18 +7367,14 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.ElementAt), map);
-                    Assert.Contains(nameof(Enumerable.ElementAtOrDefault), map);
+                    AssertMapContains(map, nameof(Enumerable.ElementAt), nameof(Enumerable.ElementAtOrDefault));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
                     {
-                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where Val0 = '2000-01-01T00:00:00.0000000' and Val1 = '2010-01-01T00:00:00.0000000'").Count();
+                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where Val0 = '2000-01-01T00:00:00.0000000' and Val1 = '2010-01-01T00:00:00.0000000' and ValDef = '{DateTime.MinValue:o}'").Count();
                         Assert.Equal(1, count);
-
-                        var countDef = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValDef = '{DateTime.MinValue:o}'").Count();
-                        Assert.Equal(1, countDef);
                     }
                 });
         }
@@ -7587,6 +7389,7 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
+                        // ReSharper disable once RedundantEnumerableCastCall
                         OfTypeCount = doc.ImportantDates.OfType<DateTime>().Count()
                     }
             };
@@ -7602,7 +7405,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.OfType), map);
+                    AssertMapContains(map, nameof(Enumerable.OfType));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -7637,7 +7440,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.GroupBy), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.GroupBy)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -7671,7 +7474,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.DefaultIfEmpty), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.DefaultIfEmpty)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -7708,8 +7511,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.ToDictionary), map);
-                    Assert.Contains(nameof(Enumerable.ToLookup), map);
+                    AssertMapContains(map, nameof(Enumerable.ToDictionary), nameof(Enumerable.ToLookup));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -7751,8 +7553,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Intersect), map);
-                    Assert.Contains(nameof(Enumerable.Any), map);
+                    AssertMapContains(map, nameof(Enumerable.Intersect), nameof(Enumerable.Any));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -7775,7 +7576,7 @@ namespace SlowTests.Client.Indexing
                     {
                         doc.Id,
                         HasUnionValue = doc.Values
-                            .Union(new char[] { 'z' })
+                            .Union(new[] { 'z' })
                             .Contains('z')
                     }
             };
@@ -7791,8 +7592,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Union), map);
-                    Assert.Contains(nameof(Enumerable.Contains), map);
+                    AssertMapContains(map, nameof(Enumerable.Union), nameof(Enumerable.Contains));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -7815,7 +7615,7 @@ namespace SlowTests.Client.Indexing
                     {
                         doc.Id,
                         HasRemaining = doc.Values
-                            .Except(new char[] { 'a' })
+                            .Except(new[] { 'a' })
                             .Contains('b')
                     }
             };
@@ -7831,8 +7631,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Except), map);
-                    Assert.Contains(nameof(Enumerable.Contains), map);
+                    AssertMapContains(map, nameof(Enumerable.Except), nameof(Enumerable.Contains));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -7868,7 +7667,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.SequenceEqual), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.SequenceEqual)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -7905,8 +7704,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.OrderBy), map);
-                    Assert.Contains(nameof(Enumerable.OrderByDescending), map);
+                    AssertMapContains(map, nameof(Enumerable.OrderBy), nameof(Enumerable.OrderByDescending));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -7942,7 +7740,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Contains), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Contains)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -7979,9 +7777,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Where), map);
-                    Assert.Contains(nameof(Enumerable.Select), map);
-                    Assert.Contains(nameof(Enumerable.Sum), map);
+                    AssertMapContains(map, nameof(Enumerable.Where), nameof(Enumerable.Select), nameof(Enumerable.Sum));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -8016,7 +7812,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Distinct), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Distinct)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -8050,7 +7846,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Reverse), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Reverse)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -8086,8 +7882,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Skip), map);
-                    Assert.Contains(nameof(Enumerable.Take), map);
+                    AssertMapContains(map, nameof(Enumerable.Skip), nameof(Enumerable.Take));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -8125,8 +7920,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Min), map);
-                    Assert.Contains(nameof(Enumerable.Max), map);
+                    AssertMapContains(map, nameof(Enumerable.Min), nameof(Enumerable.Max));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -8161,7 +7955,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Concat), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Concat)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -8184,7 +7978,7 @@ namespace SlowTests.Client.Indexing
                         doc.Id,
                         ValAtIndex = doc.Values.ElementAt(1),
                         ValAtIdx = doc.Values[1],
-                        ValDef = doc.Values.ElementAtOrDefault(10) // should be default char \0 or null in dynamic
+                        ValDef = doc.Values.ElementAtOrDefault(10) // should be default char \0
                     }
             };
 
@@ -8199,18 +7993,14 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.ElementAt), map);
-                    Assert.Contains(nameof(Enumerable.ElementAtOrDefault), map);
+                    AssertMapContains(map, nameof(Enumerable.ElementAt), nameof(Enumerable.ElementAtOrDefault));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
                     {
-                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValAtIndex = 'b' and ValAtIdx = 'b'").Count();
+                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValAtIndex = 'b' and ValAtIdx = 'b' and (ValDef = '\\u0000' or ValDef = null)").Count(); // TODO: We are getting different results for the default value with Lucene and Corax. Both of them should (?) return `'\u0000'`.
                         Assert.Equal(1, count);
-
-                        var countDef = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValDef = null or ValDef = '\\u0000'").Count();
-                        Assert.Equal(1, countDef);
                     }
                 });
         }
@@ -8243,10 +8033,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.First), map);
-                    Assert.Contains(nameof(Enumerable.Last), map);
-                    Assert.Contains(nameof(Enumerable.Single), map);
-                    Assert.Contains(nameof(Enumerable.SingleOrDefault), map);
+                    AssertMapContains(map, nameof(Enumerable.First), nameof(Enumerable.Last), nameof(Enumerable.Single), nameof(Enumerable.SingleOrDefault));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -8254,11 +8041,8 @@ namespace SlowTests.Client.Indexing
                     {
                         // First > 'a' is 'b'
                         // Last < 'z' is 'c'
-                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where FirstMatch = 'b' and LastMatch = 'c' and SingleMatch = 'b'").Count();
+                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where FirstMatch = 'b' and LastMatch = 'c' and SingleMatch = 'b' and (SingleDefMatch = null or SingleDefMatch = '\\u0000')").Count(); // TODO: We are getting different results for the default value with Lucene and Corax. Both of them should (?) return `'\u0000'`.
                         Assert.Equal(1, count);
-
-                        var countDef = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where SingleDefMatch = null or SingleDefMatch = '\\u0000'").Count();
-                        Assert.Equal(1, countDef);
                     }
                 });
         }
@@ -8290,9 +8074,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.All), map);
-                    Assert.Contains(nameof(Enumerable.Any), map);
-                    Assert.Contains(nameof(Enumerable.Count), map);
+                    AssertMapContains(map, nameof(Enumerable.All), nameof(Enumerable.Any), nameof(Enumerable.Count));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -8331,7 +8113,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Aggregate), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Aggregate)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -8366,7 +8148,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Zip), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Zip)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -8393,7 +8175,7 @@ namespace SlowTests.Client.Indexing
 
             var docs = new object[]
             {
-                new DocWithChars { Values = new char[0] },
+                new DocWithChars { Values = [] },
                 new DocWithChars { Values = ['a'] }
             };
 
@@ -8401,7 +8183,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.DefaultIfEmpty), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.DefaultIfEmpty)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -8444,8 +8226,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.TakeWhile), map);
-                    Assert.Contains(nameof(Enumerable.SkipWhile), map);
+                    AssertMapContains(map, nameof(Enumerable.TakeWhile), nameof(Enumerable.SkipWhile));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -8485,8 +8266,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.ToDictionary), map);
-                    Assert.Contains(nameof(Enumerable.ToLookup), map);
+                    AssertMapContains(map, nameof(Enumerable.ToDictionary), nameof(Enumerable.ToLookup));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -8505,7 +8285,7 @@ namespace SlowTests.Client.Indexing
             var indexBuilder = new IndexDefinitionBuilder<DocWithChars, object>
             {
                 Map = docs => from doc in docs
-                    let other = new char[] { 'a', 'c' }
+                    let other = new[] { 'a', 'c' }
                     select new
                     {
                         doc.Id,
@@ -8528,8 +8308,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Join), map);
-                    Assert.Contains(nameof(Enumerable.GroupJoin), map);
+                    AssertMapContains(map, nameof(Enumerable.Join), nameof(Enumerable.GroupJoin));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -8564,7 +8343,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.GroupBy), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.GroupBy)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -8585,7 +8364,7 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
-                        Avg = doc.Values.Average(c => (int)c)
+                        Avg = doc.Values.Average(c => c)
                     }
             };
 
@@ -8600,7 +8379,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Average), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Average)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -8641,8 +8420,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Intersect), map);
-                    Assert.Contains(nameof(Enumerable.Any), map);
+                    AssertMapContains(map, nameof(Enumerable.Intersect), nameof(Enumerable.Any));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -8678,7 +8456,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.SequenceEqual), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.SequenceEqual)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -8715,8 +8493,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Except), map);
-                    Assert.Contains(nameof(Enumerable.Single), map);
+                    AssertMapContains(map, nameof(Enumerable.Except), nameof(Enumerable.Single));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -8752,7 +8529,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Union), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Union)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -8787,7 +8564,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Contains), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Contains)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -8822,7 +8599,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Distinct), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Distinct)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -8858,8 +8635,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Skip), map);
-                    Assert.Contains(nameof(Enumerable.Take), map);
+                    AssertMapContains(map, nameof(Enumerable.Skip), nameof(Enumerable.Take));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -8894,7 +8670,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Concat), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Concat)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -8931,8 +8707,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Where), map);
-                    Assert.Contains(nameof(Enumerable.Select), map);
+                    AssertMapContains(map, nameof(Enumerable.Where), nameof(Enumerable.Select));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -8970,8 +8745,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.OrderBy), map);
-                    Assert.Contains(nameof(Enumerable.OrderByDescending), map);
+                    AssertMapContains(map, nameof(Enumerable.OrderBy), nameof(Enumerable.OrderByDescending));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -9020,10 +8794,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Sum), map);
-                    Assert.Contains(nameof(Enumerable.Min), map);
-                    Assert.Contains(nameof(Enumerable.Max), map);
-                    Assert.Contains(nameof(Enumerable.Average), map);
+                    AssertMapContains(map, nameof(Enumerable.Sum), nameof(Enumerable.Min), nameof(Enumerable.Max), nameof(Enumerable.Average));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -9058,7 +8829,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Reverse), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Reverse)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -9096,8 +8867,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.TakeWhile), map);
-                    Assert.Contains(nameof(Enumerable.SkipWhile), map);
+                    AssertMapContains(map, nameof(Enumerable.TakeWhile), nameof(Enumerable.SkipWhile));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -9135,7 +8905,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Aggregate), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Aggregate)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -9170,7 +8940,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.Zip), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.Zip)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -9197,7 +8967,7 @@ namespace SlowTests.Client.Indexing
 
             var docs = new object[]
             {
-                new DocWithBools { Values = new bool[0] },
+                new DocWithBools { Values = [] },
                 new DocWithBools { Values = [false] }
             };
 
@@ -9205,7 +8975,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.DefaultIfEmpty), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.DefaultIfEmpty)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -9245,7 +9015,7 @@ namespace SlowTests.Client.Indexing
                 options,
                 indexBuilder,
                 docs,
-                additionalMapAsserts: map => Assert.Contains(nameof(Enumerable.GroupBy), map),
+                additionalMapAsserts: map => AssertMapContains(map, nameof(Enumerable.GroupBy)),
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
@@ -9284,10 +9054,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.First), map);
-                    Assert.Contains(nameof(Enumerable.Last), map);
-                    Assert.Contains(nameof(Enumerable.Single), map);
-                    Assert.Contains(nameof(Enumerable.SingleOrDefault), map);
+                    AssertMapContains(map, nameof(Enumerable.First), nameof(Enumerable.Last), nameof(Enumerable.Single), nameof(Enumerable.SingleOrDefault));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -9326,9 +9093,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.All), map);
-                    Assert.Contains(nameof(Enumerable.Any), map);
-                    Assert.Contains(nameof(Enumerable.Count), map);
+                    AssertMapContains(map, nameof(Enumerable.All), nameof(Enumerable.Any), nameof(Enumerable.Count));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -9370,18 +9135,14 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.ElementAt), map);
-                    Assert.Contains(nameof(Enumerable.ElementAtOrDefault), map);
+                    AssertMapContains(map, nameof(Enumerable.ElementAt), nameof(Enumerable.ElementAtOrDefault));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
                     using (var session = store.OpenSession())
                     {
-                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValAt0 = true and ValAtIndex1 = false").Count();
+                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValAt0 = true and ValAtIndex1 = false and ValAtDef = false").Count();
                         Assert.Equal(1, count);
-
-                        var countDef = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValAtDef = false or ValAtDef = null").Count();
-                        Assert.Equal(1, countDef);
                     }
                 });
         }
@@ -9396,6 +9157,7 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
+                        // ReSharper disable once RedundantEnumerableCastCall
                         OfTypeCount = doc.Values.OfType<bool>().Count()
                     }
             };
@@ -9411,7 +9173,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.OfType), map);
+                    AssertMapContains(map, nameof(Enumerable.OfType));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -9430,7 +9192,7 @@ namespace SlowTests.Client.Indexing
             var indexBuilder = new IndexDefinitionBuilder<DocWithBools, object>
             {
                 Map = docs => from doc in docs
-                    let other = new bool[] { true }
+                    let other = new[] { true }
                     select new
                     {
                         doc.Id,
@@ -9455,8 +9217,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.Join), map);
-                    Assert.Contains(nameof(Enumerable.GroupJoin), map);
+                    AssertMapContains(map, nameof(Enumerable.Join), nameof(Enumerable.GroupJoin));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {
@@ -9496,8 +9257,7 @@ namespace SlowTests.Client.Indexing
                 docs,
                 additionalMapAsserts: map =>
                 {
-                    Assert.Contains(nameof(Enumerable.ToDictionary), map);
-                    Assert.Contains(nameof(Enumerable.ToLookup), map);
+                    AssertMapContains(map, nameof(Enumerable.ToDictionary), nameof(Enumerable.ToLookup));
                 },
                 additionalRunAsserts: (store, indexName) =>
                 {

@@ -1304,6 +1304,14 @@ namespace SlowTests.Client.Indexing
             }
         }
 
+        protected void AssertMapContains(string map, params string[] methods)
+        {
+            foreach (var method in methods)
+            {
+                Assert.True(map.Contains(method), $"Map expression does not contain '{method}', but should.{Environment.NewLine}Map expression:{Environment.NewLine}{map}");
+            }
+        }
+
         #endregion
     }
 }
