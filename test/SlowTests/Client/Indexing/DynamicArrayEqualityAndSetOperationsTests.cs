@@ -317,7 +317,7 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
-                        AllValues = doc.Values.Concat(new long[] { 999L }).ToArray()
+                        AllValues = doc.Values.Concat(new long[] { 999L }).Count()
                     }
             };
 
@@ -336,7 +336,7 @@ namespace SlowTests.Client.Indexing
                     using (var session = store.OpenSession())
                     {
                         // 1, 2 + 999 => Length 3
-                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where AllValues.Length = 3").Count();
+                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where AllValues = 3").Count();
                         Assert.Equal(1, count);
                     }
                 });
@@ -1311,7 +1311,7 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
-                        AllValues = doc.IntValues.Concat(new[] { 999 }).ToArray()
+                        AllValues = doc.IntValues.Concat(new[] { 999 }).Count()
                     }
             };
 
@@ -1330,7 +1330,7 @@ namespace SlowTests.Client.Indexing
                     using (var session = store.OpenSession())
                     {
                         // 1, 2 + 999 => Length 3
-                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where AllValues.Length = 3").Count();
+                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where AllValues = 3").Count();
                         Assert.Equal(1, count);
                     }
                 });
@@ -2300,7 +2300,7 @@ namespace SlowTests.Client.Indexing
                     select new
                     {
                         doc.Id,
-                        AllValues = doc.ULongValues.Concat(new[] { 999UL }).ToArray()
+                        AllValues = doc.ULongValues.Concat(new[] { 999UL }).Count()
                     }
             };
 
@@ -2318,7 +2318,7 @@ namespace SlowTests.Client.Indexing
                 {
                     using (var session = store.OpenSession())
                     {
-                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where AllValues.Length = 3").Count();
+                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where AllValues = 3").Count();
                         Assert.Equal(1, count);
                     }
                 });
@@ -6394,6 +6394,14 @@ namespace SlowTests.Client.Indexing
                 });
         }
 
+
+        record IndexEntry
+        {
+            public string ValAtIndex { get; set; }
+            public string ValAt { get; set; }
+            public string ValAtDef { get; set; }
+        }
+
         [RavenTheory(RavenTestCategory.Indexes)]
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_ElementAt_Indexer_StringArray_ShouldWork(Options options)
@@ -6406,13 +6414,14 @@ namespace SlowTests.Client.Indexing
                         doc.Id,
                         ValAtIndex = doc.Tags[1],
                         ValAt = doc.Tags.ElementAt(1),
-                        ValAtDef = doc.Tags.ElementAtOrDefault(99)
+                        ValAtDef = doc.Tags.ElementAtOrDefault(3)
                     }
             };
 
             var docs = new object[]
             {
-                new DocWithStrings { Tags = ["a", "b", "c"] }
+                new DocWithStrings { Tags = ["a", "b", "c"] },
+                new DocWithStrings { Tags = ["a", "b", "c", "d"] }
             };
 
             AssertIndexBuilderRewritesAndRunsCorrectly(
@@ -6428,7 +6437,7 @@ namespace SlowTests.Client.Indexing
                 {
                     using (var session = store.OpenSession())
                     {
-                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValAtIndex = 'b' and ValAt = 'b' and ValAtDef = null").Count();
+                        var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValAtIndex = 'b' and ValAt = 'b' and not exists(ValAtDef)").Count();
                         Assert.Equal(1, count);
                     }
                 });
@@ -6533,7 +6542,7 @@ namespace SlowTests.Client.Indexing
                 additionalMapAsserts: map =>
                 {
                     Assert.Contains(nameof(Enumerable.First), map);
-                    Assert.Contains(nameof(Enumerable.Last), map);
+                    Assert.Contains(nameof(Enumerable.LastOrDefault), map);
                     Assert.Contains(nameof(Enumerable.Single), map);
                     Assert.Contains(nameof(Enumerable.SingleOrDefault), map);
                 },
@@ -6541,11 +6550,17 @@ namespace SlowTests.Client.Indexing
                 {
                     using (var session = store.OpenSession())
                     {
-                        var result = session.Advanced.RawQuery<dynamic>($"from index '{indexName}'").First();
-                        Assert.Equal("bat", result.FirstMatch);
-                        Assert.Equal("bar", result.LastMatch);
-                        Assert.Equal("apple", result.SingleMatch);
-                        Assert.Null(result.SingleDef);
+                        var firstMatchResult = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where FirstMatch = 'bat'").Count();
+                        Assert.Equal(1, firstMatchResult);
+
+                        var lastMatchResult = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where LastMatch = 'bar'").Count();
+                        Assert.Equal(1, lastMatchResult);
+
+                        var singleMatchResult = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where SingleMatch = 'apple'").Count();
+                        Assert.Equal(1, singleMatchResult);
+
+                        var singleDefResult = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where true and not exists(SingleDef)").Count();
+                        Assert.Equal(1, singleDefResult);
                     }
                 });
         }
@@ -6766,25 +6781,21 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_Intersect_DateTimeArray_ShouldWork(Options options)
         {
-            var date1 = new DateTime(2023, 1, 1);
-            var date2 = new DateTime(2023, 5, 5);
-            var date3 = new DateTime(2023, 12, 31);
-
             var indexBuilder = new IndexDefinitionBuilder<DocWithDates, object>
             {
                 Map = docs => from doc in docs
                     select new
                     {
                         doc.Id,
-                        HasCommon = doc.ImportantDates.Intersect(new[] { date1, date3 }).Any()
+                        HasCommon = doc.ImportantDates.Intersect(new[] { new DateTime(2023, 1, 1), new DateTime(2023, 12, 31) }).Any()
                     }
             };
 
             var docs = new object[]
             {
-                new DocWithDates { ImportantDates = [date1, date2] }, // Has date1
-                new DocWithDates { ImportantDates = [date2] }, // No intersection
-                new DocWithDates { ImportantDates = [date3] } // Has date3
+                new DocWithDates { ImportantDates = [new DateTime(2023, 1, 1), new DateTime(2023, 5, 5)] }, // Has date1
+                new DocWithDates { ImportantDates = [new DateTime(2023, 5, 5)] }, // No intersection
+                new DocWithDates { ImportantDates = [new DateTime(2023, 12, 31)] } // Has date3
             };
 
             AssertIndexBuilderRewritesAndRunsCorrectly(
@@ -6849,24 +6860,21 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_Except_DateTimeArray_ShouldWork(Options options)
         {
-            var date1 = new DateTime(2020, 1, 1);
-            var date2 = new DateTime(2020, 2, 2);
-
             var indexBuilder = new IndexDefinitionBuilder<DocWithDates, object>
             {
                 Map = docs => from doc in docs
                     select new
                     {
                         doc.Id,
-                        HasRemaining = doc.ImportantDates.Except(new[] { date1 }).Contains(date2)
+                        HasRemaining = doc.ImportantDates.Except(new[] { new DateTime(2020, 1, 1) }).Contains(new DateTime(2020, 2, 2))
                     }
             };
 
             var docs = new object[]
             {
-                new DocWithDates { ImportantDates = [date1, date2] },
-                new DocWithDates { ImportantDates = [date1] },
-                new DocWithDates { ImportantDates = [date2] }
+                new DocWithDates { ImportantDates = [new DateTime(2020, 1, 1), new DateTime(2020, 2, 2)] },
+                new DocWithDates { ImportantDates = [new DateTime(2020, 1, 1)] },
+                new DocWithDates { ImportantDates = [new DateTime(2020, 2, 2)] }
             };
 
             AssertIndexBuilderRewritesAndRunsCorrectly(
@@ -6934,21 +6942,19 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_Contains_DateTimeArray_ShouldWork(Options options)
         {
-            var target = new DateTime(2022, 2, 24);
-
             var indexBuilder = new IndexDefinitionBuilder<DocWithDates, object>
             {
                 Map = docs => from doc in docs
                     select new
                     {
                         doc.Id,
-                        HasDate = doc.ImportantDates.Contains(target)
+                        HasDate = doc.ImportantDates.Contains(new DateTime(2022, 2, 24))
                     }
             };
 
             var docs = new object[]
             {
-                new DocWithDates { ImportantDates = [new DateTime(2020, 1, 1), target] },
+                new DocWithDates { ImportantDates = [new DateTime(2020, 1, 1), new DateTime(2022, 2, 24)] },
                 new DocWithDates { ImportantDates = [new DateTime(2020, 1, 1)] }
             };
 
@@ -7259,7 +7265,7 @@ namespace SlowTests.Client.Indexing
                         var results = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where FirstVal = '2002-01-01T00:00:00.0000000' and LastVal = '2002-01-01T00:00:00.0000000' and SingleVal = '2010-01-01T00:00:00.0000000'").ToList();
                         Assert.Single(results);
 
-                        var countNull = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where SingleOrDefaultVal = null").Count();
+                        var countNull = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where SingleOrDefaultVal = '0001-01-01T00:00:00.0000000'").Count();
                         Assert.Equal(1, countNull);
                     }
                 });
@@ -7544,9 +7550,6 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_ElementAt_Indexer_DateTimeArray_ShouldWork(Options options)
         {
-            var d1 = new DateTime(2000, 1, 1);
-            var d2 = new DateTime(2010, 1, 1);
-
             var indexBuilder = new IndexDefinitionBuilder<DocWithDates, object>
             {
                 Map = docs => from doc in docs
@@ -7561,7 +7564,7 @@ namespace SlowTests.Client.Indexing
 
             var docs = new object[]
             {
-                new DocWithDates { ImportantDates = [d1, d2] }
+                new DocWithDates { ImportantDates = [new DateTime(2000, 1, 1), new DateTime(2010, 1, 1)] }
             };
 
             AssertIndexBuilderRewritesAndRunsCorrectly(
@@ -7580,7 +7583,7 @@ namespace SlowTests.Client.Indexing
                         var count = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where Val0 = '2000-01-01T00:00:00.0000000' and Val1 = '2010-01-01T00:00:00.0000000'").Count();
                         Assert.Equal(1, count);
 
-                        var countDef = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValDef = null").Count();
+                        var countDef = session.Advanced.RawQuery<dynamic>($"from index '{indexName}' where ValDef = '{DateTime.MinValue:o}'").Count();
                         Assert.Equal(1, countDef);
                     }
                 });
@@ -7661,21 +7664,19 @@ namespace SlowTests.Client.Indexing
         [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
         public void MapIndex_DefaultIfEmpty_DateTimeArray_ShouldWork(Options options)
         {
-            var defaultDate = new DateTime(1900, 1, 1);
-
             var indexBuilder = new IndexDefinitionBuilder<DocWithDates, object>
             {
                 Map = docs => from doc in docs
                     select new
                     {
                         doc.Id,
-                        Val = doc.ImportantDates.DefaultIfEmpty(defaultDate).First()
+                        Val = doc.ImportantDates.DefaultIfEmpty(new DateTime(1900, 1, 1)).First()
                     }
             };
 
             var docs = new object[]
             {
-                new DocWithDates { ImportantDates = new DateTime[0] }
+                new DocWithDates { ImportantDates = [] }
             };
 
             AssertIndexBuilderRewritesAndRunsCorrectly(

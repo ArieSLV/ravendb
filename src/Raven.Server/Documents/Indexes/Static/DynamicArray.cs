@@ -142,12 +142,12 @@ namespace Raven.Server.Documents.Indexes.Static
 
         public int Count(Func<dynamic, bool> predicate) => Enumerable.Count(this, predicate);
 
-        public dynamic Any()
+        public bool Any()
         {
             return Enumerable.Any(this);
         }
 
-        public dynamic Any(Func<dynamic, bool> predicate)
+        public bool Any(Func<dynamic, bool> predicate)
         {
             return Enumerable.Any(this, predicate);
         }
@@ -562,16 +562,23 @@ namespace Raven.Server.Documents.Indexes.Static
         {
             switch (item)
             {
+                case LazyNumberValue lnv:
+                    return lnv.ToNumber();
+
                 case int:
                 case short:
                 case ushort:
                 case uint:
                 case ulong and <= long.MaxValue:
                     return Convert.ToInt64(item);
+
                 case float:
+                case decimal:
                     return Convert.ToDouble(item);
+
                 case char:
                     return Convert.ToString(item);
+
                 default:
                     return item;
             }

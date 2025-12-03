@@ -300,6 +300,36 @@ namespace Sparrow.Json
             return @double.ToString(format);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public object ToNumber()
+        {
+            // 1. Priority: Long
+            if (_longVal.HasValue)
+                return _longVal.Value;
+
+            if (TryParseLong(out var l))
+            {
+                _longVal = l;
+                return l;
+            }
+
+            // 2. Priority: ULong
+            if (_ulongVal.HasValue)
+                return _ulongVal.Value;
+
+            // Optimization to avoid the secondary TryParseULong call for common floating-point numbers, since long.MaxValue is 19 digits.
+            // If the buffer is shorter than that, it must be a double/float.
+            if (Inner.Size >= 19 && TryParseULong(out var ul))
+            {
+                _ulongVal = ul;
+                return ul;
+            }
+
+            // 3. Priority: Double (floats, decimals, and massive integers)
+            // The cast to (double) uses implicit operator which handles parsing and caching of _val.
+            return (double)this;
+        }
+
         public bool IsNaN()
         {
             if (_val.HasValue && double.IsNaN(_val.Value))
