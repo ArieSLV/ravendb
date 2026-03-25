@@ -116,10 +116,14 @@ namespace Raven.Server.Documents.Replication.Senders
                     _lastEtag = _parent._lastSentDocumentEtag;
                     ChangeVector mergedChangeVector = documentsContext.GetEmptyChangeVector();
                     ChangeVector itemChangeVector = documentsContext.GetEmptyChangeVector();
+                    ReplicationInvestigationTrace.Write("SENDER_EXECUTE_START",
+                        $"{_parent._database.ServerStore.NodeTag}->{_parent.Destination.FromString()} handler={_parent.GetType().Name} db={_parent._database.Name} lastSent={_parent._lastSentDocumentEtag} lastEtag={_lastEtag} destCv={_parent.LastAcceptedChangeVector}");
 
                     var lastEtagFromDestinationChangeVector = ChangeVectorUtils.GetEtagById(_parent.LastAcceptedChangeVector, _parent._database.DbBase64Id);
                     if (lastEtagFromDestinationChangeVector > _lastEtag)
                     {
+                        ReplicationInvestigationTrace.Write("SENDER_JUMP_AHEAD",
+                            $"{_parent._database.ServerStore.NodeTag}->{_parent.Destination.FromString()} handler={_parent.GetType().Name} db={_parent._database.Name} oldLastEtag={_lastEtag} newLastEtag={lastEtagFromDestinationChangeVector} destCv={_parent.LastAcceptedChangeVector}");
                         if (Log.IsInfoEnabled)
                         {
                             Log.Info($"We jump to get items from etag {lastEtagFromDestinationChangeVector} instead of {_lastEtag}, because we got a bigger etag for the destination database change vector ({_parent.LastAcceptedChangeVector})");
@@ -158,6 +162,10 @@ namespace Raven.Server.Documents.Replication.Senders
                             }
 
                             var item = enumerator.Current;
+                            var itemId = ReplicationInvestigationTrace.TryGetItemId(item);
+                            ReplicationInvestigationTrace.Write("SENDER_ITEM_FETCH",
+                                $"{_parent._database.ServerStore.NodeTag}->{_parent.Destination.FromString()} handler={_parent.GetType().Name} db={_parent._database.Name} type={item.Type} id={itemId} etag={item.Etag} tx={item.TransactionMarker} cv={item.ChangeVector}",
+                                itemId);
 
                             _stats.Storage.RecordInputAttempt();
 
@@ -236,6 +244,8 @@ namespace Raven.Server.Documents.Replication.Senders
                         _parent._lastSentDocumentEtag = _lastEtag;
                         _parent._lastDocumentSentTime = DateTime.UtcNow;
                         var changeVector = wasInterrupted ? null : DocumentsStorage.GetDatabaseChangeVector(documentsContext);
+                        ReplicationInvestigationTrace.Write("SENDER_HEARTBEAT_ONLY",
+                            $"{_parent._database.ServerStore.NodeTag}->{_parent.Destination.FromString()} handler={_parent.GetType().Name} db={_parent._database.Name} lastEtag={_lastEtag} hasModification={hasModification} wasInterrupted={wasInterrupted} changeVector={changeVector}");
 
                         if (Log.IsInfoEnabled)
                         {
@@ -503,6 +513,10 @@ namespace Raven.Server.Documents.Replication.Senders
             }
 
             _orderedReplicaItems.Add(item.Etag, item);
+            var itemId = ReplicationInvestigationTrace.TryGetItemId(item);
+            ReplicationInvestigationTrace.Write("SENDER_BATCH_ADD",
+                $"{_parent._database.ServerStore.NodeTag}->{_parent.Destination.FromString()} handler={_parent.GetType().Name} db={_parent._database.Name} type={item.Type} id={itemId} etag={item.Etag} tx={item.TransactionMarker} cv={item.ChangeVector}",
+                itemId);
             return true;
         }
 
@@ -598,6 +612,10 @@ namespace Raven.Server.Documents.Replication.Senders
             {
                 stats.RecordChangeVectorSkip();
                 skippedReplicationItemsInfo.Update(item);
+                var itemId = ReplicationInvestigationTrace.TryGetItemId(item);
+                ReplicationInvestigationTrace.Write("SENDER_ALREADY_MERGED_SKIP",
+                    $"{_parent._database.ServerStore.NodeTag}->{_parent.Destination.FromString()} handler={_parent.GetType().Name} db={_parent._database.Name} type={item.Type} id={itemId} etag={item.Etag} itemCv={item.ChangeVector} destCv={_parent.LastAcceptedChangeVector}",
+                    itemId);
                 return true;
             }
 
@@ -608,6 +626,8 @@ namespace Raven.Server.Documents.Replication.Senders
         {
             if (Log.IsInfoEnabled)
                 Log.Info($"Starting sending replication batch ({_parent._database.Name}) with {_orderedReplicaItems.Count:#,#;;0} docs, and last etag {_lastEtag:#,#;;0}");
+            ReplicationInvestigationTrace.Write("SENDER_BATCH_SEND",
+                $"{_parent._database.ServerStore.NodeTag}->{_parent.Destination.FromString()} handler={_parent.GetType().Name} db={_parent._database.Name} items={string.Join(",", _orderedReplicaItems.Values.Select(item => $"{ReplicationInvestigationTrace.TryGetItemId(item) ?? item.Type.ToString()}@{item.Etag}"))} lastEtag={_lastEtag}");
 
             if (_parent.ForTestingPurposes?.OnMissingAttachmentStream != null &&
                 _parent.MissingAttachmentsRetries > 0)
@@ -655,6 +675,8 @@ namespace Raven.Server.Documents.Replication.Senders
                 Log.Info($"Finished sending replication batch. Sent {_orderedReplicaItems.Count:#,#;;0} documents and {_replicaAttachmentStreams.Count:#,#;;0} attachment streams in {sw.ElapsedMilliseconds:#,#;;0} ms. Last sent etag = {_lastEtag:#,#;;0}");
 
             var (type, _) = _parent.HandleServerResponse();
+            ReplicationInvestigationTrace.Write("SENDER_BATCH_REPLY",
+                $"{_parent._database.ServerStore.NodeTag}->{_parent.Destination.FromString()} handler={_parent.GetType().Name} db={_parent._database.Name} replyType={type} lastAcceptedCv={_parent.LastAcceptedChangeVector}");
             if (type == ReplicationMessageReply.ReplyType.MissingAttachments)
             {
                 MissingAttachmentsInLastBatch = true;

@@ -7,6 +7,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using FastTests;
 using Raven.Client.Documents;
 using Raven.Client.Documents.Operations;
 using Raven.Client.Documents.Operations.ConnectionStrings;
@@ -19,6 +20,7 @@ using Raven.Client.Documents.Smuggler;
 using Raven.Client.Exceptions;
 using Raven.Client.ServerWide.Operations;
 using Raven.Client.ServerWide.Operations.Certificates;
+using Raven.Server;
 using Raven.Server.Config;
 using Raven.Server.Documents;
 using Raven.Server.Documents.Replication;
@@ -2161,6 +2163,276 @@ namespace SlowTests.Issues
             // Total simulated time is approx 12 seconds. Connection timeout is 8 seconds.
             var replicated = WaitForDocument(sinkStore, "items/include/1", timeout: 30_000);
             Assert.True(replicated, "Document should be replicated. Failure implies connection timeout due to lack of heartbeats.");
+        }
+
+        [RavenFact(RavenTestCategory.Replication | RavenTestCategory.Certificates)]
+        public async Task Sink_to_hub_replication_inflates_hub_database_change_vector_causing_data_loss()
+        {
+            var tracePath = Path.Combine(Path.GetTempPath(), $"replication-issue-{Guid.NewGuid():N}.trace.log");
+            ReplicationInvestigationTrace.Configure(tracePath, "internal/", "tickets/");
+            Output.WriteLine($"Trace file: {tracePath}");
+            Output.WriteLine($"Readable trace file: {ReplicationInvestigationTrace.ReadablePath}");
+
+            try
+            {
+                // This test demonstrates that when a sink sends documents to a hub node in a cluster,
+                // the hub's database change vector gets inflated with entries for OTHER hub nodes.
+                // This causes internal replication to skip documents via the etag jump-ahead optimization,
+                // resulting in permanent data loss on the receiving hub node.
+                //
+                // Setup: 3-node hub cluster (A, B, C) + 1 sink with bidirectional filtered pull replication.
+                // We use TWO hub definitions:
+                //   - one pinned to A for the initial hub-to-sink flow
+                //   - one pinned to C for the later sink-to-hub inflation step
+                // This avoids RavenDB's normal pull load-balancing from routing the second sink task back to A.
+                // Bug flow:
+                //   1. Node A writes non-filtered docs (internal/*) and filtered docs (tickets/*)
+                //   2. Hub-to-sink sends tickets/* to sink (with A's high etag in CV)
+                //   3. A second sink task connects to a hub definition pinned to C and sends tickets/* (sink-to-hub)
+                //   4. ReplaceUnknownEntriesWithSinkTag returns A's entries as changeVectorToMerge
+                //   5. C's database CV gets inflated with A:high_etag
+                //   6. Internal replication A→C uses etag jump-ahead past the inflated value
+                //   7. internal/* documents are permanently skipped on C
+
+                var hubDbName = GetDatabaseName();
+                var sinkDbName = GetDatabaseName();
+
+                (List<RavenServer> hubNodes, RavenServer hubLeader, TestCertificatesHolder certs) = await CreateRaftClusterWithSsl(numberOfNodes: 3, watcherCluster: true);
+                var serverA = hubNodes[0];
+                var serverB = hubNodes[1];
+                var serverC = hubNodes[2];
+
+                // Hub store connects to the leader for cluster-wide operations
+                using var hubStore = GetDocumentStore(new Options
+                {
+                    Server = hubLeader,
+                    ReplicationFactor = 3,
+                    AdminCertificate = certs.ServerCertificateForCommunication.Value,
+                    ClientCertificate = certs.ServerCertificateForCommunication.Value,
+                    ModifyDatabaseName = _ => hubDbName,
+                    CreateDatabase = true
+                });
+
+                // Node-specific stores for targeted reads/writes
+                var nodeStores =
+                    Cluster.GetDocumentStores(nodes: [serverA, serverC], hubDbName, disableTopologyUpdates: true, certificate: certs.ServerCertificateForCommunication.Value);
+                using var storeA = nodeStores[0];
+                using var storeC = nodeStores[1];
+
+                // Sink store (separate database on default server)
+                using var sinkStore = GetDocumentStore(new Options
+                {
+                    AdminCertificate = certs.ServerCertificateForCommunication.Value,
+                    ClientCertificate = certs.ServerCertificateForCommunication.Value,
+                    ModifyDatabaseName = _ => sinkDbName
+                });
+
+                // Set up bidirectional pull replication with filtering on tickets/*
+                var pullCert = new X509Certificate2(await File.ReadAllBytesAsync(certs.ClientCertificate2Path), password: (string)null, X509KeyStorageFlags.Exportable);
+                var pullCertBase64 = Convert.ToBase64String(pullCert.Export(X509ContentType.Cert));
+                const string hubTaskOnA = "filtered-bidir-a";
+                const string hubTaskOnC = "filtered-bidir-c";
+                var allowedPaths = new[] { "tickets/*" };
+
+                await hubStore.Maintenance.SendAsync(new PutPullReplicationAsHubOperation(new PullReplicationDefinition
+                {
+                    Name = hubTaskOnA,
+                    Mode = PullReplicationMode.SinkToHub | PullReplicationMode.HubToSink,
+                    WithFiltering = true,
+                    MentorNode = serverA.ServerStore.NodeTag,
+                    PinToMentorNode = true
+                }));
+
+                await hubStore.Maintenance.SendAsync(new RegisterReplicationHubAccessOperation(hubTaskOnA,
+                    new ReplicationHubAccess
+                    {
+                        Name = "SinkAccess-A",
+                        CertificateBase64 = pullCertBase64,
+                        AllowedHubToSinkPaths = allowedPaths,
+                        AllowedSinkToHubPaths = allowedPaths
+                    }));
+
+                await hubStore.Maintenance.SendAsync(new PutPullReplicationAsHubOperation(new PullReplicationDefinition
+                {
+                    Name = hubTaskOnC,
+                    Mode = PullReplicationMode.SinkToHub | PullReplicationMode.HubToSink,
+                    WithFiltering = true,
+                    MentorNode = serverC.ServerStore.NodeTag,
+                    PinToMentorNode = true
+                }));
+
+                await hubStore.Maintenance.SendAsync(new RegisterReplicationHubAccessOperation(hubTaskOnC,
+                    new ReplicationHubAccess
+                    {
+                        Name = "SinkAccess-C",
+                        CertificateBase64 = pullCertBase64,
+                        AllowedHubToSinkPaths = allowedPaths,
+                        AllowedSinkToHubPaths = allowedPaths
+                    }));
+
+                // Sink initially connects to node A
+                await sinkStore.Maintenance.SendAsync(new PutConnectionStringOperation<RavenConnectionString>(
+                    new RavenConnectionString
+                    {
+                        Database = hubDbName,
+                        Name = hubDbName + "ConStr",
+                        TopologyDiscoveryUrls = [serverA.WebUrl]
+                    }));
+
+                await sinkStore.Maintenance.SendAsync(new UpdatePullReplicationAsSinkOperation(new PullReplicationAsSink
+                {
+                    ConnectionStringName = hubDbName + "ConStr",
+                    Mode = PullReplicationMode.SinkToHub | PullReplicationMode.HubToSink,
+                    CertificateWithPrivateKey = Convert.ToBase64String(pullCert.Export(X509ContentType.Pfx)),
+                    HubName = hubTaskOnA,
+                    AllowedHubToSinkPaths = allowedPaths,
+                    AllowedSinkToHubPaths = allowedPaths
+                }));
+
+                // Phase 1: Write a seed document on A specifically, so the A -> C outgoing handler
+                // has already advanced past the first etag before the controlled phase starts.
+                using (var session = storeA.OpenAsyncSession())
+                {
+                    session.Advanced.WaitForReplicationAfterSaveChanges(timeout: TimeSpan.FromSeconds(30), replicas: 2);
+                    await session.StoreAsync(new User { Name = "Seed" }, id: "tickets/seed");
+                    await session.SaveChangesAsync();
+                }
+                Assert.True(WaitForDocument(storeC, docId: "tickets/seed", timeout: 30_000));
+                Assert.True(WaitForDocument(sinkStore, docId: "tickets/seed", timeout: 30_000));
+
+                // Phase 2: Break outgoing replication on A and B, write documents on A
+                var dbA = await GetDatabase(serverA, hubDbName);
+                var dbB = await GetDatabase(serverB, hubDbName);
+
+                var originalMaxItemsCountA = dbA.Configuration.Replication.MaxItemsCount;
+
+                var mreA = new ManualResetEventSlim(initialState: false);
+                dbA.ReplicationLoader.DebugWaitAndRunReplicationOnce = mreA;
+                dbA.Configuration.Replication.MaxItemsCount = 1;
+
+                var mreB = new ManualResetEventSlim(initialState: false);
+                dbB.ReplicationLoader.DebugWaitAndRunReplicationOnce = mreB;
+
+                // Write 20 non-filtered docs on A (bump A's etag significantly).
+                for (int i = 1; i <= 20; i++)
+                {
+                    using (var session = storeA.OpenAsyncSession())
+                    {
+                        await session.StoreAsync(new User { Name = $"Internal {i}" }, $"internal/{i}");
+                        await session.SaveChangesAsync();
+                    }
+                }
+
+                // Write 1 filtered doc on A (at high etag, after all internal/* docs)
+                using (var session = storeA.OpenAsyncSession())
+                {
+                    await session.StoreAsync(new User { Name = "Ticket 2" }, "tickets/2");
+                    await session.SaveChangesAsync();
+                }
+
+                // Phase 3: Controlled send - release A's MRE once to send exactly 1 batch per destination
+                // Internal replication (A -> B, A -> C): sends internal/1 (first unsynced item, low etag)
+                // Hub-to-sink (A -> Sink): skips non-matching internal/*, sends tickets/2 (first matching, HIGH etag)
+                // This creates the critical divergence: C knows A's DbId (from internal/1) but at a LOW value,
+                // while the sink has tickets/2 with A's HIGH etag in its change vector.
+                mreA.Set();
+
+                Assert.True(WaitForDocument(storeC, "internal/1", timeout: 30_000));
+                Assert.True(WaitForDocument(sinkStore, "tickets/2", timeout: 30_000));
+
+                // A's handlers auto-blocked after 1 batch (they call Reset() and Wait() on the MRE)
+
+                // Phase 4: Add a SECOND sink task that uses a hub definition pinned to C.
+                // The connection string is only used for bootstrap; the actual responsible hub node is
+                // selected by the hub definition topology lookup. Pinning this definition to C ensures
+                // the sink-to-hub path really lands on C instead of being load-balanced back to A.
+                await sinkStore.Maintenance.SendAsync(new PutConnectionStringOperation<RavenConnectionString>(
+                    new RavenConnectionString
+                    {
+                        Database = hubDbName,
+                        Name = hubDbName + "ConStr-C",
+                        TopologyDiscoveryUrls = [serverC.WebUrl]
+                    }));
+
+                await sinkStore.Maintenance.SendAsync(new UpdatePullReplicationAsSinkOperation(new PullReplicationAsSink
+                {
+                    ConnectionStringName = hubDbName + "ConStr-C",
+                    Mode = PullReplicationMode.SinkToHub | PullReplicationMode.HubToSink,
+                    CertificateWithPrivateKey = Convert.ToBase64String(pullCert.Export(X509ContentType.Pfx)),
+                    HubName = hubTaskOnC,
+                    AllowedHubToSinkPaths = allowedPaths,
+                    AllowedSinkToHubPaths = allowedPaths
+                }));
+
+                // The new task resolves to C and immediately starts sink-to-hub: sends tickets/seed
+                // (AlreadyMerged on C) and then tickets/2 (NOT on C yet).
+                // BUG: C's ReplaceUnknownEntriesWithSinkTag finds A's DbId as "known" in the incoming CV
+                // of tickets/2 (since C received internal/1 from A in Phase 3, so dbA is in globalDbIds),
+                // returns A:high_etag as changeVectorToMerge, which gets merged into C's database CV.
+                // C's DB CV is now inflated: it claims to know about A's high etag, but C only has
+                // documents up to A's low etag from internal replication.
+                Assert.True(WaitForDocument(storeC, "tickets/2", timeout: 30_000));
+
+                // Phase 5: Reproduce the bug under controlled conditions.
+                // Keep B blocked and keep MaxItemsCount=1 on A until the missing document is proven.
+                // This ensures A -> C first sends internal/2, then learns the inflated CV from C,
+                // then jumps ahead and permanently skips the remaining backlog.
+                //   - First batch: sends internal/2 to C
+                //   - C responds with its DB CV (containing inflated A:high_etag)
+                //   - A updates LastAcceptedChangeVector -> A:high_etag
+                //   - Second batch: etag jump-ahead kicks in, skips to high_etag
+                //   - internal/3-20 are PERMANENTLY SKIPPED
+                dbA.ReplicationLoader.DebugWaitAndRunReplicationOnce = null;
+                mreA.Set();
+
+                // Write a marker document to confirm A -> C replication is functioning after all
+                // temporary controls on A were relaxed.
+                using (var session = storeA.OpenAsyncSession())
+                {
+                    await session.StoreAsync(new User { Name = "Ticket 3" }, "tickets/3");
+                    await session.SaveChangesAsync();
+                }
+
+                Assert.True(WaitForDocument(storeC, docId: "tickets/3", timeout: 30_000));
+
+                // THE BUG: C is missing internal/* documents that were never replicated
+                // due to database change vector inflation from sink-to-hub replication.
+                // The etag jump-ahead optimization and/or ShouldSkip (AlreadyMerged) caused
+                // these documents to be permanently skipped during internal replication A→C.
+                using (var session = storeC.OpenAsyncSession())
+                {
+                    var missingDoc = await session.LoadAsync<User>("internal/10");
+                    Assert.Null(missingDoc); // PROVES: internal/10 was skipped due to CV inflation
+                }
+
+                // Verify this is truly data loss: node A has the document
+                using (var session = storeA.OpenAsyncSession())
+                {
+                    var existsOnA = await session.LoadAsync<User>("internal/10");
+                    Assert.NotNull(existsOnA); // A has it, but C doesn't
+                }
+
+                // Phase 6: After the bug is proven, remove all artificial throttling/blocking and show
+                // that replication is alive in general. We intentionally do NOT use the post-cleanup phase
+                // to prove the missing gap, because once all controls are removed another node may later heal it.
+                dbB.ReplicationLoader.DebugWaitAndRunReplicationOnce = null;
+                dbA.Configuration.Replication.MaxItemsCount = originalMaxItemsCountA;
+                mreB.Set();
+
+                // Replication is still alive in general: create a NEW document outside A and make
+                // sure A can receive it after all temporary controls were removed.
+                using (var session = storeC.OpenAsyncSession())
+                {
+                    await session.StoreAsync(new User { Name = "From C After Gap" }, "internal/from-c-after-gap");
+                    await session.SaveChangesAsync();
+                }
+
+                Assert.True(WaitForDocument(storeA, docId: "internal/from-c-after-gap", timeout: 30_000));
+            }
+            finally
+            {
+                ReplicationInvestigationTrace.Reset();
+            }
         }
     }
 }

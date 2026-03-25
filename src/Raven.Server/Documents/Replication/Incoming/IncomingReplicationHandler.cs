@@ -372,8 +372,13 @@ namespace Raven.Server.Documents.Replication.Incoming
 
                         var incomingChangeVector = context.GetChangeVector(item.ChangeVector);
                         var changeVectorVersion = incomingChangeVector.Version;
+                        var itemId = ReplicationInvestigationTrace.TryGetItemId(item);
+                        var dbCvBeforeMerge = context.LastDatabaseChangeVector?.AsString();
 
                         context.LastDatabaseChangeVector = ChangeVector.Merge(changeVectorToMerge, context.LastDatabaseChangeVector, context);
+                        ReplicationInvestigationTrace.Write("INCOMING_DB_CV_MERGE",
+                            $"{database.ServerStore.NodeTag} db={database.Name} type={item.Type} id={itemId} incomingCv={item.ChangeVector} mergeCv={changeVectorToMerge} dbCvBefore={dbCvBeforeMerge} dbCvAfter={context.LastDatabaseChangeVector?.AsString()}",
+                            itemId);
 
                         TimeSeriesStorage tss;
                         LazyStringValue docId;

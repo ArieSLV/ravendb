@@ -1552,6 +1552,8 @@ namespace Raven.Server.Documents.Replication
                     }
 
                     remoteDatabaseUrls = cmd.Result;
+                    ReplicationInvestigationTrace.Write("PULL_SINK_REMOTE_TOPOLOGY",
+                        $"{Database.ServerStore.NodeTag} db={Database.Name} sinkTask={pullReplicationAsSink.Name} hubName={remoteTask} bootstrapUrl={requestExecutor.Url} remoteUrls=[{string.Join(",", remoteDatabaseUrls ?? Array.Empty<string>())}] mentor={pullReplicationAsSink.MentorNode} pin={pullReplicationAsSink.PinToMentorNode}");
                 }
 
                 // fetch tcp info for the hub nodes
@@ -1570,7 +1572,11 @@ namespace Raven.Server.Documents.Replication
                         pullReplicationAsSink.Database = database;
                     }
 
-                    return cmd.Result;
+                    var tcpInfo = cmd.Result;
+                    ReplicationInvestigationTrace.Write("PULL_SINK_TCP_INFO",
+                        $"{Database.ServerStore.NodeTag} db={Database.Name} sinkTask={pullReplicationAsSink.Name} hubName={remoteTask} requestUrl={requestExecutor.Url} tcpUrl={tcpInfo?.Url} tcpPort={tcpInfo?.Port} tcpNode={tcpInfo?.NodeTag}");
+
+                    return tcpInfo;
                 }
             }
         }

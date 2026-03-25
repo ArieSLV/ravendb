@@ -41,6 +41,8 @@ namespace Raven.Server.Documents.Replication.Outgoing
             // this is used when the other side lets us know what paths it is going to accept from us
             // it supplements (but does not extend) what we are willing to send out 
             _destinationAcceptablePaths = response.Reply.AcceptablePaths;
+            ReplicationInvestigationTrace.Write("OUTGOING_PULL_HANDSHAKE",
+                $"{_database.ServerStore.NodeTag}->{Destination.FromString()} handler={GetType().Name} db={_database.Name} pathsToSend=[{string.Join(",", PathsToSend ?? Array.Empty<string>())}] destinationAcceptable=[{string.Join(",", _destinationAcceptablePaths ?? Array.Empty<string>())}]");
         }
     }
 

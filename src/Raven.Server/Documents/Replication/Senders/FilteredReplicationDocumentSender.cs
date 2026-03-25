@@ -47,6 +47,10 @@ namespace Raven.Server.Documents.Replication.Senders
 
                 stats.RecordArtificialDocumentSkip();
                 skippedReplicationItemsInfo.Update(item);
+                var itemId = ReplicationInvestigationTrace.TryGetItemId(item);
+                ReplicationInvestigationTrace.Write("FILTER_SKIP",
+                    $"{_parent._database.ServerStore.NodeTag}->{_parent.Destination.FromString()} handler={_parent.GetType().Name} db={_parent._database.Name} type={item.Type} etag={item.Etag} cv={item.ChangeVector} info={validator.GetItemInformation(item)}",
+                    itemId);
 
                 if (Log.IsInfoEnabled)
                 {

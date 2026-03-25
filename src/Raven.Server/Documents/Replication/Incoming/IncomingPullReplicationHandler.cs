@@ -152,6 +152,8 @@ namespace Raven.Server.Documents.Replication.Incoming
 
             protected override ChangeVector PreProcessItem(DocumentsOperationContext context, ReplicationBatchItem item)
             {
+                var originalChangeVector = item.ChangeVector;
+                var itemId = ReplicationInvestigationTrace.TryGetItemId(item);
                 if (_isSink) 
                     ReplaceKnownSinkEntries(context, ref item.ChangeVector);
 
@@ -159,6 +161,10 @@ namespace Raven.Server.Documents.Replication.Incoming
 
                 if (_isHub) 
                     changeVectorToMerge = ReplaceUnknownEntriesWithSinkTag(context, ref item.ChangeVector);
+
+                ReplicationInvestigationTrace.Write("INCOMING_PULL_PREPROCESS",
+                    $"{context.DocumentDatabase.ServerStore.NodeTag} db={context.DocumentDatabase.Name} type={item.Type} id={itemId} originalCv={originalChangeVector} rewrittenIncomingCv={item.ChangeVector} mergeCv={changeVectorToMerge} dbCvBefore={context.LastDatabaseChangeVector?.AsString()} isHub={_isHub} isSink={_isSink}",
+                    itemId);
 
                 return context.GetChangeVector(changeVectorToMerge);
             }

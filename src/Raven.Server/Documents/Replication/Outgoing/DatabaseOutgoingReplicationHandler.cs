@@ -172,8 +172,14 @@ namespace Raven.Server.Documents.Replication.Outgoing
                     var once = _parent.DebugWaitAndRunReplicationOnce;
                     if (once != null)
                     {
+                        ReplicationInvestigationTrace.Write("OUTGOING_MRE_RESET",
+                            $"{_database.ServerStore.NodeTag}->{Destination.FromString()} handler={GetType().Name} db={_database.Name} nextTicks={NextReplicateTicks}");
                         once.Reset();
+                        ReplicationInvestigationTrace.Write("OUTGOING_MRE_WAIT",
+                            $"{_database.ServerStore.NodeTag}->{Destination.FromString()} handler={GetType().Name} db={_database.Name}");
                         once.Wait(_cts.Token);
+                        ReplicationInvestigationTrace.Write("OUTGOING_MRE_RELEASED",
+                            $"{_database.ServerStore.NodeTag}->{Destination.FromString()} handler={GetType().Name} db={_database.Name}");
                     }
 
                     var startTime = _database.Time.GetUtcNow();
@@ -194,6 +200,8 @@ namespace Raven.Server.Documents.Replication.Outgoing
                                 }
 
                                 var didWork = documentSender.ExecuteReplicationOnce(_tcpConnectionOptions, scope, ref NextReplicateTicks);
+                                ReplicationInvestigationTrace.Write("OUTGOING_EXECUTE_ONCE_DONE",
+                                    $"{_database.ServerStore.NodeTag}->{Destination.FromString()} handler={GetType().Name} db={_database.Name} didWork={didWork} lastSentEtag={_lastSentDocumentEtag} nextTicks={NextReplicateTicks} destCv={LastAcceptedChangeVector}");
                                 if (documentSender.MissingAttachmentsInLastBatch)
                                     continue;
 
