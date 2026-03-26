@@ -6,6 +6,7 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using Raven.Client.Documents.Attachments;
+using Raven.Client.Documents.Operations.Replication;
 using Raven.Client.Documents.Replication.Messages;
 using Raven.Client.Exceptions;
 using Raven.Server.Config;
@@ -607,6 +608,9 @@ namespace Raven.Server.Documents.Replication.Senders
                     break;
             }
 
+            if (TryApplyOutgoingFault(item, stats, skippedReplicationItemsInfo))
+                return true;
+
             // destination already has it
             if (_parent._database.DocumentsStorage.GetConflictStatusForOrder(context ,item.ChangeVector, _parent.LastAcceptedChangeVector) == ConflictStatus.AlreadyMerged)
             {
@@ -620,6 +624,32 @@ namespace Raven.Server.Documents.Replication.Senders
             }
 
             return false;
+        }
+
+        private bool TryApplyOutgoingFault(ReplicationBatchItem item, OutgoingReplicationStatsScope stats, SkippedReplicationItemsInfo skippedReplicationItemsInfo)
+        {
+            if (_parent.Destination is not InternalReplication internalReplication)
+                return false;
+
+            var controller = _parent._parent.ForTestingPurposes?.OutgoingFaultController;
+            if (controller == null)
+                return false;
+
+            var itemId = ReplicationInvestigationTrace.TryGetItemId(item);
+            var decision = controller.TryGetDecision(
+                _parent._database.Name,
+                _parent._database.ServerStore.NodeTag,
+                internalReplication.NodeTag,
+                itemId,
+                item.Etag,
+                item.ChangeVector);
+
+            if (decision != ReplicationFaultDecision.SkipAndAdvance)
+                return false;
+
+            stats.RecordChangeVectorSkip();
+            skippedReplicationItemsInfo.Update(item);
+            return true;
         }
 
         private void SendDocumentsBatch(DocumentsOperationContext documentsContext, OutgoingReplicationStatsScope stats)

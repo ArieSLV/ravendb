@@ -82,6 +82,7 @@ namespace Raven.Server.Documents.Replication
             public Action OnIncomingReplicationHandlerStart;
             public Action BeforeDisposingIncomingReplicationHandlers;
             public Func<Stream, Stream> WrapIncomingReplicationStream;
+            public ReplicationFaultController OutgoingFaultController;
         }
 
         public int GetNextReplicationStatsId() => Interlocked.Increment(ref _replicationStatsId);

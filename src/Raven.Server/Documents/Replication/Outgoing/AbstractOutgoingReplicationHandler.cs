@@ -547,6 +547,17 @@ namespace Raven.Server.Documents.Replication.Outgoing
         {
             AddReplicationPulse(ReplicationPulseDirection.OutgoingHeartbeat);
 
+            if (changeVector != null &&
+                Destination is InternalReplication internalReplication &&
+                this is DatabaseOutgoingReplicationHandler databaseOutgoingReplicationHandler &&
+                databaseOutgoingReplicationHandler._parent.ForTestingPurposes?.OutgoingFaultController?.ShouldSuppressHeartbeatDatabaseChangeVector(_databaseName, _server.NodeTag, internalReplication.NodeTag) == true)
+            {
+                ReplicationInvestigationTrace.Write(
+                    "FAULT_HEARTBEAT_SUPPRESSED",
+                    $"db={_databaseName} source={_server.NodeTag} target={internalReplication.NodeTag} changeVector={changeVector}");
+                changeVector = null;
+            }
+
             using (_contextPool.AllocateOperationContext(out JsonOperationContext context))
             using (var writer = new BlittableJsonTextWriter(context, _stream))
             {

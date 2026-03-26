@@ -9,11 +9,14 @@ using System.Threading;
 using System.Threading.Tasks;
 using FastTests;
 using Raven.Client.Documents;
+using Raven.Client.Documents.Indexes;
 using Raven.Client.Documents.Operations;
 using Raven.Client.Documents.Operations.ConnectionStrings;
 using Raven.Client.Documents.Operations.ETL;
+using Raven.Client.Documents.Operations.Indexes;
 using Raven.Client.Documents.Operations.OngoingTasks;
 using Raven.Client.Documents.Operations.Replication;
+using Raven.Client.Documents.Queries;
 using Raven.Client.Documents.Session;
 using Raven.Client.Documents.Session.TimeSeries;
 using Raven.Client.Documents.Smuggler;
@@ -2434,5 +2437,1977 @@ namespace SlowTests.Issues
                 ReplicationInvestigationTrace.Reset();
             }
         }
+
+        [RavenFact(RavenTestCategory.Replication | RavenTestCategory.Certificates)]
+        public async Task Can_seed_persistent_recovery_dataset_with_mixed_consistency_states()
+        {
+            const int bulkScenarioSize = 3;
+            const int mixedRun5ScenarioRepeatCount = 2;
+            const int mixedRun1ScenarioRepeatCount = 2;
+            const int totalDocumentsPerScenario = bulkScenarioSize + (5 * mixedRun5ScenarioRepeatCount) + mixedRun1ScenarioRepeatCount;
+            var labRoot = Path.Combine(Path.GetTempPath(), $"replication-recovery-lab-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(labRoot);
+
+            var customSettingsList = CreatePersistentClusterSettings(labRoot);
+            var (hubNodes, hubLeader, certs) = await CreateRaftClusterWithSsl(numberOfNodes: 3, watcherCluster: true, shouldRunInMemory: false, customSettingsList: customSettingsList);
+            var serverA = hubNodes[0];
+            var serverB = hubNodes[1];
+            var serverC = hubNodes[2];
+
+            var hubDbName = GetDatabaseName();
+            var diagnosticServerCertificatePath = Path.Combine(labRoot, "server-cert-for-communication.pfx");
+            var usableClientCertificatePath = Path.Combine(labRoot, "usable-client-cert.pfx");
+            var usableClientCertificatePasswordPath = Path.Combine(labRoot, "usable-client-cert.password.txt");
+            var connectionInfoPath = Path.Combine(labRoot, "connection-info.txt");
+            var tracePath = Path.Combine(labRoot, "replication-recovery-lab.trace.log");
+
+            File.Copy(certs.ServerCertificateForCommunicationPath, diagnosticServerCertificatePath, overwrite: true);
+            File.Copy(certs.ClientCertificate1Path, usableClientCertificatePath, overwrite: true);
+            File.WriteAllText(usableClientCertificatePasswordPath, string.Empty);
+
+            Certificates.RegisterClientCertificate(
+                certs.ServerCertificateForCommunication.Value,
+                certs.ClientCertificate1.Value,
+                new Dictionary<string, DatabaseAccess>(),
+                SecurityClearance.ClusterAdmin,
+                server: hubLeader,
+                certificateName: "recovery-lab-external-client");
+
+            using var hubStore = GetDocumentStore(new Options
+            {
+                Server = hubLeader,
+                ReplicationFactor = 3,
+                RunInMemory = false,
+                DeleteDatabaseOnDispose = false,
+                AdminCertificate = certs.ServerCertificateForCommunication.Value,
+                ClientCertificate = certs.ServerCertificateForCommunication.Value,
+                ModifyDatabaseName = _ => hubDbName,
+                CreateDatabase = true
+            });
+
+            var nodeStores = Cluster.GetDocumentStores(nodes: [serverA, serverB, serverC], hubDbName, disableTopologyUpdates: true, certificate: certs.ServerCertificateForCommunication.Value);
+            var storeA = nodeStores[0];
+            var storeB = nodeStores[1];
+            var storeC = nodeStores[2];
+
+            var dbA = await GetDatabase(serverA, hubDbName);
+            var dbB = await GetDatabase(serverB, hubDbName);
+            var dbC = await GetDatabase(serverC, hubDbName);
+            var faultController = new ReplicationFaultController();
+            var lab = new RecoveryLabClusterContext(
+                hubDbName,
+                serverA,
+                serverB,
+                serverC,
+                dbA,
+                dbB,
+                dbC,
+                storeA,
+                storeB,
+                storeC,
+                faultController);
+
+            ReplicationInvestigationTrace.Configure(tracePath, "recovery/", "lab/probe/");
+
+            try
+            {
+                var scenarios = CreateScenarioCatalog();
+                var initialConnectionInfo =
+                    $"""
+                     Recovery dataset seeding is starting.
+                     Database: {hubDbName}
+                     Lab root: {labRoot}
+
+                     Connect now while the dataset is still being generated:
+                     https://localhost:{new Uri(serverA.WebUrl).Port}
+                     https://localhost:{new Uri(serverB.WebUrl).Port}
+                     https://localhost:{new Uri(serverC.WebUrl).Port}
+
+                     External client certificate (password: <empty>):
+                     {usableClientCertificatePath}
+
+                     Password file:
+                     {usableClientCertificatePasswordPath}
+
+                     Diagnostic server certificate:
+                     {diagnosticServerCertificatePath}
+
+                     Trace files:
+                     Machine-readable: {tracePath}
+                     Human-readable: {ReplicationInvestigationTrace.ReadablePath}
+
+                     Planned scenario counts:
+                     Repairable scenarios: {scenarios.Count(x => x.IsRepairable)}
+                     Ambiguous scenarios: {scenarios.Count(x => x.IsRepairable == false)}
+                     Documents per scenario (while debugging): {totalDocumentsPerScenario}
+
+                     Planned index families:
+                     Audit naming pattern: Recovery_Audit_<scenario>
+                     Invalid naming pattern: Recovery_Invalid_<scenario>
+                     Ambiguous naming pattern: Recovery_Ambiguous_<scenario>
+                     Raw document oracle is authoritative; indexes are an operator-facing aggregate view.
+
+                     Node URLs:
+                     {serverA.WebUrl}
+                     {serverB.WebUrl}
+                     {serverC.WebUrl}
+
+                     Node data directories:
+                     A: {serverA.Configuration.Core.DataDirectory.FullPath}
+                     B: {serverB.Configuration.Core.DataDirectory.FullPath}
+                     C: {serverC.Configuration.Core.DataDirectory.FullPath}
+                     """;
+
+                File.WriteAllText(connectionInfoPath, initialConnectionInfo);
+                Output.WriteLine(initialConnectionInfo);
+                Console.WriteLine(initialConnectionInfo);
+
+                await CreateScenarioValidationIndexesAsync(hubStore, scenarios);
+                ConfigureFaultInjection(lab, faultController);
+                await PrimeReplicationAsync(lab);
+
+                var bulkPlans = BuildBulkPlans(scenarios, bulkScenarioSize);
+                await SeedScenarioPlansAsync(lab, scenarios, bulkPlans, mixedExecution: false);
+
+                var mixedRun5Plans = BuildMixedPlans(scenarios, batchKind: "mixed-run-5", runLength: 5, repeatsPerScenario: mixedRun5ScenarioRepeatCount);
+                await SeedScenarioPlansAsync(lab, scenarios, mixedRun5Plans, mixedExecution: true);
+
+                var mixedRun1Plans = BuildMixedPlans(scenarios, batchKind: "mixed-run-1", runLength: 1, repeatsPerScenario: mixedRun1ScenarioRepeatCount);
+                await SeedScenarioPlansAsync(lab, scenarios, mixedRun1Plans, mixedExecution: true);
+
+                ClearFaultInjection(lab);
+
+                await AssertAllPlansAsync(lab, scenarios, bulkPlans, mixedRun5Plans, mixedRun1Plans);
+                Indexes.WaitForIndexing(storeA, databaseName: hubDbName, timeout: TimeSpan.FromMinutes(5), nodeTag: "A");
+                Indexes.WaitForIndexing(storeB, databaseName: hubDbName, timeout: TimeSpan.FromMinutes(5), nodeTag: "B");
+                Indexes.WaitForIndexing(storeC, databaseName: hubDbName, timeout: TimeSpan.FromMinutes(5), nodeTag: "C");
+                await AssertScenarioIndexCountsAsync(lab, scenarios, totalDocumentsPerScenario);
+                await RunLiveClusterProbeAsync(lab);
+
+                var scenarioIndexMatrixPath = Path.Combine(labRoot, "scenario-index-matrix.md");
+                var scenarioIndexMatrix = CreateScenarioIndexMatrix(
+                    scenarios,
+                    totalDocumentsPerScenario);
+                File.WriteAllText(scenarioIndexMatrixPath, scenarioIndexMatrix);
+
+                Servers.Remove(serverA);
+                Servers.Remove(serverB);
+                Servers.Remove(serverC);
+
+                var connectionInfo =
+                    $"""
+                     Recovery dataset is ready.
+                     Database: {hubDbName}
+                     Lab root: {labRoot}
+
+                     Recommended URLs:
+                     https://localhost:{new Uri(serverA.WebUrl).Port}
+                     https://localhost:{new Uri(serverB.WebUrl).Port}
+                     https://localhost:{new Uri(serverC.WebUrl).Port}
+
+                     External client certificate (password: <empty>):
+                     {usableClientCertificatePath}
+
+                     Password file:
+                     {usableClientCertificatePasswordPath}
+
+                     Diagnostic server certificate:
+                     {diagnosticServerCertificatePath}
+
+                     Trace files:
+                     Machine-readable: {tracePath}
+                     Human-readable: {ReplicationInvestigationTrace.ReadablePath}
+
+                     Scenario counts:
+                     Repairable scenarios: {scenarios.Count(x => x.IsRepairable)}
+                     Ambiguous scenarios: {scenarios.Count(x => x.IsRepairable == false)}
+                     Documents per scenario: {totalDocumentsPerScenario}
+
+                     Scenario indexes:
+                     Audit index count: {scenarios.Count}
+                     Invalid index count: {scenarios.Count(x => x.IsRepairable)}
+                     Ambiguous index count: {scenarios.Count(x => x.IsRepairable == false)}
+                     Audit naming pattern: Recovery_Audit_<scenario>
+                     Invalid naming pattern: Recovery_Invalid_<scenario>
+                     Ambiguous naming pattern: Recovery_Ambiguous_<scenario>
+                     Audit example: {GetAuditIndexName(scenarios[0].Name)}
+                     Check example: {GetCheckIndexName(scenarios[0])}
+                     Raw document oracle is authoritative; indexes are an operator-facing aggregate view.
+
+                     Scenario index matrix:
+                     {scenarioIndexMatrixPath}
+
+                     Node URLs:
+                     {serverA.WebUrl}
+                     {serverB.WebUrl}
+                     {serverC.WebUrl}
+
+                     Node data directories:
+                     A: {serverA.Configuration.Core.DataDirectory.FullPath}
+                     B: {serverB.Configuration.Core.DataDirectory.FullPath}
+                     C: {serverC.Configuration.Core.DataDirectory.FullPath}
+                     """;
+
+                File.WriteAllText(connectionInfoPath, connectionInfo);
+
+                var readyMessage =
+                    $"""
+                     {connectionInfo}
+
+                     Dataset summary:
+                     Bulk scenarios: {scenarios.Count} x {bulkScenarioSize} docs
+                     Mixed batch `mixed-run-5`: {mixedRun5Plans.Count} docs
+                     Mixed batch `mixed-run-1`: {mixedRun1Plans.Count} docs
+
+                     Matrix usage:
+                     1. Open a node-pinned store to A, B, or C.
+                     2. Query `Recovery_Audit_<scenario>` to inspect the local copies and their change vectors.
+                     3. Query `Recovery_Invalid_<scenario>` for repairable scenarios.
+                     4. Query `Recovery_Ambiguous_<scenario>` for ambiguous negative controls.
+                     5. Compare the node-local counts to scenario-index-matrix.md.
+                     6. After recovery, repairable invalid indexes should be empty on all three nodes.
+                     """;
+
+                Output.WriteLine(readyMessage);
+                Console.WriteLine(readyMessage);
+
+                await Task.Delay(Timeout.InfiniteTimeSpan);
+            }
+            finally
+            {
+                ClearFaultInjection(lab);
+                ReplicationInvestigationTrace.Reset();
+            }
+        }
+
+        private async Task PrimeReplicationAsync(RecoveryLabClusterContext lab)
+        {
+            await StoreMarkerDocumentAsync(lab.Stores["A"], "internal/bootstrap/prime-from-a", "prime-from-a");
+            Assert.True(WaitForDocument(lab.Stores["B"], "internal/bootstrap/prime-from-a", timeout: 60_000));
+            Assert.True(WaitForDocument(lab.Stores["C"], "internal/bootstrap/prime-from-a", timeout: 60_000));
+
+            await StoreMarkerDocumentAsync(lab.Stores["B"], "internal/bootstrap/prime-from-b", "prime-from-b");
+            Assert.True(WaitForDocument(lab.Stores["A"], "internal/bootstrap/prime-from-b", timeout: 60_000));
+            Assert.True(WaitForDocument(lab.Stores["C"], "internal/bootstrap/prime-from-b", timeout: 60_000));
+
+            await StoreMarkerDocumentAsync(lab.Stores["C"], "internal/bootstrap/prime-from-c", "prime-from-c");
+            Assert.True(WaitForDocument(lab.Stores["A"], "internal/bootstrap/prime-from-c", timeout: 60_000));
+            Assert.True(WaitForDocument(lab.Stores["B"], "internal/bootstrap/prime-from-c", timeout: 60_000));
+        }
+
+        private static void ConfigureFaultInjection(RecoveryLabClusterContext lab, ReplicationFaultController faultController)
+        {
+            foreach (var database in lab.Databases.Values)
+                database.ReplicationLoader.ForTestingPurposesOnly().OutgoingFaultController = faultController;
+        }
+
+        private static void ClearFaultInjection(RecoveryLabClusterContext lab)
+        {
+            foreach (var database in lab.Databases.Values)
+                database.ReplicationLoader.ForTestingPurposesOnly().OutgoingFaultController = null;
+        }
+
+        private List<ScenarioDefinition> CreateScenarioCatalog()
+        {
+            return
+            [
+                CreateRepairableScenario("only-a", "single-node", "A", 1, "A",
+                    CreateStep(ScenarioStepKind.Create, "A", 1, "A", "B", "C")),
+
+                CreateRepairableScenario("only-b", "single-node", "B", 1, "B",
+                    CreateStep(ScenarioStepKind.Create, "B", 1, "B", "A", "C")),
+
+                CreateRepairableScenario("only-c", "single-node", "C", 1, "C",
+                    CreateStep(ScenarioStepKind.Create, "C", 1, "C", "A", "B")),
+
+
+                CreateRepairableScenario("ab-consistent-missing-c", "two-node-consistent", "AB", 1, "A",
+                    CreateStep(ScenarioStepKind.Create, "A", 1, "A", "C")),
+
+                CreateRepairableScenario("ac-consistent-missing-b", "two-node-consistent", "AC", 1, "A",
+                    CreateStep(ScenarioStepKind.Create, "A", 1, "A", "B")),
+
+                CreateRepairableScenario("bc-consistent-missing-a", "two-node-consistent", "BC", 1, "B",
+                    CreateStep(ScenarioStepKind.Create, "B", 1, "B", "A")),
+
+
+                CreateRepairableScenario("ab-inconsistent-a-wins-missing-c", "two-node-inconsistent", "A", 2, "A",
+                    CreateStep(ScenarioStepKind.Create, "B", 1, "B", "C"),
+                    CreateStep(ScenarioStepKind.Update, "A", 2, "A", "B", "C")),
+
+                CreateRepairableScenario("ab-inconsistent-b-wins-missing-c", "two-node-inconsistent", "B", 2, "B",
+                    CreateStep(ScenarioStepKind.Create, "A", 1, "A", "C"),
+                    CreateStep(ScenarioStepKind.Update, "B", 2, "B", "A", "C")),
+
+                CreateRepairableScenario("ac-inconsistent-a-wins-missing-b", "two-node-inconsistent", "A", 2, "A",
+                    CreateStep(ScenarioStepKind.Create, "C", 1, "C", "B"),
+                    CreateStep(ScenarioStepKind.Update, "A", 2, "A", "B", "C")),
+
+                CreateRepairableScenario("ac-inconsistent-c-wins-missing-b", "two-node-inconsistent", "C", 2, "C",
+                    CreateStep(ScenarioStepKind.Create, "A", 1, "A", "B"),
+                    CreateStep(ScenarioStepKind.Update, "C", 2, "C", "A", "B")),
+
+                CreateRepairableScenario("bc-inconsistent-b-wins-missing-a", "two-node-inconsistent", "B", 2, "B",
+                    CreateStep(ScenarioStepKind.Create, "C", 1, "C", "A"),
+                    CreateStep(ScenarioStepKind.Update, "B", 2, "B", "A", "C")),
+
+                CreateRepairableScenario("bc-inconsistent-c-wins-missing-a", "two-node-inconsistent", "C", 2, "C",
+                    CreateStep(ScenarioStepKind.Create, "B", 1, "B", "A"),
+                    CreateStep(ScenarioStepKind.Update, "C", 2, "C", "A", "B")),
+
+
+                CreateRepairableScenario("all-three-a-wins-one-stale-b", "three-node-one-stale", "A", 2, "A",
+                    CreateStep(ScenarioStepKind.Create, "C", 1, "C"),
+                    CreateStep(ScenarioStepKind.Update, "A", 2, "A", "B")),
+
+                CreateRepairableScenario("all-three-a-wins-one-stale-c", "three-node-one-stale", "A", 2, "A",
+                    CreateStep(ScenarioStepKind.Create, "B", 1, "B"),
+                    CreateStep(ScenarioStepKind.Update, "A", 2, "A", "C")),
+
+                CreateRepairableScenario("all-three-b-wins-one-stale-a", "three-node-one-stale", "B", 2, "B",
+                    CreateStep(ScenarioStepKind.Create, "C", 1, "C"),
+                    CreateStep(ScenarioStepKind.Update, "B", 2, "B", "A")),
+
+                CreateRepairableScenario("all-three-b-wins-one-stale-c", "three-node-one-stale", "B", 2, "B",
+                    CreateStep(ScenarioStepKind.Create, "A", 1, "A"),
+                    CreateStep(ScenarioStepKind.Update, "B", 2, "B", "C")),
+
+                CreateRepairableScenario("all-three-c-wins-one-stale-a", "three-node-one-stale", "C", 2, "C",
+                    CreateStep(ScenarioStepKind.Create, "B", 1, "B"),
+                    CreateStep(ScenarioStepKind.Update, "C", 2, "C", "A")),
+
+                CreateRepairableScenario("all-three-c-wins-one-stale-b", "three-node-one-stale", "C", 2, "C",
+                    CreateStep(ScenarioStepKind.Create, "A", 1, "A"),
+                    CreateStep(ScenarioStepKind.Update, "C", 2, "C", "B")),
+
+
+                CreateRepairableScenario("all-three-a-wins-two-stale", "three-node-two-stale", "A", 2, "A",
+                    CreateStep(ScenarioStepKind.Create, "C", 1, "C"),
+                    CreateStep(ScenarioStepKind.Update, "A", 2, "A", "B", "C")),
+
+                CreateRepairableScenario("all-three-b-wins-two-stale", "three-node-two-stale", "B", 2, "B",
+                    CreateStep(ScenarioStepKind.Create, "A", 1, "A"),
+                    CreateStep(ScenarioStepKind.Update, "B", 2, "B", "A", "C")),
+
+                CreateRepairableScenario("all-three-c-wins-two-stale", "three-node-two-stale", "C", 2, "C",
+                    CreateStep(ScenarioStepKind.Create, "B", 1, "B"),
+                    CreateStep(ScenarioStepKind.Update, "C", 2, "C", "A", "B")),
+
+
+                CreateRepairableScenario("all-three-all-different-a-wins", "three-node-all-different", "A", 3, "A",
+                    CreateStep(ScenarioStepKind.Create, "C", 1, "C"),
+                    CreateStep(ScenarioStepKind.Update, "B", 2, "B", "C"),
+                    CreateStep(ScenarioStepKind.Update, "A", 3, "A", "B", "C")),
+
+                CreateRepairableScenario("all-three-all-different-b-wins", "three-node-all-different", "B", 3, "B",
+                    CreateStep(ScenarioStepKind.Create, "A", 1, "A"),
+                    CreateStep(ScenarioStepKind.Update, "C", 2, "C", "A"),
+                    CreateStep(ScenarioStepKind.Update, "B", 3, "B", "A", "C")),
+
+                CreateRepairableScenario("all-three-all-different-c-wins", "three-node-all-different", "C", 3, "C",
+                    CreateStep(ScenarioStepKind.Create, "B", 1, "B"),
+                    CreateStep(ScenarioStepKind.Update, "A", 2, "A", "B"),
+                    CreateStep(ScenarioStepKind.Update, "C", 3, "C", "A", "B")),
+
+
+                CreateRepairableScenario("all-three-tie-ab-stale-c", "three-node-tie", "AB", 2, "A",
+                    CreateStep(ScenarioStepKind.Create, "C", 1, "C"),
+                    CreateStep(ScenarioStepKind.Update, "A", 2, "A", "C")),
+
+                CreateRepairableScenario("all-three-tie-ac-stale-b", "three-node-tie", "AC", 2, "A",
+                    CreateStep(ScenarioStepKind.Create, "B", 1, "B"),
+                    CreateStep(ScenarioStepKind.Update, "A", 2, "A", "B")),
+
+                CreateRepairableScenario("all-three-tie-bc-stale-a", "three-node-tie", "BC", 2, "B",
+                    CreateStep(ScenarioStepKind.Create, "A", 1, "A"),
+                    CreateStep(ScenarioStepKind.Update, "B", 2, "B", "A")),
+
+
+                CreateAmbiguousScenario("ab-ambiguous-a-vs-b-missing-c", "two-node-ambiguous",
+                    CreateStep(ScenarioStepKind.Create, "A", 1, "A", "B", "C"),
+                    CreateStep(ScenarioStepKind.Create, "B", 1, "B", "A", "C")),
+
+                CreateAmbiguousScenario("ac-ambiguous-a-vs-c-missing-b", "two-node-ambiguous",
+                    CreateStep(ScenarioStepKind.Create, "A", 1, "A", "B", "C"),
+                    CreateStep(ScenarioStepKind.Create, "C", 1, "C", "A", "B")),
+
+                CreateAmbiguousScenario("bc-ambiguous-b-vs-c-missing-a", "two-node-ambiguous",
+                    CreateStep(ScenarioStepKind.Create, "B", 1, "B", "A", "C"),
+                    CreateStep(ScenarioStepKind.Create, "C", 1, "C", "A", "B")),
+
+
+                CreateAmbiguousScenario("all-three-ambiguous-a-vs-b-base-c", "three-node-ambiguous",
+                    CreateStep(ScenarioStepKind.Create, "C", 1, "C"),
+                    CreateStep(ScenarioStepKind.Update, "A", 2, "A", "B", "C"),
+                    CreateStep(ScenarioStepKind.Update, "B", 2, "B", "A", "C")),
+
+                CreateAmbiguousScenario("all-three-ambiguous-a-vs-c-base-b", "three-node-ambiguous",
+                    CreateStep(ScenarioStepKind.Create, "B", 1, "B"),
+                    CreateStep(ScenarioStepKind.Update, "A", 2, "A", "B", "C"),
+                    CreateStep(ScenarioStepKind.Update, "C", 2, "C", "A", "B")),
+
+                CreateAmbiguousScenario("all-three-ambiguous-b-vs-c-base-a", "three-node-ambiguous",
+                    CreateStep(ScenarioStepKind.Create, "A", 1, "A"),
+                    CreateStep(ScenarioStepKind.Update, "B", 2, "B", "A", "C"),
+                    CreateStep(ScenarioStepKind.Update, "C", 2, "C", "A", "B"))
+            ];
+        }
+
+        private ScenarioDefinition CreateRepairableScenario(string name, string scenarioGroup, string expectedWinnerNode, int expectedWinnerVersion, string expectedWinnerWrittenBy, params ScenarioStepDefinition[] steps) =>
+            CreateScenario(name, scenarioGroup, RepairPolicyRepairable, expectedWinnerNode, expectedWinnerVersion, expectedWinnerWrittenBy, steps);
+
+        private ScenarioDefinition CreateAmbiguousScenario(string name, string scenarioGroup, params ScenarioStepDefinition[] steps) =>
+            CreateScenario(name, scenarioGroup, RepairPolicyAmbiguousSkip, null, null, null, steps);
+
+        private ScenarioDefinition CreateScenario(string name, string scenarioGroup, string repairPolicy, string expectedWinnerNode, int? expectedWinnerVersion, string expectedWinnerWrittenBy, params ScenarioStepDefinition[] steps)
+        {
+            var simulation = SimulateScenarioStates(steps);
+
+            return new ScenarioDefinition
+            {
+                Name = name,
+                ScenarioGroup = scenarioGroup,
+                RepairPolicy = repairPolicy,
+                ExpectedWinnerNode = expectedWinnerNode,
+                ExpectedWinnerVersion = expectedWinnerVersion,
+                ExpectedWinnerWrittenBy = expectedWinnerWrittenBy,
+                SeedPattern = BuildSeedPattern(simulation.FinalStates),
+                ValidatedIn = ValidatedInAllBatchKinds,
+                Steps = steps.ToList(),
+                StatesBeforeEachStep = simulation.StatesBeforeEachStep,
+                StatesAfterEachStep = simulation.StatesAfterEachStep,
+                FinalStates = simulation.FinalStates,
+                CvTopology = BuildExpectedCvTopology(scenarioGroup, repairPolicy, expectedWinnerNode, simulation.FinalStates)
+            };
+        }
+
+        private ExpectedCvTopology BuildExpectedCvTopology(
+            string scenarioGroup,
+            string repairPolicy,
+            string expectedWinnerNode,
+            IReadOnlyDictionary<string, SimulatedNodeState> finalStates)
+        {
+            var groups = finalStates
+                .Where(x => x.Value.Exists)
+                .GroupBy(x => x.Value.LastActionOrdinal)
+                .Select(group =>
+                {
+                    var nodeTags = group
+                        .Select(x => x.Key)
+                        .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                        .ToArray();
+
+                    return new ExpectedCvGroup
+                    {
+                        GroupKey = CreateGroupKey(nodeTags),
+                        NodeTags = nodeTags,
+                        ActionOrdinal = group.Key
+                    };
+                })
+                .OrderBy(x => x.ActionOrdinal)
+                .ToList();
+
+            var topology = new ExpectedCvTopology
+            {
+                ExpectedExistingNodes = finalStates
+                    .Where(x => x.Value.Exists)
+                    .Select(x => x.Key)
+                    .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                    .ToArray(),
+                Groups = groups,
+                GroupKeys = groups
+                    .Select(x => x.GroupKey)
+                    .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                    .ToArray(),
+                ExpectAmbiguous = string.Equals(repairPolicy, RepairPolicyAmbiguousSkip, StringComparison.Ordinal)
+            };
+
+            if (topology.ExpectAmbiguous == false)
+            {
+                topology.DominantGroupKey = ResolveDominantGroupKey(expectedWinnerNode, groups);
+                foreach (var group in groups.Where(x => string.Equals(x.GroupKey, topology.DominantGroupKey, StringComparison.OrdinalIgnoreCase) == false))
+                {
+                    topology.DominancePairs.Add(new ExpectedCvRelation
+                    {
+                        LeftGroupKey = topology.DominantGroupKey,
+                        RightGroupKey = group.GroupKey
+                    });
+                }
+
+                if (string.Equals(scenarioGroup, "three-node-all-different", StringComparison.OrdinalIgnoreCase) && groups.Count == 3)
+                {
+                    topology.DominancePairs.Add(new ExpectedCvRelation
+                    {
+                        LeftGroupKey = groups[1].GroupKey,
+                        RightGroupKey = groups[0].GroupKey
+                    });
+                }
+
+                return topology;
+            }
+
+            if (string.Equals(scenarioGroup, "two-node-ambiguous", StringComparison.OrdinalIgnoreCase) && groups.Count == 2)
+            {
+                topology.IncomparablePairs.Add(new ExpectedCvRelation
+                {
+                    LeftGroupKey = groups[0].GroupKey,
+                    RightGroupKey = groups[1].GroupKey
+                });
+            }
+
+            if (string.Equals(scenarioGroup, "three-node-ambiguous", StringComparison.OrdinalIgnoreCase) && groups.Count >= 2)
+            {
+                var baseGroup = groups[0];
+                var competitorGroups = groups.Skip(1).ToArray();
+
+                foreach (var competitorGroup in competitorGroups)
+                {
+                    topology.DominancePairs.Add(new ExpectedCvRelation
+                    {
+                        LeftGroupKey = competitorGroup.GroupKey,
+                        RightGroupKey = baseGroup.GroupKey
+                    });
+                }
+
+                if (competitorGroups.Length == 2)
+                {
+                    topology.IncomparablePairs.Add(new ExpectedCvRelation
+                    {
+                        LeftGroupKey = competitorGroups[0].GroupKey,
+                        RightGroupKey = competitorGroups[1].GroupKey
+                    });
+                }
+            }
+
+            return topology;
+        }
+
+        private string ResolveDominantGroupKey(string expectedWinnerNode, IReadOnlyList<ExpectedCvGroup> groups)
+        {
+            if (string.IsNullOrWhiteSpace(expectedWinnerNode))
+                return null;
+
+            var winnerNodeTags = expectedWinnerNode
+                .Where(char.IsLetter)
+                .Select(ch => ch.ToString())
+                .ToArray();
+
+            var dominantGroup = groups.Single(group => winnerNodeTags.All(winnerTag => group.NodeTags.Contains(winnerTag, StringComparer.OrdinalIgnoreCase)));
+            return dominantGroup.GroupKey;
+        }
+
+        private ScenarioStepDefinition CreateStep(ScenarioStepKind kind, string writerNode, int version, string writtenBy, params string[] skippedTargets) =>
+            new(kind, writerNode, version, writtenBy, skippedTargets);
+
+        private ScenarioSimulation SimulateScenarioStates(IReadOnlyList<ScenarioStepDefinition> steps)
+        {
+            var currentStates = CreateEmptyNodeStates();
+            var beforeStates = new List<Dictionary<string, SimulatedNodeState>>(steps.Count);
+            var afterStates = new List<Dictionary<string, SimulatedNodeState>>(steps.Count);
+
+            for (var stepIndex = 0; stepIndex < steps.Count; stepIndex++)
+            {
+                var step = steps[stepIndex];
+                beforeStates.Add(CloneStates(currentStates));
+
+                var writerState = currentStates[step.WriterNode];
+                if (step.Kind == ScenarioStepKind.Create && writerState.Exists)
+                    throw new InvalidOperationException($"Scenario '{step.WriterNode}' create step '{stepIndex + 1}' expected a missing document on the writer.");
+
+                if (step.Kind == ScenarioStepKind.Update && writerState.Exists == false)
+                    throw new InvalidOperationException($"Scenario '{step.WriterNode}' update step '{stepIndex + 1}' expected the document to already exist on the writer.");
+
+                var replicatedState = new SimulatedNodeState
+                {
+                    Exists = true,
+                    Version = step.Version,
+                    WrittenBy = step.WrittenBy,
+                    LastActionOrdinal = stepIndex + 1
+                };
+
+                currentStates[step.WriterNode] = replicatedState.Clone();
+
+                foreach (var nodeTag in OrderedNodeTags)
+                {
+                    if (string.Equals(nodeTag, step.WriterNode, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    if (step.SkippedTargets.Contains(nodeTag, StringComparer.OrdinalIgnoreCase))
+                        continue;
+
+                    currentStates[nodeTag] = replicatedState.Clone();
+                }
+
+                afterStates.Add(CloneStates(currentStates));
+            }
+
+            return new ScenarioSimulation(beforeStates, afterStates, CloneStates(currentStates));
+        }
+
+        private static Dictionary<string, SimulatedNodeState> CreateEmptyNodeStates() =>
+            OrderedNodeTags.ToDictionary(
+                nodeTag => nodeTag,
+                _ => new SimulatedNodeState(),
+                StringComparer.OrdinalIgnoreCase);
+
+        private static Dictionary<string, SimulatedNodeState> CloneStates(IReadOnlyDictionary<string, SimulatedNodeState> states) =>
+            states.ToDictionary(
+                kvp => kvp.Key,
+                kvp => kvp.Value.Clone(),
+                StringComparer.OrdinalIgnoreCase);
+
+        private static string BuildSeedPattern(IReadOnlyDictionary<string, SimulatedNodeState> finalStates) =>
+            string.Join("|", OrderedNodeTags.Select(nodeTag =>
+            {
+                var state = finalStates[nodeTag];
+                return state.Exists ? $"{nodeTag}:v{state.Version}/{state.WrittenBy}" : $"{nodeTag}:missing";
+            }));
+
+        private List<RecoveryDocumentPlan> BuildBulkPlans(IReadOnlyList<ScenarioDefinition> scenarios, int documentsPerScenario)
+        {
+            var plans = new List<RecoveryDocumentPlan>(scenarios.Count * documentsPerScenario);
+            var sequence = 0;
+
+            foreach (var scenario in scenarios)
+            {
+                for (var scenarioSequence = 1; scenarioSequence <= documentsPerScenario; scenarioSequence++)
+                {
+                    sequence++;
+                    plans.Add(CreateDocumentPlan(
+                        scenario,
+                        batchKind: "bulk",
+                        batchSequence: sequence,
+                        scenarioSequence: scenarioSequence,
+                        id: GetRecoveryDocumentId("bulk", scenario.Name, scenarioSequence)));
+                }
+            }
+
+            return plans;
+        }
+
+        private List<RecoveryDocumentPlan> BuildMixedPlans(IReadOnlyList<ScenarioDefinition> scenarios, string batchKind, int runLength, int repeatsPerScenario)
+        {
+            var plans = new List<RecoveryDocumentPlan>();
+            var scenarioSequences = scenarios.ToDictionary(x => x.Name, _ => 0, StringComparer.OrdinalIgnoreCase);
+            var batchSequence = 0;
+
+            for (var repeat = 0; repeat < repeatsPerScenario; repeat++)
+            {
+                foreach (var scenario in scenarios)
+                {
+                    for (var runItem = 0; runItem < runLength; runItem++)
+                    {
+                        batchSequence++;
+                        scenarioSequences[scenario.Name]++;
+
+                        plans.Add(CreateDocumentPlan(
+                            scenario,
+                            batchKind,
+                            batchSequence,
+                            scenarioSequences[scenario.Name],
+                            GetRecoveryDocumentId(batchKind, batchSequence)));
+                    }
+                }
+            }
+
+            return plans;
+        }
+
+        private static RecoveryDocumentPlan CreateDocumentPlan(ScenarioDefinition scenario, string batchKind, int batchSequence, int scenarioSequence, string id)
+        {
+            return new RecoveryDocumentPlan
+            {
+                Id = id,
+                BatchKind = batchKind,
+                Sequence = batchSequence,
+                Scenario = scenario.Name,
+                ScenarioGroup = scenario.ScenarioGroup,
+                ScenarioSequence = scenarioSequence,
+                RepairPolicy = scenario.RepairPolicy,
+                ExpectedWinnerNode = scenario.ExpectedWinnerNode,
+                ExpectedWinnerVersion = scenario.ExpectedWinnerVersion,
+                ExpectedWinnerWrittenBy = scenario.ExpectedWinnerWrittenBy,
+                SeedPattern = scenario.SeedPattern
+            };
+        }
+
+        private async Task SeedScenarioPlansAsync(RecoveryLabClusterContext lab, IReadOnlyList<ScenarioDefinition> scenarios, IReadOnlyList<RecoveryDocumentPlan> plans, bool mixedExecution)
+        {
+            var scenariosByName = scenarios.ToDictionary(x => x.Name, StringComparer.OrdinalIgnoreCase);
+
+            if (mixedExecution)
+            {
+                foreach (var plan in plans.OrderBy(x => x.Sequence))
+                {
+                    var scenario = scenariosByName[plan.Scenario];
+                    var chunk = new[] { plan };
+                    await ExecuteScenarioChunkAsync(lab, scenario, chunk, writeChunkSize: 1);
+                    await AssertPlansChunkAsync(lab, scenario, chunk);
+                }
+
+                return;
+            }
+
+            foreach (var scenario in scenarios)
+            {
+                var scenarioPlans = plans
+                    .Where(x => string.Equals(x.Scenario, scenario.Name, StringComparison.OrdinalIgnoreCase))
+                    .OrderBy(x => x.ScenarioSequence)
+                    .ToList();
+
+                for (var start = 0; start < scenarioPlans.Count; start += 128)
+                {
+                    var chunk = scenarioPlans.Skip(start).Take(128).ToArray();
+                    await ExecuteScenarioChunkAsync(lab, scenario, chunk, writeChunkSize: 128);
+                    await AssertPlansChunkAsync(lab, scenario, chunk);
+                }
+            }
+        }
+
+        private async Task ExecuteScenarioChunkAsync(RecoveryLabClusterContext lab, ScenarioDefinition scenario, IReadOnlyList<RecoveryDocumentPlan> plans, int writeChunkSize)
+        {
+            var documentIds = plans.Select(x => x.Id).ToArray();
+            var heartbeatSuppressionHandles = new List<ReplicationHeartbeatSuppressionHandle>();
+            var suppressedHeartbeatLinks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var persistentRuleHandles = new List<ReplicationFaultRuleHandle>();
+            var progressTargetsBySource = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
+            try
+            {
+                for (var stepIndex = 0; stepIndex < scenario.Steps.Count; stepIndex++)
+                {
+                    var step = scenario.Steps[stepIndex];
+                    var directRuleHandles = new List<ReplicationFaultRuleHandle>();
+                    var relayRuleHandles = new List<ReplicationFaultRuleHandle>();
+
+                    try
+                    {
+                        var skippedTargets = step.SkippedTargets
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToArray();
+                        var sourceEtagsBeforeStep = OrderedNodeTags.ToDictionary(
+                            nodeTag => nodeTag,
+                            nodeTag => lab.Databases[nodeTag].ReadLastEtag(),
+                            StringComparer.OrdinalIgnoreCase);
+                        var relaySourceTags = OrderedNodeTags
+                            .Where(nodeTag => string.Equals(nodeTag, step.WriterNode, StringComparison.OrdinalIgnoreCase) == false)
+                            .Where(nodeTag => skippedTargets.Contains(nodeTag, StringComparer.OrdinalIgnoreCase) == false)
+                            .Where(nodeTag => scenario.StatesAfterEachStep[stepIndex][nodeTag].Exists)
+                            .ToArray();
+
+                        foreach (var targetNodeTag in skippedTargets)
+                        {
+                            var directRuleHandle = lab.FaultController.ArmSkipAndAdvance(
+                                lab.DatabaseName,
+                                step.WriterNode,
+                                targetNodeTag,
+                                sourceEtagsBeforeStep[step.WriterNode],
+                                documentIds,
+                                $"{scenario.Name}/{plans[0].BatchKind}/step-{stepIndex + 1}:writer:{step.WriterNode}->{targetNodeTag}");
+
+                            if (scenario.IsRepairable)
+                                directRuleHandles.Add(directRuleHandle);
+                            else
+                            {
+                                persistentRuleHandles.Add(directRuleHandle);
+                                AddProgressTarget(progressTargetsBySource, step.WriterNode, targetNodeTag);
+                            }
+
+                            if (scenario.IsRepairable == false)
+                            {
+                                var heartbeatKey = $"{step.WriterNode}->{targetNodeTag}";
+                                if (suppressedHeartbeatLinks.Add(heartbeatKey))
+                                {
+                                    heartbeatSuppressionHandles.Add(lab.FaultController.ArmHeartbeatSuppression(
+                                        lab.DatabaseName,
+                                        step.WriterNode,
+                                        targetNodeTag,
+                                        $"{scenario.Name}/{plans[0].BatchKind}/step-{stepIndex + 1}:writer:{step.WriterNode}->{targetNodeTag}"));
+                                }
+                            }
+                        }
+
+                        foreach (var sourceNodeTag in relaySourceTags)
+                        {
+                            foreach (var targetNodeTag in skippedTargets)
+                            {
+                                var relayRuleHandle = lab.FaultController.ArmSkipAndAdvance(
+                                    lab.DatabaseName,
+                                    sourceNodeTag,
+                                    targetNodeTag,
+                                    sourceEtagsBeforeStep[sourceNodeTag],
+                                    documentIds,
+                                    $"{scenario.Name}/{plans[0].BatchKind}/step-{stepIndex + 1}:relay:{sourceNodeTag}->{targetNodeTag}");
+
+                                if (scenario.IsRepairable)
+                                {
+                                    relayRuleHandles.Add(relayRuleHandle);
+                                }
+                                else
+                                {
+                                    persistentRuleHandles.Add(relayRuleHandle);
+                                    AddProgressTarget(progressTargetsBySource, sourceNodeTag, targetNodeTag);
+
+                                    var heartbeatKey = $"{sourceNodeTag}->{targetNodeTag}";
+                                    if (suppressedHeartbeatLinks.Add(heartbeatKey))
+                                    {
+                                        heartbeatSuppressionHandles.Add(lab.FaultController.ArmHeartbeatSuppression(
+                                            lab.DatabaseName,
+                                            sourceNodeTag,
+                                            targetNodeTag,
+                                            $"{scenario.Name}/{plans[0].BatchKind}/step-{stepIndex + 1}:relay:{sourceNodeTag}->{targetNodeTag}"));
+                                    }
+                                }
+                            }
+                        }
+
+                        var expectedWriterState = scenario.StatesBeforeEachStep[stepIndex][step.WriterNode];
+                        await WriteScenarioChunkAsync(lab.Stores[step.WriterNode], plans, step, expectedWriterState, writeChunkSize);
+
+                        foreach (var nodeTag in OrderedNodeTags)
+                        {
+                            if (string.Equals(nodeTag, step.WriterNode, StringComparison.OrdinalIgnoreCase))
+                                continue;
+
+                            if (step.SkippedTargets.Contains(nodeTag, StringComparer.OrdinalIgnoreCase))
+                                continue;
+
+                            await WaitForChunkStateAsync(lab.Stores[nodeTag], documentIds, scenario.StatesAfterEachStep[stepIndex][nodeTag]);
+                        }
+
+                        if (scenario.IsRepairable)
+                        {
+                            // Ambiguous negative controls must not teach competing nodes a newer writer etag
+                            // via an unrestricted trigger write, or one side can become dominant by construction.
+                            var progressSourceTags = relaySourceTags
+                                .Append(step.WriterNode)
+                                .Distinct(StringComparer.OrdinalIgnoreCase)
+                                .ToArray();
+                            var progressTriggerIds = await TriggerReplicationProgressAsync(lab, progressSourceTags, scenario.Name, plans[0].BatchKind, stepIndex, plans[0].Sequence);
+
+                            foreach (var sourceNodeTag in progressSourceTags)
+                            {
+                                var progressTriggerId = progressTriggerIds[sourceNodeTag];
+                                foreach (var targetNodeTag in skippedTargets)
+                                {
+                                    Assert.True(
+                                        WaitForDocument(lab.Stores[targetNodeTag], progressTriggerId, timeout: 120_000),
+                                        $"Expected progress trigger '{progressTriggerId}' from {sourceNodeTag} to arrive on {targetNodeTag} for scenario '{scenario.Name}', batch '{plans[0].BatchKind}', step {stepIndex + 1}.");
+                                }
+                            }
+                        }
+
+                        await WaitForPartiallyMatchedRulesToCompleteAsync(directRuleHandles);
+                        await WaitForPartiallyMatchedRulesToCompleteAsync(relayRuleHandles);
+
+                        foreach (var targetNodeTag in skippedTargets)
+                            await WaitForChunkStateAsync(
+                                lab.Stores[targetNodeTag],
+                                documentIds,
+                                scenario.StatesAfterEachStep[stepIndex][targetNodeTag],
+                                stabilityWindow: TimeSpan.FromSeconds(1));
+                    }
+                    finally
+                    {
+                        if (scenario.IsRepairable)
+                        {
+                            foreach (var ruleHandle in directRuleHandles)
+                                ruleHandle.Dispose();
+
+                            foreach (var ruleHandle in relayRuleHandles)
+                                ruleHandle.Dispose();
+                        }
+                    }
+                }
+
+                if (scenario.IsRepairable == false && progressTargetsBySource.Count > 0)
+                {
+                    var progressSourceTags = OrderedNodeTags
+                        .Where(progressTargetsBySource.ContainsKey)
+                        .ToArray();
+                    var progressTriggerIds = await TriggerReplicationProgressAsync(lab, progressSourceTags, scenario.Name, plans[0].BatchKind, scenario.Steps.Count, plans[0].Sequence);
+
+                    foreach (var sourceNodeTag in progressSourceTags)
+                    {
+                        var progressTriggerId = progressTriggerIds[sourceNodeTag];
+                        foreach (var targetNodeTag in progressTargetsBySource[sourceNodeTag])
+                        {
+                            Assert.True(
+                                WaitForDocument(lab.Stores[targetNodeTag], progressTriggerId, timeout: 120_000),
+                                $"Expected final ambiguous progress trigger '{progressTriggerId}' from {sourceNodeTag} to arrive on {targetNodeTag} for scenario '{scenario.Name}', batch '{plans[0].BatchKind}'.");
+                        }
+                    }
+
+                    await WaitForPartiallyMatchedRulesToCompleteAsync(persistentRuleHandles);
+
+                    foreach (var nodeTag in OrderedNodeTags)
+                    {
+                        await WaitForChunkStateAsync(
+                            lab.Stores[nodeTag],
+                            documentIds,
+                            scenario.FinalStates[nodeTag],
+                            stabilityWindow: TimeSpan.FromSeconds(1));
+                    }
+                }
+            }
+            finally
+            {
+                foreach (var ruleHandle in persistentRuleHandles)
+                    ruleHandle.Dispose();
+
+                foreach (var suppressionHandle in heartbeatSuppressionHandles)
+                    suppressionHandle.Dispose();
+            }
+        }
+
+        private static void AddProgressTarget(Dictionary<string, HashSet<string>> progressTargetsBySource, string sourceNodeTag, string targetNodeTag)
+        {
+            if (progressTargetsBySource.TryGetValue(sourceNodeTag, out var targets) == false)
+            {
+                targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                progressTargetsBySource[sourceNodeTag] = targets;
+            }
+
+            targets.Add(targetNodeTag);
+        }
+
+        private async Task<Dictionary<string, string>> TriggerReplicationProgressAsync(
+            RecoveryLabClusterContext lab,
+            IReadOnlyList<string> sourceNodeTags,
+            string scenarioName,
+            string batchKind,
+            int stepIndex,
+            int chunkSequence)
+        {
+            var triggerIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var sourceNodeTag in sourceNodeTags)
+            {
+                var triggerId = $"internal/relay-trigger/{SanitizeScenarioName(scenarioName)}/{batchKind}/step-{stepIndex + 1}/{sourceNodeTag}/{chunkSequence:D6}";
+                await StoreMarkerDocumentAsync(
+                    lab.Stores[sourceNodeTag],
+                    triggerId,
+                    $"relay-trigger-{scenarioName}-{batchKind}-{stepIndex + 1}-{sourceNodeTag}-{chunkSequence:D6}");
+                triggerIds[sourceNodeTag] = triggerId;
+            }
+
+            return triggerIds;
+        }
+
+        private async Task WaitForPartiallyMatchedRulesToCompleteAsync(IReadOnlyList<ReplicationFaultRuleHandle> ruleHandles)
+        {
+            foreach (var ruleHandle in ruleHandles)
+            {
+                if (ruleHandle.IsCompleted)
+                    continue;
+
+                if (ruleHandle.MatchedMatches <= 0)
+                    continue;
+
+                var completionTask = ruleHandle.WaitForCompletionAsync();
+                var completedTask = await Task.WhenAny(completionTask, Task.Delay(TimeSpan.FromSeconds(30)));
+                Assert.True(
+                    completedTask == completionTask,
+                    $"Fault rule '{ruleHandle.Label}' matched {ruleHandle.MatchedMatches}/{ruleHandle.ExpectedMatches} documents but did not complete within the timeout.");
+
+                await completionTask;
+            }
+        }
+
+        private async Task WriteScenarioChunkAsync(IDocumentStore store, IReadOnlyList<RecoveryDocumentPlan> plans, ScenarioStepDefinition step, SimulatedNodeState expectedWriterState, int chunkSize)
+        {
+            for (var start = 0; start < plans.Count; start += chunkSize)
+            {
+                var chunk = plans.Skip(start).Take(chunkSize).ToArray();
+                var ids = chunk.Select(x => x.Id).ToArray();
+
+                using var session = store.OpenAsyncSession();
+                var documents = await session.LoadAsync<RecoveryScenarioDocument>(ids);
+
+                foreach (var plan in chunk)
+                {
+                    documents.TryGetValue(plan.Id, out var document);
+
+                    Assert.Equal(expectedWriterState.Exists, document != null);
+                    if (expectedWriterState.Exists)
+                    {
+                        Assert.NotNull(document);
+                        Assert.Equal(expectedWriterState.Version, document.Version);
+                        Assert.Equal(expectedWriterState.WrittenBy, document.WrittenBy);
+                    }
+
+                    if (document == null)
+                    {
+                        document = new RecoveryScenarioDocument();
+                        await session.StoreAsync(document, plan.Id);
+                    }
+
+                    document.Scenario = plan.Scenario;
+                    document.Sequence = plan.Sequence;
+                    document.ScenarioSequence = plan.ScenarioSequence;
+                    document.Version = step.Version;
+                    document.WrittenBy = step.WrittenBy;
+                    document.ExpectedWinnerNode = plan.ExpectedWinnerNode;
+                    document.ExpectedWinnerVersion = plan.ExpectedWinnerVersion;
+                    document.ExpectedWinnerWrittenBy = plan.ExpectedWinnerWrittenBy;
+                    document.ScenarioGroup = plan.ScenarioGroup;
+                    document.SeedPattern = plan.SeedPattern;
+                    document.BatchKind = plan.BatchKind;
+                    document.RepairPolicy = plan.RepairPolicy;
+                }
+
+                await session.SaveChangesAsync();
+            }
+        }
+
+        private async Task WaitForChunkStateAsync(
+            IDocumentStore store,
+            IReadOnlyList<string> documentIds,
+            SimulatedNodeState expectedState,
+            TimeSpan? stabilityWindow = null)
+        {
+            var expectedCount = expectedState.Exists ? documentIds.Count : 0;
+            var requiredStableDuration = stabilityWindow.GetValueOrDefault(TimeSpan.Zero);
+
+            if (requiredStableDuration <= TimeSpan.Zero)
+            {
+                await AssertWaitForValueAsync(
+                    () => GetChunkStateMatchCountAsync(store, documentIds, expectedState),
+                    expectedCount,
+                    timeout: 120_000,
+                    interval: 250);
+                return;
+            }
+
+            var overallStopwatch = Stopwatch.StartNew();
+            Stopwatch stableStopwatch = null;
+            var lastObservedCount = -1;
+
+            while (overallStopwatch.Elapsed < TimeSpan.FromSeconds(120))
+            {
+                lastObservedCount = await GetChunkStateMatchCountAsync(store, documentIds, expectedState);
+                if (lastObservedCount == expectedCount)
+                {
+                    stableStopwatch ??= Stopwatch.StartNew();
+                    if (stableStopwatch.Elapsed >= requiredStableDuration)
+                        return;
+                }
+                else
+                {
+                    stableStopwatch = null;
+                }
+
+                await Task.Delay(250);
+            }
+
+            Assert.Equal(expectedCount, lastObservedCount);
+        }
+
+        private async Task<int> GetChunkStateMatchCountAsync(IDocumentStore store, IReadOnlyList<string> documentIds, SimulatedNodeState expectedState)
+        {
+            using var session = store.OpenAsyncSession();
+            var documents = await session.LoadAsync<RecoveryScenarioDocument>(documentIds.ToArray());
+
+            if (expectedState.Exists == false)
+                return documents.Values.Count(document => document != null);
+
+            return documents.Values.Count(document =>
+                document != null &&
+                document.Version == expectedState.Version &&
+                string.Equals(document.WrittenBy, expectedState.WrittenBy, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private async Task AssertAllPlansAsync(RecoveryLabClusterContext lab, IReadOnlyList<ScenarioDefinition> scenarios, IReadOnlyList<RecoveryDocumentPlan> bulkPlans, IReadOnlyList<RecoveryDocumentPlan> mixedRun5Plans, IReadOnlyList<RecoveryDocumentPlan> mixedRun1Plans)
+        {
+            var scenariosByName = scenarios.ToDictionary(x => x.Name, StringComparer.OrdinalIgnoreCase);
+
+            await AssertPlansAsync(lab, bulkPlans, scenariosByName);
+            await AssertPlansAsync(lab, mixedRun5Plans, scenariosByName);
+            await AssertPlansAsync(lab, mixedRun1Plans, scenariosByName);
+        }
+
+        private async Task AssertPlansChunkAsync(RecoveryLabClusterContext lab, ScenarioDefinition scenario, IReadOnlyList<RecoveryDocumentPlan> plans)
+        {
+            if (plans.Count == 0)
+                return;
+
+            await AssertPlansAsync(
+                lab,
+                plans,
+                new Dictionary<string, ScenarioDefinition>(StringComparer.OrdinalIgnoreCase)
+                {
+                    [scenario.Name] = scenario
+                });
+        }
+
+        private async Task AssertPlansAsync(RecoveryLabClusterContext lab, IReadOnlyList<RecoveryDocumentPlan> plans, IReadOnlyDictionary<string, ScenarioDefinition> scenariosByName)
+        {
+            if (plans.Count == 0)
+                return;
+
+            var planIds = plans
+                .Select(x => x.Id)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            var snapshotsByNode = new Dictionary<string, IReadOnlyDictionary<string, ScenarioSnapshot>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var nodeTag in OrderedNodeTags)
+                snapshotsByNode[nodeTag] = await LoadScenarioSnapshotsAsync(lab.Stores[nodeTag], planIds);
+
+            foreach (var plan in plans.OrderBy(x => x.Sequence))
+                AssertScenarioPlanStateAndCv(lab, plan, scenariosByName[plan.Scenario], snapshotsByNode);
+        }
+
+        private void AssertScenarioPlanStateAndCv(
+            RecoveryLabClusterContext lab,
+            RecoveryDocumentPlan plan,
+            ScenarioDefinition scenario,
+            IReadOnlyDictionary<string, IReadOnlyDictionary<string, ScenarioSnapshot>> snapshotsByNode)
+        {
+            var snapshots = new Dictionary<string, ScenarioSnapshot>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["A"] = snapshotsByNode["A"][plan.Id],
+                ["B"] = snapshotsByNode["B"][plan.Id],
+                ["C"] = snapshotsByNode["C"][plan.Id]
+            };
+
+            try
+            {
+                AssertNodeState(snapshots["A"], scenario.FinalStates["A"], plan);
+                AssertNodeState(snapshots["B"], scenario.FinalStates["B"], plan);
+                AssertNodeState(snapshots["C"], scenario.FinalStates["C"], plan);
+
+                AssertCvTopology(scenario, snapshots);
+            }
+            catch (Exception e)
+            {
+                throw new Xunit.Sdk.XunitException(BuildScenarioValidationFailureMessage(lab, plan, scenario, snapshots, e));
+            }
+        }
+
+        private void AssertNodeState(ScenarioSnapshot snapshot, SimulatedNodeState expectedState, RecoveryDocumentPlan plan)
+        {
+            Assert.Equal(expectedState.Exists, snapshot.Exists);
+            if (expectedState.Exists == false)
+                return;
+
+            Assert.Equal(plan.Scenario, snapshot.Scenario);
+            Assert.Equal(plan.BatchKind, snapshot.BatchKind);
+            Assert.Equal(plan.ScenarioGroup, snapshot.ScenarioGroup);
+            Assert.Equal(plan.RepairPolicy, snapshot.RepairPolicy);
+            Assert.Equal(plan.ExpectedWinnerNode, snapshot.ExpectedWinnerNode);
+            Assert.Equal(plan.ExpectedWinnerVersion, snapshot.ExpectedWinnerVersion);
+            Assert.Equal(plan.ExpectedWinnerWrittenBy, snapshot.ExpectedWinnerWrittenBy);
+            Assert.Equal(plan.SeedPattern, snapshot.SeedPattern);
+            Assert.Equal(expectedState.Version, snapshot.Version);
+            Assert.Equal(expectedState.WrittenBy, snapshot.WrittenBy);
+            Assert.False(string.IsNullOrWhiteSpace(snapshot.ChangeVector));
+        }
+
+        private void AssertCvTopology(ScenarioDefinition scenario, IReadOnlyDictionary<string, ScenarioSnapshot> snapshots)
+        {
+            var actualExistingNodes = snapshots
+                .Where(x => x.Value.Exists)
+                .Select(x => x.Key)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            Assert.Equal(scenario.CvTopology.ExpectedExistingNodes, actualExistingNodes);
+
+            var actualGroups = BuildActualChangeVectorGroups(snapshots);
+            Assert.Equal(scenario.CvTopology.GroupKeys, actualGroups.Keys.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray());
+
+            var actualDominantGroupKey = DetermineDominantGroupKey(actualGroups);
+            if (scenario.CvTopology.ExpectAmbiguous)
+            {
+                Assert.True(
+                    actualDominantGroupKey == null,
+                    $"Ambiguous scenario produced a dominant winner group '{actualDominantGroupKey}'.");
+            }
+            else
+                Assert.Equal(scenario.CvTopology.DominantGroupKey, actualDominantGroupKey);
+
+            foreach (var dominancePair in scenario.CvTopology.DominancePairs)
+            {
+                Assert.True(
+                    Dominates(actualGroups[dominancePair.LeftGroupKey].ParsedChangeVector, actualGroups[dominancePair.RightGroupKey].ParsedChangeVector),
+                    $"Expected CV group '{dominancePair.LeftGroupKey}' to dominate '{dominancePair.RightGroupKey}'.");
+            }
+
+            foreach (var incomparablePair in scenario.CvTopology.IncomparablePairs)
+            {
+                var left = actualGroups[incomparablePair.LeftGroupKey].ParsedChangeVector;
+                var right = actualGroups[incomparablePair.RightGroupKey].ParsedChangeVector;
+
+                Assert.False(
+                    Dominates(left, right),
+                    $"Expected CV groups '{incomparablePair.LeftGroupKey}' and '{incomparablePair.RightGroupKey}' to be incomparable, but left dominated right.");
+                Assert.False(
+                    Dominates(right, left),
+                    $"Expected CV groups '{incomparablePair.LeftGroupKey}' and '{incomparablePair.RightGroupKey}' to be incomparable, but right dominated left.");
+            }
+        }
+
+        private IReadOnlyDictionary<string, ChangeVectorGroup> BuildActualChangeVectorGroups(IReadOnlyDictionary<string, ScenarioSnapshot> snapshots)
+        {
+            return snapshots
+                .Where(x => x.Value.Exists)
+                .GroupBy(x => NormalizeChangeVector(x.Value.ChangeVector), StringComparer.OrdinalIgnoreCase)
+                .Select(group =>
+                {
+                    var nodeTags = group
+                        .Select(x => x.Key)
+                        .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                        .ToArray();
+                    var groupKey = CreateGroupKey(nodeTags);
+
+                    return new KeyValuePair<string, ChangeVectorGroup>(
+                        groupKey,
+                        new ChangeVectorGroup
+                        {
+                            GroupKey = groupKey,
+                            NormalizedChangeVector = group.Key,
+                            NodeTags = nodeTags,
+                            ParsedChangeVector = ParseChangeVector(group.First().Value.ChangeVector),
+                            Snapshots = group.Select(x => x.Value).ToList()
+                        });
+                })
+                .ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase);
+        }
+
+        private string DetermineDominantGroupKey(IReadOnlyDictionary<string, ChangeVectorGroup> groups)
+        {
+            if (groups.Count == 0)
+                return null;
+
+            if (groups.Count == 1)
+                return groups.Keys.Single();
+
+            string dominantGroupKey = null;
+            foreach (var candidate in groups.Values)
+            {
+                var dominatesAllOthers = groups.Values
+                    .Where(group => ReferenceEquals(group, candidate) == false)
+                    .All(other => Dominates(candidate.ParsedChangeVector, other.ParsedChangeVector));
+
+                if (dominatesAllOthers == false)
+                    continue;
+
+                if (dominantGroupKey != null)
+                    return null;
+
+                dominantGroupKey = candidate.GroupKey;
+            }
+
+            return dominantGroupKey;
+        }
+
+        private string NormalizeChangeVector(string changeVector)
+        {
+            if (string.IsNullOrWhiteSpace(changeVector))
+                return string.Empty;
+
+            return string.Join("|", ParseChangeVector(changeVector)
+                .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(x => $"{x.Key}:{x.Value}"));
+        }
+
+        private Dictionary<string, long> ParseChangeVector(string changeVector)
+        {
+            var result = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(changeVector))
+                return result;
+
+            var entries = changeVector.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            foreach (var entry in entries)
+            {
+                var colonIndex = entry.IndexOf(':');
+                if (colonIndex <= 0)
+                    continue;
+
+                var dashIndex = entry.IndexOf('-', colonIndex + 1);
+                var tag = entry.Substring(0, colonIndex).Trim();
+                var etagText = dashIndex > colonIndex
+                    ? entry.Substring(colonIndex + 1, dashIndex - colonIndex - 1)
+                    : entry[(colonIndex + 1)..];
+
+                if (long.TryParse(etagText, out var etag) == false)
+                    continue;
+
+                result[tag] = etag;
+            }
+
+            return result;
+        }
+
+        private bool Dominates(Dictionary<string, long> left, Dictionary<string, long> right)
+        {
+            var hasStrictlyGreaterEntry = false;
+            foreach (var tag in left.Keys.Concat(right.Keys).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                left.TryGetValue(tag, out var leftEtag);
+                right.TryGetValue(tag, out var rightEtag);
+
+                if (leftEtag < rightEtag)
+                    return false;
+
+                if (leftEtag > rightEtag)
+                    hasStrictlyGreaterEntry = true;
+            }
+
+            return hasStrictlyGreaterEntry;
+        }
+
+        private async Task CreateScenarioValidationIndexesAsync(IDocumentStore store, IReadOnlyList<ScenarioDefinition> scenarios)
+        {
+            var definitions = new List<IndexDefinition>(scenarios.Count * 2);
+
+            foreach (var scenario in scenarios)
+            {
+                definitions.Add(BuildAuditIndexDefinition(scenario));
+                definitions.Add(scenario.IsRepairable
+                    ? BuildInvalidIndexDefinition(scenario)
+                    : BuildAmbiguousIndexDefinition(scenario));
+            }
+
+            await store.Maintenance.SendAsync(new PutIndexesOperation(definitions.ToArray()));
+        }
+
+        private IndexDefinition BuildAuditIndexDefinition(ScenarioDefinition scenario)
+        {
+            return new IndexDefinition
+            {
+                Name = GetAuditIndexName(scenario.Name),
+                Maps =
+                {
+                    BuildAuditIndexMap(scenario)
+                }
+            };
+        }
+
+        private IndexDefinition BuildInvalidIndexDefinition(ScenarioDefinition scenario)
+        {
+            return new IndexDefinition
+            {
+                Name = GetInvalidIndexName(scenario.Name),
+                Maps =
+                {
+                    BuildInvalidIndexMap(scenario)
+                }
+            };
+        }
+
+        private IndexDefinition BuildAmbiguousIndexDefinition(ScenarioDefinition scenario)
+        {
+            return new IndexDefinition
+            {
+                Name = GetAmbiguousIndexName(scenario.Name),
+                Maps =
+                {
+                    BuildAuditIndexMap(scenario)
+                }
+            };
+        }
+
+        private string BuildAuditIndexMap(ScenarioDefinition scenario)
+        {
+            var escapedScenarioName = EscapeIndexLiteral(scenario.Name);
+            return $@"from doc in docs.RecoveryScenarioDocuments
+where doc.Scenario == ""{escapedScenarioName}""
+select new
+{{
+    Id = MetadataFor(doc)[""@id""],
+    Scenario = doc.Scenario,
+    ScenarioGroup = doc.ScenarioGroup,
+    BatchKind = doc.BatchKind,
+    Sequence = doc.Sequence,
+    ScenarioSequence = doc.ScenarioSequence,
+    Version = doc.Version,
+    WrittenBy = doc.WrittenBy,
+    RepairPolicy = doc.RepairPolicy,
+    ExpectedWinnerNode = doc.ExpectedWinnerNode,
+    ExpectedWinnerVersion = doc.ExpectedWinnerVersion,
+    ExpectedWinnerWrittenBy = doc.ExpectedWinnerWrittenBy,
+    SeedPattern = doc.SeedPattern,
+    CurrentChangeVector = MetadataFor(doc)[""@change-vector""]
+}}";
+        }
+
+        private string BuildInvalidIndexMap(ScenarioDefinition scenario)
+        {
+            var escapedScenarioName = EscapeIndexLiteral(scenario.Name);
+            return $@"from doc in docs.RecoveryScenarioDocuments
+where doc.Scenario == ""{escapedScenarioName}""
+   && (doc.Version != doc.ExpectedWinnerVersion || doc.WrittenBy != doc.ExpectedWinnerWrittenBy)
+select new
+{{
+    Id = MetadataFor(doc)[""@id""],
+    Scenario = doc.Scenario,
+    ScenarioGroup = doc.ScenarioGroup,
+    BatchKind = doc.BatchKind,
+    Sequence = doc.Sequence,
+    ScenarioSequence = doc.ScenarioSequence,
+    Version = doc.Version,
+    WrittenBy = doc.WrittenBy,
+    RepairPolicy = doc.RepairPolicy,
+    ExpectedWinnerNode = doc.ExpectedWinnerNode,
+    ExpectedWinnerVersion = doc.ExpectedWinnerVersion,
+    ExpectedWinnerWrittenBy = doc.ExpectedWinnerWrittenBy,
+    SeedPattern = doc.SeedPattern
+}}";
+        }
+
+        private async Task AssertScenarioIndexCountsAsync(RecoveryLabClusterContext lab, IReadOnlyList<ScenarioDefinition> scenarios, int totalDocumentsPerScenario)
+        {
+            foreach (var scenario in scenarios)
+            {
+                var auditIndexName = GetAuditIndexName(scenario.Name);
+                var checkIndexName = GetCheckIndexName(scenario);
+
+                foreach (var nodeTag in OrderedNodeTags)
+                {
+                    var store = lab.Stores[nodeTag];
+                    Assert.Equal(GetAuditCountBeforeRecovery(scenario, nodeTag, totalDocumentsPerScenario), await GetIndexCountAsync(store, auditIndexName));
+                    Assert.Equal(GetCheckCountBeforeRecovery(scenario, nodeTag, totalDocumentsPerScenario), await GetIndexCountAsync(store, checkIndexName));
+                }
+            }
+        }
+
+        private async Task<long> GetIndexCountAsync(IDocumentStore store, string indexName)
+        {
+            var result = await store.Commands().QueryAsync(new IndexQuery
+            {
+                Query = $"from index '{indexName}'"
+            });
+
+            return result.TotalResults;
+        }
+
+        private long GetAuditCountBeforeRecovery(ScenarioDefinition scenario, string nodeTag, int totalDocumentsPerScenario)
+        {
+            return scenario.FinalStates[nodeTag].Exists ? totalDocumentsPerScenario : 0;
+        }
+
+        private long GetCheckCountBeforeRecovery(ScenarioDefinition scenario, string nodeTag, int totalDocumentsPerScenario)
+        {
+            var state = scenario.FinalStates[nodeTag];
+            if (state.Exists == false)
+                return 0;
+
+            if (scenario.IsRepairable == false)
+                return totalDocumentsPerScenario;
+
+            return state.Version == scenario.ExpectedWinnerVersion &&
+                   string.Equals(state.WrittenBy, scenario.ExpectedWinnerWrittenBy, StringComparison.OrdinalIgnoreCase)
+                ? 0
+                : totalDocumentsPerScenario;
+        }
+
+        private async Task RunLiveClusterProbeAsync(RecoveryLabClusterContext lab)
+        {
+            await StoreMarkerDocumentAsync(lab.Stores["A"], "lab/probe/from-a", "probe-from-a");
+            Assert.True(WaitForDocument(lab.Stores["B"], "lab/probe/from-a", timeout: 60_000));
+            Assert.True(WaitForDocument(lab.Stores["C"], "lab/probe/from-a", timeout: 60_000));
+
+            await StoreMarkerDocumentAsync(lab.Stores["B"], "lab/probe/from-b", "probe-from-b");
+            Assert.True(WaitForDocument(lab.Stores["A"], "lab/probe/from-b", timeout: 60_000));
+            Assert.True(WaitForDocument(lab.Stores["C"], "lab/probe/from-b", timeout: 60_000));
+
+            await StoreMarkerDocumentAsync(lab.Stores["C"], "lab/probe/from-c", "probe-from-c");
+            Assert.True(WaitForDocument(lab.Stores["A"], "lab/probe/from-c", timeout: 60_000));
+            Assert.True(WaitForDocument(lab.Stores["B"], "lab/probe/from-c", timeout: 60_000));
+        }
+
+        private string CreateScenarioIndexMatrix(IReadOnlyList<ScenarioDefinition> scenarios, int totalDocumentsPerScenario)
+        {
+            var builder = new StringBuilder();
+            builder.AppendLine("# Scenario Index Matrix");
+            builder.AppendLine();
+            builder.AppendLine("Raw document oracle is authoritative; indexes are an operator-facing aggregate view.");
+            builder.AppendLine("All counts below assume node-local inspection through a store pinned to A, B, or C.");
+            builder.AppendLine("`Recovery_Audit_*` indexes show all local copies for the scenario on the inspected node.");
+            builder.AppendLine("`Recovery_Invalid_*` indexes exist only for repairable scenarios and must go to `0` on all nodes after recovery.");
+            builder.AppendLine("`Recovery_Ambiguous_*` indexes exist only for ambiguous negative-control scenarios and are expected to remain as seeded.");
+            builder.AppendLine();
+            builder.AppendLine("| Scenario | ScenarioGroup | RepairPolicy | Winner | SeedPattern | ValidatedIn | AuditIndex | AuditCountA_Before | AuditCountB_Before | AuditCountC_Before | CheckIndex | CheckCountA_Before | CheckCountB_Before | CheckCountC_Before | ExpectedAfterRecoveryA | ExpectedAfterRecoveryB | ExpectedAfterRecoveryC |");
+            builder.AppendLine("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |");
+
+            foreach (var scenario in scenarios)
+            {
+                builder.AppendLine(
+                    $"| {scenario.Name} | {scenario.ScenarioGroup} | {scenario.RepairPolicy} | {FormatWinner(scenario)} | {scenario.SeedPattern} | {scenario.ValidatedIn} | {GetAuditIndexName(scenario.Name)} | {GetAuditCountBeforeRecovery(scenario, "A", totalDocumentsPerScenario)} | {GetAuditCountBeforeRecovery(scenario, "B", totalDocumentsPerScenario)} | {GetAuditCountBeforeRecovery(scenario, "C", totalDocumentsPerScenario)} | {GetCheckIndexName(scenario)} | {GetCheckCountBeforeRecovery(scenario, "A", totalDocumentsPerScenario)} | {GetCheckCountBeforeRecovery(scenario, "B", totalDocumentsPerScenario)} | {GetCheckCountBeforeRecovery(scenario, "C", totalDocumentsPerScenario)} | {GetExpectedAfterRecoveryDescription(scenario, "A", totalDocumentsPerScenario)} | {GetExpectedAfterRecoveryDescription(scenario, "B", totalDocumentsPerScenario)} | {GetExpectedAfterRecoveryDescription(scenario, "C", totalDocumentsPerScenario)} |");
+            }
+
+            return builder.ToString();
+        }
+
+        private string FormatWinner(ScenarioDefinition scenario)
+        {
+            return scenario.IsRepairable
+                ? $"{scenario.ExpectedWinnerNode} -> v{scenario.ExpectedWinnerVersion}/{scenario.ExpectedWinnerWrittenBy}"
+                : "ambiguous/no-dominant-cv";
+        }
+
+        private string GetExpectedAfterRecoveryDescription(ScenarioDefinition scenario, string nodeTag, int totalDocumentsPerScenario)
+        {
+            if (scenario.IsRepairable)
+                return $"audit={totalDocumentsPerScenario}, invalid=0";
+
+            return $"audit={GetAuditCountBeforeRecovery(scenario, nodeTag, totalDocumentsPerScenario)}, ambiguous={GetCheckCountBeforeRecovery(scenario, nodeTag, totalDocumentsPerScenario)}, skipped";
+        }
+
+        private static string GetAuditIndexName(string scenarioName)
+        {
+            return $"Recovery_Audit_{SanitizeScenarioName(scenarioName)}";
+        }
+
+        private static string GetInvalidIndexName(string scenarioName)
+        {
+            return $"Recovery_Invalid_{SanitizeScenarioName(scenarioName)}";
+        }
+
+        private static string GetAmbiguousIndexName(string scenarioName)
+        {
+            return $"Recovery_Ambiguous_{SanitizeScenarioName(scenarioName)}";
+        }
+
+        private static string GetCheckIndexName(ScenarioDefinition scenario)
+        {
+            return scenario.IsRepairable
+                ? GetInvalidIndexName(scenario.Name)
+                : GetAmbiguousIndexName(scenario.Name);
+        }
+
+        private static string SanitizeScenarioName(string scenarioName)
+        {
+            return scenarioName.Replace('-', '_');
+        }
+
+        private static string EscapeIndexLiteral(string value)
+        {
+            return value.Replace("\"", "\"\"");
+        }
+
+        private async Task StoreMarkerDocumentAsync(IDocumentStore store, string id, string marker)
+        {
+            using var session = store.OpenAsyncSession();
+            await session.StoreAsync(new User
+            {
+                Name = marker
+            }, id);
+            await session.SaveChangesAsync();
+        }
+
+        private async Task<IReadOnlyDictionary<string, ScenarioSnapshot>> LoadScenarioSnapshotsAsync(IDocumentStore store, IReadOnlyList<string> ids)
+        {
+            var snapshots = new Dictionary<string, ScenarioSnapshot>(ids.Count, StringComparer.OrdinalIgnoreCase);
+
+            for (var start = 0; start < ids.Count; start += 128)
+            {
+                var chunk = ids.Skip(start).Take(128).ToArray();
+
+                using var session = store.OpenAsyncSession();
+                var documents = await session.LoadAsync<RecoveryScenarioDocument>(chunk);
+
+                foreach (var id in chunk)
+                {
+                    if (documents.TryGetValue(id, out var document) == false || document == null)
+                    {
+                        snapshots[id] = new ScenarioSnapshot
+                        {
+                            Exists = false
+                        };
+
+                        continue;
+                    }
+
+                    snapshots[id] = new ScenarioSnapshot
+                    {
+                        Exists = true,
+                        Scenario = document.Scenario,
+                        Sequence = document.Sequence,
+                        ScenarioSequence = document.ScenarioSequence,
+                        Version = document.Version,
+                        WrittenBy = document.WrittenBy,
+                        RepairPolicy = document.RepairPolicy,
+                        ExpectedWinnerNode = document.ExpectedWinnerNode,
+                        ExpectedWinnerVersion = document.ExpectedWinnerVersion,
+                        ExpectedWinnerWrittenBy = document.ExpectedWinnerWrittenBy,
+                        ScenarioGroup = document.ScenarioGroup,
+                        SeedPattern = document.SeedPattern,
+                        BatchKind = document.BatchKind,
+                        ChangeVector = session.Advanced.GetChangeVectorFor(document)
+                    };
+                }
+            }
+
+            return snapshots;
+        }
+
+        private string BuildScenarioValidationFailureMessage(
+            RecoveryLabClusterContext lab,
+            RecoveryDocumentPlan plan,
+            ScenarioDefinition scenario,
+            IReadOnlyDictionary<string, ScenarioSnapshot> snapshots,
+            Exception exception)
+        {
+            var actualGroups = BuildActualChangeVectorGroups(snapshots);
+            var dominantGroupKey = DetermineDominantGroupKey(actualGroups) ?? "<none>";
+            var builder = new StringBuilder();
+            builder.AppendLine("Scenario document validation failed.");
+            builder.AppendLine($"Database: {lab.DatabaseName}");
+            builder.AppendLine($"Document: {plan.Id}");
+            builder.AppendLine($"Scenario: {plan.Scenario}");
+            builder.AppendLine($"BatchKind: {plan.BatchKind}");
+            builder.AppendLine($"Sequence: {plan.Sequence}");
+            builder.AppendLine($"ScenarioSequence: {plan.ScenarioSequence}");
+            builder.AppendLine($"RepairPolicy: {plan.RepairPolicy}");
+            builder.AppendLine($"SeedPattern: {plan.SeedPattern}");
+            builder.AppendLine($"Expected final states: A={FormatNodeState(scenario.FinalStates["A"])}, B={FormatNodeState(scenario.FinalStates["B"])}, C={FormatNodeState(scenario.FinalStates["C"])}");
+            builder.AppendLine($"Expected CV groups: {string.Join(", ", scenario.CvTopology.GroupKeys)}");
+            builder.AppendLine($"Expected dominant group: {scenario.CvTopology.DominantGroupKey ?? "<none>"}");
+            builder.AppendLine($"Expected ambiguous: {scenario.CvTopology.ExpectAmbiguous}");
+            builder.AppendLine($"Actual dominant group: {dominantGroupKey}");
+            builder.AppendLine($"Actual CV groups: {(actualGroups.Count == 0 ? "<none>" : string.Join(", ", actualGroups.Values.OrderBy(x => x.GroupKey, StringComparer.OrdinalIgnoreCase).Select(FormatActualGroup)))}");
+            builder.AppendLine("Snapshots:");
+            foreach (var nodeTag in OrderedNodeTags)
+                builder.AppendLine($"  {nodeTag}: {FormatSnapshotForDiagnostics(snapshots[nodeTag])}");
+
+            builder.AppendLine($"Failure: {exception.GetType().Name}: {exception.Message}");
+            return builder.ToString();
+        }
+
+        private string FormatActualGroup(ChangeVectorGroup group)
+        {
+            return $"{group.GroupKey}=[{string.Join(",", group.NodeTags)}] => {group.NormalizedChangeVector}";
+        }
+
+        private string FormatSnapshotForDiagnostics(ScenarioSnapshot snapshot)
+        {
+            if (snapshot.Exists == false)
+                return "missing";
+
+            return $"exists v{snapshot.Version}/{snapshot.WrittenBy}, cv={NormalizeChangeVector(snapshot.ChangeVector)}, rawCv={snapshot.ChangeVector}";
+        }
+
+        private string FormatNodeState(SimulatedNodeState state)
+        {
+            return state.Exists ? $"v{state.Version}/{state.WrittenBy}" : "missing";
+        }
+
+        private string CreateGroupKey(IEnumerable<string> nodeTags)
+        {
+            return string.Concat(nodeTags.OrderBy(x => x, StringComparer.OrdinalIgnoreCase));
+        }
+
+        private List<IDictionary<string, string>> CreatePersistentClusterSettings(string labRoot)
+        {
+            var settings = new List<IDictionary<string, string>>();
+            foreach (var nodeTag in new[] { "A", "B", "C" })
+            {
+                var dataDirectory = Path.Combine(labRoot, $"server-{nodeTag}");
+                Directory.CreateDirectory(dataDirectory);
+
+                var nodeSettings = new Dictionary<string, string>(DefaultClusterSettings)
+                {
+                    [RavenConfiguration.GetKey(x => x.Core.DataDirectory)] = dataDirectory
+                };
+                settings.Add(nodeSettings);
+            }
+
+            return settings;
+        }
+
+        private static string GetRecoveryDocumentId(string batchKind, string scenario, int scenarioSequence)
+        {
+            return $"recovery/{batchKind}/{scenario}/{scenarioSequence:D5}";
+        }
+
+        private static string GetRecoveryDocumentId(string batchKind, int batchSequence)
+        {
+            return $"recovery/{batchKind}/{batchSequence:D6}";
+        }
+
+        private const string RepairPolicyRepairable = "Repairable";
+        private const string RepairPolicyAmbiguousSkip = "AmbiguousSkip";
+        private const string ValidatedInAllBatchKinds = "bulk,mixed-run-5,mixed-run-1";
+
+        private sealed class RecoveryScenarioDocument
+        {
+            public string Scenario { get; set; }
+
+            public int Sequence { get; set; }
+
+            public int ScenarioSequence { get; set; }
+
+            public int Version { get; set; }
+
+            public string WrittenBy { get; set; }
+
+            public string ExpectedWinnerNode { get; set; }
+
+            public int? ExpectedWinnerVersion { get; set; }
+
+            public string ExpectedWinnerWrittenBy { get; set; }
+
+            public string ScenarioGroup { get; set; }
+
+            public string SeedPattern { get; set; }
+
+            public string BatchKind { get; set; }
+
+            public string RepairPolicy { get; set; }
+        }
+
+        private sealed class ScenarioSnapshot
+        {
+            public bool Exists { get; set; }
+
+            public string Scenario { get; set; }
+
+            public int Sequence { get; set; }
+
+            public int ScenarioSequence { get; set; }
+
+            public int Version { get; set; }
+
+            public string WrittenBy { get; set; }
+
+            public string RepairPolicy { get; set; }
+
+            public string ExpectedWinnerNode { get; set; }
+
+            public int? ExpectedWinnerVersion { get; set; }
+
+            public string ExpectedWinnerWrittenBy { get; set; }
+
+            public string ScenarioGroup { get; set; }
+
+            public string SeedPattern { get; set; }
+
+            public string BatchKind { get; set; }
+
+            public string ChangeVector { get; set; }
+        }
+
+        private sealed class RecoveryLabClusterContext
+        {
+            public RecoveryLabClusterContext(
+                string databaseName,
+                RavenServer serverA,
+                RavenServer serverB,
+                RavenServer serverC,
+                DocumentDatabase dbA,
+                DocumentDatabase dbB,
+                DocumentDatabase dbC,
+                IDocumentStore storeA,
+                IDocumentStore storeB,
+                IDocumentStore storeC,
+                ReplicationFaultController faultController)
+            {
+                DatabaseName = databaseName;
+                FaultController = faultController;
+                Servers = new Dictionary<string, RavenServer>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["A"] = serverA,
+                    ["B"] = serverB,
+                    ["C"] = serverC
+                };
+                Databases = new Dictionary<string, DocumentDatabase>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["A"] = dbA,
+                    ["B"] = dbB,
+                    ["C"] = dbC
+                };
+                Stores = new Dictionary<string, IDocumentStore>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["A"] = storeA,
+                    ["B"] = storeB,
+                    ["C"] = storeC
+                };
+            }
+
+            public string DatabaseName { get; }
+
+            public ReplicationFaultController FaultController { get; }
+
+            public Dictionary<string, RavenServer> Servers { get; }
+
+            public Dictionary<string, DocumentDatabase> Databases { get; }
+
+            public Dictionary<string, IDocumentStore> Stores { get; }
+        }
+
+        private sealed class ScenarioDefinition
+        {
+            public string Name { get; set; }
+
+            public string ScenarioGroup { get; set; }
+
+            public string RepairPolicy { get; set; }
+
+            public string ExpectedWinnerNode { get; set; }
+
+            public int? ExpectedWinnerVersion { get; set; }
+
+            public string ExpectedWinnerWrittenBy { get; set; }
+
+            public string SeedPattern { get; set; }
+
+            public string ValidatedIn { get; set; }
+
+            public List<ScenarioStepDefinition> Steps { get; set; }
+
+            public List<Dictionary<string, SimulatedNodeState>> StatesBeforeEachStep { get; set; }
+
+            public List<Dictionary<string, SimulatedNodeState>> StatesAfterEachStep { get; set; }
+
+            public Dictionary<string, SimulatedNodeState> FinalStates { get; set; }
+
+            public ExpectedCvTopology CvTopology { get; set; }
+
+            public bool IsRepairable => string.Equals(RepairPolicy, "Repairable", StringComparison.Ordinal);
+        }
+
+        private sealed class ScenarioStepDefinition
+        {
+            public ScenarioStepDefinition(ScenarioStepKind kind, string writerNode, int version, string writtenBy, params string[] skippedTargets)
+            {
+                Kind = kind;
+                WriterNode = writerNode;
+                Version = version;
+                WrittenBy = writtenBy;
+                SkippedTargets = skippedTargets?
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray() ?? Array.Empty<string>();
+            }
+
+            public ScenarioStepKind Kind { get; }
+
+            public string WriterNode { get; }
+
+            public int Version { get; }
+
+            public string WrittenBy { get; }
+
+            public string[] SkippedTargets { get; }
+        }
+
+        private sealed class RecoveryDocumentPlan
+        {
+            public string Id { get; set; }
+
+            public string BatchKind { get; set; }
+
+            public string Scenario { get; set; }
+
+            public string ScenarioGroup { get; set; }
+
+            public int Sequence { get; set; }
+
+            public int ScenarioSequence { get; set; }
+
+            public string RepairPolicy { get; set; }
+
+            public string ExpectedWinnerNode { get; set; }
+
+            public int? ExpectedWinnerVersion { get; set; }
+
+            public string ExpectedWinnerWrittenBy { get; set; }
+
+            public string SeedPattern { get; set; }
+        }
+
+        private sealed class SimulatedNodeState
+        {
+            public bool Exists { get; set; }
+
+            public int Version { get; set; }
+
+            public string WrittenBy { get; set; }
+
+            public int LastActionOrdinal { get; set; }
+
+            public SimulatedNodeState Clone()
+            {
+                return new SimulatedNodeState
+                {
+                    Exists = Exists,
+                    Version = Version,
+                    WrittenBy = WrittenBy,
+                    LastActionOrdinal = LastActionOrdinal
+                };
+            }
+        }
+
+        private sealed class ScenarioSimulation
+        {
+            public ScenarioSimulation(List<Dictionary<string, SimulatedNodeState>> statesBeforeEachStep, List<Dictionary<string, SimulatedNodeState>> statesAfterEachStep, Dictionary<string, SimulatedNodeState> finalStates)
+            {
+                StatesBeforeEachStep = statesBeforeEachStep;
+                StatesAfterEachStep = statesAfterEachStep;
+                FinalStates = finalStates;
+            }
+
+            public List<Dictionary<string, SimulatedNodeState>> StatesBeforeEachStep { get; }
+
+            public List<Dictionary<string, SimulatedNodeState>> StatesAfterEachStep { get; }
+
+            public Dictionary<string, SimulatedNodeState> FinalStates { get; }
+        }
+
+        private sealed class ChangeVectorGroup
+        {
+            public string GroupKey { get; set; }
+
+            public string NormalizedChangeVector { get; set; }
+
+            public string[] NodeTags { get; set; }
+
+            public Dictionary<string, long> ParsedChangeVector { get; set; }
+
+            public List<ScenarioSnapshot> Snapshots { get; set; }
+        }
+
+        private sealed class ExpectedCvTopology
+        {
+            public string[] ExpectedExistingNodes { get; set; }
+
+            public string[] GroupKeys { get; set; }
+
+            public List<ExpectedCvGroup> Groups { get; set; } = new();
+
+            public string DominantGroupKey { get; set; }
+
+            public bool ExpectAmbiguous { get; set; }
+
+            public List<ExpectedCvRelation> DominancePairs { get; set; } = new();
+
+            public List<ExpectedCvRelation> IncomparablePairs { get; set; } = new();
+        }
+
+        private sealed class ExpectedCvGroup
+        {
+            public string GroupKey { get; set; }
+
+            public string[] NodeTags { get; set; }
+
+            public int ActionOrdinal { get; set; }
+        }
+
+        private sealed class ExpectedCvRelation
+        {
+            public string LeftGroupKey { get; set; }
+
+            public string RightGroupKey { get; set; }
+        }
+
+        private enum ScenarioStepKind
+        {
+            Create,
+            Update
+        }
+
+        private static readonly string[] OrderedNodeTags = { "A", "B", "C" };
     }
 }

@@ -117,6 +117,11 @@ namespace Raven.Server.Documents.Replication
         {
             switch (eventType)
             {
+                case "FAULT_RULE_ARMED":
+                case "FAULT_RULE_MATCHED":
+                case "FAULT_SKIP_AND_ADVANCE":
+                case "FAULT_RULE_COMPLETED":
+                case "FAULT_RULE_DISPOSED":
                 case "PULL_SINK_REMOTE_TOPOLOGY":
                 case "PULL_SINK_TCP_INFO":
                 case "OUTGOING_PULL_HANDSHAKE":
@@ -160,6 +165,14 @@ namespace Raven.Server.Documents.Replication
         {
             string[] fieldNames = eventType switch
             {
+                "FAULT_RULE_ARMED" => new[] { "db", "ruleId", "label", "source", "target", "minEtagExclusive", "expected" },
+                "FAULT_RULE_MATCHED" => new[] { "db", "ruleId", "label", "source", "target", "minEtagExclusive", "etag", "matched", "expected" },
+                "FAULT_SKIP_AND_ADVANCE" => new[] { "db", "minEtagExclusive", "etag", "cv", "decision" },
+                "FAULT_RULE_COMPLETED" => new[] { "db", "ruleId", "label", "source", "target", "minEtagExclusive", "matched", "expected" },
+                "FAULT_RULE_DISPOSED" => new[] { "db", "ruleId", "label", "source", "target", "minEtagExclusive", "matched", "expected" },
+                "FAULT_HEARTBEAT_SUPPRESSION_ARMED" => new[] { "db", "label", "source", "target" },
+                "FAULT_HEARTBEAT_SUPPRESSION_DISPOSED" => new[] { "db", "label", "source", "target" },
+                "FAULT_HEARTBEAT_SUPPRESSED" => new[] { "db", "source", "target", "changeVector" },
                 "PULL_SINK_REMOTE_TOPOLOGY" => new[] { "db", "sinkTask", "hubName", "bootstrapUrl", "remoteUrls" },
                 "PULL_SINK_TCP_INFO" => new[] { "db", "sinkTask", "hubName", "requestUrl", "tcpUrl", "tcpNode" },
                 "OUTGOING_PULL_HANDSHAKE" => new[] { "db", "pathsToSend", "destinationAcceptable" },
@@ -231,6 +244,14 @@ namespace Raven.Server.Documents.Replication
         {
             return eventType switch
             {
+                "FAULT_RULE_ARMED" => "replication fault rule was armed for a specific source to target path",
+                "FAULT_RULE_MATCHED" => "replication fault rule matched a document on the outgoing path",
+                "FAULT_SKIP_AND_ADVANCE" => "sender skipped the matching document while still advancing replication progress",
+                "FAULT_RULE_COMPLETED" => "replication fault rule consumed all expected documents",
+                "FAULT_RULE_DISPOSED" => "replication fault rule was disposed before or after completion",
+                "FAULT_HEARTBEAT_SUPPRESSION_ARMED" => "heartbeat database change vector suppression was armed for a source to target path",
+                "FAULT_HEARTBEAT_SUPPRESSION_DISPOSED" => "heartbeat database change vector suppression was removed for a source to target path",
+                "FAULT_HEARTBEAT_SUPPRESSED" => "sender omitted the database change vector from a heartbeat on the selected path",
                 "OUTGOING_MRE_WAIT" => "replication loop is blocked by the debug gate",
                 "OUTGOING_MRE_RELEASED" => "replication loop was released by the debug gate",
                 "OUTGOING_PULL_HANDSHAKE" => "pull replication handshake exchanged the allowed path filters",
