@@ -1,10 +1,4 @@
-﻿// -----------------------------------------------------------------------
-//  <copyright file="RequestRouter.cs" company="Hibernating Rhinos LTD">
-//      Copyright (c) Hibernating Rhinos LTD. All rights reserved.
-//  </copyright>
-// -----------------------------------------------------------------------
-
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
@@ -25,6 +19,7 @@ using Raven.Server.Extensions;
 using Raven.Server.ServerWide;
 using Raven.Server.Utils;
 using Raven.Server.Web;
+using Raven.Server.Utils.Metrics;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using Sparrow.Logging;
@@ -121,14 +116,14 @@ namespace Raven.Server.Routing
                         else
                         {
                             auditLog.Info($"Connection from {context.Connection.RemoteIpAddress}:{context.Connection.RemotePort} " +
-                                $"with certificate '{feature.Certificate?.Subject} ({feature.Certificate?.Thumbprint})', status: {feature.StatusForAudit}, " +
+                                $"with certificate '{feature.Certificate?.GetDisplayName()} ({feature.Certificate?.Thumbprint})', status: {feature.StatusForAudit}, " +
                                 $"databases: [{string.Join(", ", feature.AuthorizedDatabases.Keys)}]");
 
                             var conLifetime = context.Features.Get<IConnectionLifetimeFeature>();
                             if (conLifetime != null)
                             {
                                 var msg = $"Connection {context.Connection.RemoteIpAddress}:{context.Connection.RemotePort} closed. Was used with: " +
-                                 $"certificate '{feature.Certificate?.Subject} ({feature.Certificate?.Thumbprint})', status: {feature.StatusForAudit}, " +
+                                 $"certificate '{feature.Certificate?.GetDisplayName()} ({feature.Certificate?.Thumbprint})', status: {feature.StatusForAudit}, " +
                                  $"databases: [{string.Join(", ", feature.AuthorizedDatabases.Keys)}]";
 
                                 CancellationTokenRegistration cancellationTokenRegistration = default;
@@ -166,8 +161,7 @@ namespace Raven.Server.Routing
             {
                 if (LoggingSource.AuditLog.IsInfoEnabled)
                 {
-                    var auditLog = LoggingSource.AuditLog.GetLogger("RequestRouter", "Audit");
-                    auditLog.Info($"Rejected request {context.Request.Method} {context.Request.GetFullUrl()} because: {twoFactorMsg}");
+                    RequestHandler.LogAuditFor("RequestRouter", "AUTH", $"Rejected request {context.Request.Method} {context.Request.GetFullUrl()} because: {twoFactorMsg}", context);
                 }
 
                 feature.WaitingForTwoFactorAuthentication();
@@ -279,8 +273,9 @@ namespace Raven.Server.Routing
             var tuple = tryMatch.Value.TryGetHandler(reqCtx);
             var handler = tuple.Item1 ?? await tuple.Item2;
 
-            reqCtx.DatabaseMetrics?.Requests.RequestsPerSec.Mark();
-            _serverMetrics.Requests.RequestsPerSec.Mark();
+            // We defer all throughput accounting until the request actually completes so the
+            // reported rates track true throughput rather than arrival pressure.
+            var requestStartNs = Clock.Nanoseconds;
 
             Interlocked.Increment(ref _serverMetrics.Requests.ConcurrentRequestsCount);
 
@@ -293,7 +288,7 @@ namespace Raven.Server.Routing
                     if (auditLog != null)
                     {
                         auditLog.Info($"Invalid request {context.Request.Method} {context.Request.Path} by " +
-                            $"(Cert: {context.Connection.ClientCertificate?.Subject} ({context.Connection.ClientCertificate?.Thumbprint}) {context.Connection.RemoteIpAddress}:{context.Connection.RemotePort})");
+                            $"(Cert: {context.Connection.ClientCertificate?.GetDisplayName()} ({context.Connection.ClientCertificate?.Thumbprint}) {context.Connection.RemoteIpAddress}:{context.Connection.RemotePort})");
                     }
 
                     context.Response.StatusCode = (int)HttpStatusCode.BadRequest;
@@ -430,6 +425,16 @@ namespace Raven.Server.Routing
             finally
             {
                 Interlocked.Decrement(ref _serverMetrics.Requests.ConcurrentRequestsCount);
+
+                var elapsedNs = Clock.Nanoseconds - requestStartNs;
+                if (elapsedNs < 0)
+                    elapsedNs = 0;
+
+                var elapsedMilliseconds = elapsedNs / (double)Clock.NanosecondsInMillisecond;
+
+                var duration = reqCtx.HttpContext.WebSockets.IsWebSocketRequest ? 0L : (long)elapsedMilliseconds;
+                _serverMetrics.Requests.RecordRequest(duration);
+                reqCtx.DatabaseMetrics?.Requests.RecordRequest(duration);
             }
         }
 
@@ -508,9 +513,7 @@ namespace Raven.Server.Routing
             }
             else
             {
-                var name = certificate.FriendlyName;
-                if (string.IsNullOrWhiteSpace(name))
-                    name = certificate.Subject;
+                var name = certificate.GetDisplayName();
                 if (string.IsNullOrWhiteSpace(name))
                     name = certificate.ToString(false);
 

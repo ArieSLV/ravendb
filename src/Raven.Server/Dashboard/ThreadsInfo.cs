@@ -13,7 +13,7 @@ namespace Raven.Server.Dashboard
 
         public DateTime Date => SystemTime.UtcNow;
 
-        public SortedSet<ThreadInfo> List { get; }
+        public ISet<ThreadInfo> List { get; set; }
 
         public double CpuUsage { get; set; }
         
@@ -31,6 +31,11 @@ namespace Raven.Server.Dashboard
             List = new SortedSet<ThreadInfo>(new ThreadsInfoComparer());
         }
 
+        public ThreadsInfo()
+        {
+            // for deserialization purposes
+        }
+        
         private sealed class ThreadsInfoComparer : IComparer<ThreadInfo>
         {
             public int Compare(ThreadInfo x, ThreadInfo y)
@@ -63,6 +68,46 @@ namespace Raven.Server.Dashboard
         }
     }
 
+    public sealed class IoStats : IDynamicJson
+    {
+        // Per-thread IO metrics (Linux only, populated when available)
+        // Last measured I/O operations per second (syscr + syscw delta / interval)
+        public double? IoSyscallsPerSecLast { get; set; }
+        // Last measured throughput in KB/s based on read_bytes+write_bytes delta
+        public double? ThroughputKbPerSecLast { get; set; }
+
+        // Split read/write metrics
+        public double? ReadIoSyscallsPerSecLast { get; set; }
+        public double? WriteIoSyscallsPerSecLast { get; set; }
+        public double? ReadThroughputKbPerSecLast { get; set; }
+        public double? WriteThroughputKbPerSecLast { get; set; }
+
+        // Raw cumulative values from /proc/self/task/{tid}/io
+        // These are monotonically increasing counters for the lifetime of each thread.
+        // The client uses these to compute totals as (current - initial_snapshot).
+        public long? Syscr { get; set; }
+        public long? Syscw { get; set; }
+        public long? ReadBytes { get; set; }
+        public long? WriteBytes { get; set; }
+
+        public DynamicJsonValue ToJson()
+        {
+            return new DynamicJsonValue
+            {
+                [nameof(IoSyscallsPerSecLast)] = IoSyscallsPerSecLast,
+                [nameof(ThroughputKbPerSecLast)] = ThroughputKbPerSecLast,
+                [nameof(ReadIoSyscallsPerSecLast)] = ReadIoSyscallsPerSecLast,
+                [nameof(WriteIoSyscallsPerSecLast)] = WriteIoSyscallsPerSecLast,
+                [nameof(ReadThroughputKbPerSecLast)] = ReadThroughputKbPerSecLast,
+                [nameof(WriteThroughputKbPerSecLast)] = WriteThroughputKbPerSecLast,
+                [nameof(Syscr)] = Syscr,
+                [nameof(Syscw)] = Syscw,
+                [nameof(ReadBytes)] = ReadBytes,
+                [nameof(WriteBytes)] = WriteBytes
+            };
+        }
+    }
+
     public sealed class ThreadInfo : IDynamicJson
     {
         public int Id { get; set; }
@@ -91,6 +136,8 @@ namespace Raven.Server.Dashboard
 
         public ThreadWaitReason? WaitReason { get; set; }
 
+        public IoStats IoStats { get; set; }
+
         public DynamicJsonValue ToJson()
         {
             return new DynamicJsonValue
@@ -107,7 +154,8 @@ namespace Raven.Server.Dashboard
                 [nameof(UserProcessorTime)] = UserProcessorTime,
                 [nameof(State)] = State,
                 [nameof(Priority)] = Priority,
-                [nameof(WaitReason)] = WaitReason
+                [nameof(WaitReason)] = WaitReason,
+                [nameof(IoStats)] = IoStats?.ToJson()
             };
         }
     }

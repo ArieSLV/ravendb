@@ -1,13 +1,9 @@
 import { mockServices } from "./mocks/services/MockServices";
 import React from "react";
-import { configureMockServices, ServiceProvider } from "components/hooks/useServices";
-import { ChangesProvider } from "hooks/useChanges";
-import { mockHooks } from "test/mocks/hooks/MockHooks";
-import { DirtyFlagProvider } from "components/hooks/useDirtyFlag";
-import { ConfirmDialogProvider } from "components/common/ConfirmDialog";
-import { ReactRenderer } from "@storybook/react";
+import { configureMockServices } from "components/hooks/useServices";
+import { ReactRenderer } from "@storybook/react-webpack5";
 import { PartialStoryFn } from "storybook/internal/types";
-import { DialogProvider } from "components/common/Dialog";
+import { MockProviders } from "./rtlTestUtils";
 
 type StoryFunction = PartialStoryFn<
     ReactRenderer,
@@ -39,19 +35,21 @@ function forceStoryRerender() {
 
 export function withStorybookContexts(Story: StoryFunction) {
     return (
-        <DirtyFlagProvider setIsDirty={mockHooks.useDirtyFlag.mock}>
-            <ConfirmDialogProvider>
-                <DialogProvider>
-                    <ServiceProvider services={mockServices.context}>
-                        <ChangesProvider changes={mockHooks.useChanges.mock}>
-                            <Story />
-                        </ChangesProvider>
-                    </ServiceProvider>
-                </DialogProvider>
-            </ConfirmDialogProvider>
-        </DirtyFlagProvider>
+        <MockProviders>
+            <Story />
+        </MockProviders>
     );
 }
+
+export function withStorybookContexts_DisabledSplitView(Story: StoryFunction) {
+    return (
+        <MockProviders isSplitViewDisabled>
+            <Story />
+        </MockProviders>
+    );
+}
+
+const storyTopBarHeight = 40;
 
 export function withBootstrap5(Story: StoryFunction) {
     return (
@@ -59,7 +57,12 @@ export function withBootstrap5(Story: StoryFunction) {
             <div
                 id="page-host"
                 className="bs5"
-                style={{ padding: "30px", minHeight: "100vh", display: "flex", flexDirection: "column" }}
+                style={{
+                    padding: "30px",
+                    height: `calc(100vh - ${storyTopBarHeight}px)`,
+                    display: "flex",
+                    flexDirection: "column",
+                }}
             >
                 <Story />
             </div>
@@ -122,4 +125,11 @@ export const securityClearanceArgType = {
         "ValidUser",
         "UnauthenticatedClients",
     ] satisfies Raven.Client.ServerWide.Operations.Certificates.SecurityClearance[],
+} as const;
+
+export type DatabaseType = "sharded" | "cluster" | "singleNode";
+
+export const databaseArgType = {
+    control: "radio",
+    options: ["sharded", "cluster", "singleNode"] satisfies DatabaseType[],
 } as const;

@@ -5,6 +5,7 @@ using Raven.Server.Documents.Changes;
 using Raven.Server.NotificationCenter;
 using Raven.Server.NotificationCenter.Notifications;
 using Raven.Server.ServerWide;
+using Sparrow.Logging;
 using Sparrow.Platform;
 
 namespace Raven.Server.Documents.Operations
@@ -17,14 +18,21 @@ namespace Raven.Server.Documents.Operations
                 : TimeSpan.FromDays(2))
         {
         }
+
+        private Logger _logger;
+        protected override Logger GetLogger() => _logger ??= LoggingSource.Instance.GetLogger<ServerOperations>("Server");
     }
 
     public sealed class DatabaseOperations : Operations
     {
+        private readonly DocumentDatabase _database;
         public DatabaseOperations(DocumentDatabase database)
             : base(database.Name, database.ConfigurationStorage.OperationsStorage, database.NotificationCenter, database.Changes, database.Is32Bits ? TimeSpan.FromHours(12) : TimeSpan.FromDays(2))
         {
+            _database = database ?? throw new ArgumentNullException(nameof(database));
         }
+
+        protected override Logger GetLogger() => _database.Logger;
     }
 
     public abstract class Operations : AbstractOperations<Operation>
@@ -52,9 +60,10 @@ namespace Raven.Server.Documents.Operations
             IOperationDetailedDescription detailedDescription,
             Func<Action<IOperationProgress>, Task<IOperationResult>> taskFactory,
             string resourceName = null,
+            bool persistProgressOnFaultedStatus = false,
             OperationCancelToken token = null)
         {
-            var operation = CreateOperationInstance(id, _databaseName ?? resourceName, operationType, description, detailedDescription, token);
+            var operation = CreateOperationInstance(id, _databaseName ?? resourceName, operationType, description, detailedDescription, persistProgressOnFaultedStatus, token);
 
             return AddOperationInternalAsync(operation, taskFactory);
         }

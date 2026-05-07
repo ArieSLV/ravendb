@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -174,7 +174,7 @@ namespace Raven.Server.Documents.Indexes
 
         private readonly ManualResetEventSlim _logsAppliedEvent = new ManualResetEventSlim();
 
-        private DateTime? _lastQueryingTime;
+        private LastQueriedTimeTracker _lastQueriedTimeTracker;
 
         public DateTime? LastIndexingTime { get; private set; }
 
@@ -968,8 +968,11 @@ namespace Raven.Server.Documents.Indexes
             using (_contextPool.AllocateOperationContext(out TransactionOperationContext context))
             using (var tx = context.OpenReadTransaction())
             {
+                var now = DocumentDatabase.Time.GetUtcNow();
                 State = _indexStorage.ReadState(tx);
-                _lastQueryingTime = DocumentDatabase.Time.GetUtcNow();
+                var persistedElapsedTimeFromLastQuery = _indexStorage.ReadElapsedTimeFromLastQuery(tx) ?? TimeSpan.Zero;
+                _lastQueriedTimeTracker = new LastQueriedTimeTracker(now, persistedElapsedTimeFromLastQuery.Ticks);
+                
                 LastIndexingTime = _indexStorage.ReadLastIndexingTime(tx);
                 MaxNumberOfOutputsPerDocument = _indexStorage.ReadMaxNumberOfOutputsPerDocument(tx);
                 ArchivedDataProcessingBehavior = _indexStorage.ReadArchivedDataProcessingBehavior(tx);
@@ -1802,7 +1805,8 @@ namespace Raven.Server.Documents.Indexes
                                 {
                                     using (_environment.Options.SkipCatastrophicFailureAssertion()) // we really want to store errors
                                     {
-                                        var failureInformation = _indexStorage.UpdateStats(stats.StartTime, stats.ToIndexingBatchStats());
+                                        var elapsedFromLastQuery = _lastQueriedTimeTracker.UpdateElapsedSinceQueried(stats.StartTime);
+                                        var failureInformation = _indexStorage.UpdateStats(stats.StartTime, elapsedFromLastQuery, stats.ToIndexingBatchStats());
                                         HandleIndexFailureInformation(failureInformation);
                                     }
                                 }
@@ -1913,8 +1917,18 @@ namespace Raven.Server.Documents.Indexes
                                 if (forceMemoryCleanup)
                                     continue;
 
-                                WaitHandle.WaitAny(new[] { _mre.WaitHandle, _logsAppliedEvent.WaitHandle, _indexingProcessCancellationTokenSource.Token.WaitHandle });
-
+                                while (true)
+                                {
+                                    var waitResult = WaitHandle.WaitAny(new[] { _mre.WaitHandle, _logsAppliedEvent.WaitHandle, _indexingProcessCancellationTokenSource.Token.WaitHandle }, Configuration.ElapsedSinceQueriedPersistInterval.AsTimeSpan);
+                                    
+                                    // We update stats here only in case of timeout
+                                    if (waitResult != WaitHandle.WaitTimeout)
+                                        break;
+                                    
+                                    var elapsedTimeToStore = _lastQueriedTimeTracker.UpdateElapsedSinceQueried(DocumentDatabase.Time.GetUtcNow());
+                                    _indexStorage.WriteElapsedSinceQueried(elapsedTimeToStore);
+                                }
+                  
                                 if (_logsAppliedEvent.IsSet && _mre.IsSet == false && _indexingProcessCancellationTokenSource.IsCancellationRequested == false)
                                 {
                                     _hadRealIndexingWorkToDo.Lower();
@@ -1952,7 +1966,7 @@ namespace Raven.Server.Documents.Indexes
                 }
             }
         }
-
+        
         public enum ReplaceStatus
         {
             NotNeeded,
@@ -2491,6 +2505,10 @@ namespace Raven.Server.Documents.Indexes
 
                                     entriesCount = writeOperation.Value.EntriesCount();
                                 }
+
+                                // at this point, we have completed storing all Lucene segment files,
+                                // so we can safely release the stream buffer.
+                                indexContext.Transaction.InnerTransaction.DisposeStreamBuffer();
 
                                 UpdateThreadAllocations(indexContext, null, null, IndexingWorkType.None);
                             }
@@ -3167,7 +3185,7 @@ namespace Raven.Server.Documents.Indexes
                     if (calculateLastBatchStats)
                         stats.LastBatchStats = _lastStats?.ToIndexingPerformanceLiveStats();
 
-                    stats.LastQueryingTime = _lastQueryingTime;
+                    stats.LastQueryingTime = _lastQueriedTimeTracker.LastQueryDate;
 
                     stats.ReferencedCollections = GetReferencedCollectionNames();
 
@@ -3263,26 +3281,18 @@ namespace Raven.Server.Documents.Indexes
             return stats;
         }
 
-        public DateTime? GetLastQueryingTime()
-        {
-            return _lastQueryingTime;
-        }
+        public DateTime? GetLastQueryingTime() => _lastQueriedTimeTracker.LastQueryDate;
+
+        public TimeSpan GetElapsedTimeFromLastQuery() => _lastQueriedTimeTracker.ElapsedSinceQueried;
 
         public bool NoQueryRecently()
         {
-            var last = _lastQueryingTime;
-            return last.HasValue == false ||
-                   DocumentDatabase.Time.GetUtcNow() - last.Value > Configuration.TimeSinceLastQueryAfterWhichDeepCleanupCanBeExecuted.AsTimeSpan;
+            var last = _lastQueriedTimeTracker.LastQueryDate;
+            return DocumentDatabase.Time.GetUtcNow() - last > Configuration.TimeSinceLastQueryAfterWhichDeepCleanupCanBeExecuted.AsTimeSpan;
         }
 
-        private void MarkQueried(DateTime time)
-        {
-            if (_lastQueryingTime != null &&
-                _lastQueryingTime.Value >= time)
-                return;
-
-            _lastQueryingTime = time;
-        }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void MarkQueried(DateTime time) => _lastQueriedTimeTracker.MarkQueried(time);
 
         public IndexDefinition GetIndexDefinition()
         {
@@ -3292,7 +3302,7 @@ namespace Raven.Server.Documents.Indexes
         public virtual async Task StreamQuery(HttpResponse response, IStreamQueryResultWriter<Document> writer,
             IndexQueryServerSide query, QueryOperationContext queryContext, OperationCancelToken token)
         {
-            var result = new StreamDocumentQueryResult(response, writer, queryContext.Documents, Definition.ClusterState.LastIndex, token);
+            using var result = new StreamDocumentQueryResult(response, writer, queryContext.Documents, Definition.ClusterState.LastIndex, token);
             await QueryInternal(result, query, queryContext, pulseDocsReadingTransaction: true, token);
             result.Flush();
 
@@ -3302,14 +3312,14 @@ namespace Raven.Server.Documents.Indexes
         public virtual async Task StreamIndexEntriesQuery(HttpResponse response, IStreamQueryResultWriter<BlittableJsonReaderObject> writer,
             IndexQueryServerSide query, QueryOperationContext queryContext, bool ignoreLimit, OperationCancelToken token)
         {
-            var result = new StreamDocumentIndexQueryResult(response, writer, Definition.ClusterState.LastIndex, token);
+            using var result = new StreamDocumentIndexQueryResult(response, writer, Definition.ClusterState.LastIndex, token);
             await IndexEntriesQueryInternal(result, query, queryContext, ignoreLimit, token);
             result.Flush();
 
             DocumentDatabase.QueryMetadataCache.MaybeAddToCache(query.Metadata, Name);
         }
 
-        public virtual async Task<DocumentIdQueryResult> IdQuery(
+        public virtual Task<DocumentIdQueryResult> IdQuery(
             IndexQueryServerSide query,
             QueryOperationContext queryContext,
             DeterminateProgress progress,
@@ -3317,26 +3327,25 @@ namespace Raven.Server.Documents.Indexes
             OperationCancelToken token)
         {
             var result = new DocumentIdQueryResult(progress, onProgress, Definition.ClusterState.LastIndex, token);
-            await QueryInternal(result, query, queryContext, pulseDocsReadingTransaction: false, token: token);
-            return result;
+            return QueryInternal(result, query, queryContext, pulseDocsReadingTransaction: false, token: token);
         }
 
-        public virtual async Task<DocumentQueryResult> Query(
+        public virtual Task<DocumentQueryResult> Query(
             IndexQueryServerSide query,
             QueryOperationContext queryContext,
             OperationCancelToken token)
         {
             var result = new DocumentQueryResult(Definition.ClusterState.LastIndex);
-            await QueryInternal(result, query, queryContext, pulseDocsReadingTransaction: false, token: token);
-            return result;
+            return QueryInternal(result, query, queryContext, pulseDocsReadingTransaction: false, token: token);
         }
 
-        private async Task QueryInternal<TQueryResult>(
+        private async Task<TQueryResult> QueryInternal<TQueryResult>(
             TQueryResult resultToFill,
             IndexQueryServerSide query,
             QueryOperationContext queryContext,
             bool pulseDocsReadingTransaction,
-            OperationCancelToken token)
+            OperationCancelToken token,
+            [CallerMemberName] string caller = null)
             where TQueryResult : QueryResultServerSide<Document>
         {
             QueryInternalPreparation(query);
@@ -3365,7 +3374,7 @@ namespace Raven.Server.Documents.Indexes
                     using (var indexTx = indexContext.OpenReadTransaction())
                     {
                         if (queryContext.AreTransactionsOpened() == false)
-                            queryContext.OpenReadTransaction();
+                            resultToFill.ReadTransactionDispose = queryContext.OpenReadTransaction(caller);
 
                         // we have to open read tx for mapResults _after_ we open index tx
 
@@ -3378,6 +3387,8 @@ namespace Raven.Server.Documents.Indexes
                             isStale = IsStale(queryContext, indexContext, cutoffEtag?.DocEtag, cutoffEtag?.ReferenceEtag, cutoffEtag?.CompareExchangeReferenceEtag);
                             if (WillResultBeAcceptable(isStale, query, wait) == false)
                             {
+                                resultToFill.ReadTransactionDispose?.Dispose();
+                                resultToFill.ReadTransactionDispose = null;
                                 queryContext.CloseTransaction();
 
                                 Debug.Assert(query.WaitForNonStaleResultsTimeout != null);
@@ -3494,9 +3505,13 @@ namespace Raven.Server.Documents.Indexes
                                     {
                                         var originalEnumerator = enumerator;
 
-                                        enumerator = new PulsedTransactionEnumerator<IndexReadOperationBase.QueryResult, QueryResultsIterationState>(queryContext.Documents,
+                                        var pulsedEnumerator = new PulsedTransactionEnumerator<IndexReadOperationBase.QueryResult, QueryResultsIterationState>(queryContext.Documents,
                                             state => originalEnumerator,
                                             new QueryResultsIterationState(queryContext.Documents, DocumentDatabase.Configuration.Databases.PulseReadTransactionLimit));
+
+                                        pulsedEnumerator.OnPulse += retriever.ClearCache; // we have to clear cached blittables because they are no longer valid after cloning the transaction
+
+                                        enumerator = pulsedEnumerator;
                                     }
 
                                     using (enumerator)
@@ -3584,7 +3599,7 @@ namespace Raven.Server.Documents.Indexes
                             }
                         }
 
-                        return;
+                        return resultToFill;
                     }
                 }
             }
@@ -4067,7 +4082,7 @@ namespace Raven.Server.Documents.Indexes
             result.IndexName = Name;
             result.IsStale = isStale;
             result.IndexTimestamp = LastIndexingTime ?? DateTime.MinValue;
-            result.LastQueryTime = _lastQueryingTime ?? DateTime.MinValue;
+            result.LastQueryTime = _lastQueriedTimeTracker.LastQueryDate;
             result.ResultEtag = CalculateIndexEtag(queryContext, indexContext, q, result.IsStale) ^ facetSetupEtag;
             result.NodeTag = DocumentDatabase.ServerStore.NodeTag;
         }
@@ -4078,7 +4093,7 @@ namespace Raven.Server.Documents.Indexes
             result.IndexName = Name;
             result.IsStale = isStale;
             result.IndexTimestamp = LastIndexingTime ?? DateTime.MinValue;
-            result.LastQueryTime = _lastQueryingTime ?? DateTime.MinValue;
+            result.LastQueryTime = _lastQueriedTimeTracker.LastQueryDate;
             result.ResultEtag = CalculateIndexEtag(queryContext, indexContext, q, result.IsStale);
             result.NodeTag = DocumentDatabase.ServerStore.NodeTag;
         }
@@ -4089,7 +4104,7 @@ namespace Raven.Server.Documents.Indexes
             result.IndexName = Name;
             result.IsStale = isStale;
             result.IndexTimestamp = LastIndexingTime ?? DateTime.MinValue;
-            result.LastQueryTime = _lastQueryingTime ?? DateTime.MinValue;
+            result.LastQueryTime = _lastQueriedTimeTracker.LastQueryDate;
             result.ResultEtag = CalculateIndexEtag(queryContext, indexContext, q, result.IsStale);
             result.NodeTag = DocumentDatabase.ServerStore.NodeTag;
         }
@@ -5198,7 +5213,7 @@ namespace Raven.Server.Documents.Indexes
                     {
                         for (int i = 0; i < read; i++)
                         {
-                            Container.Get(llt, buffer[i], out var item);
+                            Container.Get(llt, new ContainerEntryId(buffer[i]), out var item);
                             var state = (PostingListState*)item.Address;
                             report.BranchPages += state->BranchPages;
                             report.LeafPages += state->LeafPages;

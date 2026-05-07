@@ -597,6 +597,20 @@ namespace Raven.Server.Config.Categories
         [ConfigurationEntry("Indexing.Corax.Static.ComplexFieldIndexingBehavior", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]
         public CoraxComplexFieldIndexingBehavior CoraxStaticIndexComplexFieldIndexingBehavior { get; protected set; }
 
+        [Description("Interval of saving elapsed time from last query in an idle index")]
+        [DefaultValue(10)]
+        [MinValue(1)]
+        [TimeUnit(TimeUnit.Minutes)]
+        [IndexUpdateType(IndexUpdateType.None)]
+        [ConfigurationEntry("Indexing.ElapsedSinceQueriedPersistIntervalInMin", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]
+        public TimeSetting ElapsedSinceQueriedPersistInterval { get; set; }
+        
+        [Description("Use default search analyzer for dynamic fields if not set explicitly.")]
+        [DefaultValue(false)]
+        [IndexUpdateType(IndexUpdateType.Refresh)]
+        [ConfigurationEntry("Indexing.Querying.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]
+        public bool UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery { get; protected set; }
+        
         protected override void ValidateProperty(PropertyInfo property)
         {
             base.ValidateProperty(property);

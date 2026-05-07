@@ -251,12 +251,12 @@ public struct TermRangeProvider<TLookupIterator, TLow, THigh> : ITermProvider, I
             
             if ((termId & (long)TermIdMask.PostingList) != 0)
             {
-                postingLists.Add(allocator, EntryIdEncodings.GetContainerId(termId));
+                postingLists.Add(allocator, (long)EntryIdEncodings.GetContainerId(termId));
                 postingListsType.Add(allocator, TermIdMask.PostingList);
             }
             else if ((termId & (long)TermIdMask.SmallPostingList) != 0)
             {
-                postingLists.Add(allocator, EntryIdEncodings.GetContainerId(termId));
+                postingLists.Add(allocator, (long)EntryIdEncodings.GetContainerId(termId));
                 postingListsType.Add(allocator, TermIdMask.SmallPostingList);
             }
             else
@@ -267,10 +267,11 @@ public struct TermRangeProvider<TLookupIterator, TLow, THigh> : ITermProvider, I
         }
 
         using var _ = allocator.Allocate((sizeof(UnmanagedSpan)) * postingLists.Count, out ByteString containers);
-        var containersPtr = (UnmanagedSpan*)containers.Ptr;
+        var containersSpan = containers.ToSpan<UnmanagedSpan>();
 
-        Container.GetAll(_indexSearcher._transaction.LowLevelTransaction, postingLists.ToSpan(), containersPtr, singleMarker,
+        Container.GetAll(_indexSearcher._transaction.LowLevelTransaction, postingLists.ToSpan(), containersSpan, singleMarker,
             _indexSearcher._transaction.LowLevelTransaction.PageLocator);
+        var containersPtr = (UnmanagedSpan*)containers.Ptr;
 
         long totalCount = 0;
         for (int i = 0; i < postingLists.Count; ++i)

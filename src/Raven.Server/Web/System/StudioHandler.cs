@@ -1,10 +1,4 @@
-﻿// -----------------------------------------------------------------------
-//  <copyright file="Studio.cs" company="Hibernating Rhinos LTD">
-//      Copyright (c) Hibernating Rhinos LTD. All rights reserved.
-//  </copyright>
-// -----------------------------------------------------------------------
-
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -258,15 +252,6 @@ namespace Raven.Server.Web.System
         [RavenAction("/wizard/index.html", "GET", AuthorizationStatus.UnauthenticatedClients)]
         public Task GetSetupIndexFile()
         {
-            if (ServerStore.LicenseManager.IsEulaAccepted == false)
-            {
-                // redirect to studio - if user didn't configured it yet
-                // then studio endpoint redirect to wizard
-                HttpContext.Response.Headers["Location"] = "/eula/index.html";
-                HttpContext.Response.StatusCode = (int)HttpStatusCode.Moved;
-                return Task.CompletedTask;
-            }
-
             // if user asks for entry point but we are already configured redirect to studio
             if (ServerStore.Configuration.Core.SetupMode != SetupMode.Initial)
             {
@@ -302,13 +287,6 @@ namespace Raven.Server.Web.System
             if (feature?.Status == RavenServer.AuthenticationStatus.TwoFactorAuthNotProvided)
             {
                 HttpContext.Response.Headers["Location"] = "/2fa/index.html";
-                HttpContext.Response.StatusCode = (int)HttpStatusCode.Moved;
-                return Task.CompletedTask;
-            }
-            
-            if (ServerStore.LicenseManager.IsEulaAccepted == false)
-            {
-                HttpContext.Response.Headers["Location"] = "/eula/index.html";
                 HttpContext.Response.StatusCode = (int)HttpStatusCode.Moved;
                 return Task.CompletedTask;
             }
@@ -391,7 +369,7 @@ namespace Raven.Server.Web.System
             HttpContext.Response.Headers["X-XSS-Protection"] = "1; mode=block";
             HttpContext.Response.Headers["X-Content-Type-Options"] = "nosniff";
 
-            var isSecuredServer = ServerStore.Server.Certificate?.Certificate != null;
+            var isSecuredServer = ServerStore.Server.Certificate?.ServerCertificate != null;
 
             if (isSecuredServer && Server.Configuration.Security.DisableHsts == false)
             {
@@ -451,13 +429,13 @@ namespace Raven.Server.Web.System
 
             for (; dispatch > 0; dispatch--)
             {
-                if (!EntriesToCompress.TryDequeue(out var relativeServerFileName))
+                if (EntriesToCompress.TryDequeue(out var relativeServerFileName) == false)
                     break;
 
                 // The cache entry should already be there in the static cache
                 // unless it has been removed by the pruning process, in which
                 // case we just skip it.
-                if (!StaticContentCache.TryGetValue(relativeServerFileName, out var uncompressedCachedStaticFile))
+                if (StaticContentCache.TryGetValue(relativeServerFileName, out var uncompressedCachedStaticFile) == false)
                     continue;
 
                 // The cache may attempt to read compressed contents, so this
@@ -559,17 +537,18 @@ namespace Raven.Server.Web.System
                         if (ShouldSkipCache(info))
                             continue;
 
-                        StaticContentCache.TryAdd(file.Substring(wwwRootBasePath.Length + 1).Replace('\\', '/'),
-                            new Lazy<CachedStaticFile>(() =>
-                           {
-                               var serverRelativeFileName = file.Substring(wwwRootBasePath.Length);
-                               var fileETag = GenerateETagFor(ETagFileSystemFileSource, serverRelativeFileName.GetHashCode(),
-                                   info.LastWriteTimeUtc.Ticks);
-                               using (var stream = info.OpenRead())
-                               {
-                                   return BuildForCache(serverRelativeFileName, fileETag, info, stream);
-                               }
-                           }));
+                        var serverRelativeFileName = file.Substring(wwwRootBasePath.Length + 1).Replace('\\', '/');
+
+                        if (StaticContentCache.ContainsKey(serverRelativeFileName))
+                            continue;
+
+                        var fileETag = GenerateETagFor(ETagFileSystemFileSource, serverRelativeFileName.GetHashCode(), info.LastWriteTimeUtc.Ticks);
+
+                        using (var entry = info.OpenRead())
+                        {
+                            var cacheEntry = BuildForCache(serverRelativeFileName, fileETag, info, entry);
+                            StaticContentCache.TryAdd(serverRelativeFileName, new Lazy<CachedStaticFile>(cacheEntry));
+                        }
                     }
                 }
 

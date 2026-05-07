@@ -14,6 +14,9 @@ import { conflictResolutionSlice } from "./pages/database/settings/conflictResol
 import { connectionStringsSlice } from "./pages/database/settings/connectionStrings/store/connectionStringsSlice";
 import { connectionStringsUpdateUrlMiddleware } from "./pages/database/settings/connectionStrings/store/connectionStringsMiddleware";
 import { certificatesSlice } from "components/pages/resources/manageServer/certificates/store/certificatesSlice";
+import { splitViewSlice } from "./common/splitView/store/splitViewSlice";
+import { databaseMiddleware } from "components/common/shell/databaseMiddleware";
+import { setupWizardSlice } from "./setupWizard/store/setupWizardSlice";
 
 const listenerMiddleware = createListenerMiddleware({
     extra: () => services,
@@ -33,6 +36,8 @@ export function createStoreConfiguration() {
             conflictResolution: conflictResolutionSlice.reducer,
             connectionStrings: connectionStringsSlice.reducer,
             certificates: certificatesSlice.reducer,
+            splitView: splitViewSlice.reducer,
+            setupWizard: setupWizardSlice.reducer,
         },
         middleware: (getDefaultMiddleware) =>
             getDefaultMiddleware({
@@ -41,7 +46,8 @@ export function createStoreConfiguration() {
                 },
             })
                 .prepend(listenerMiddleware.middleware)
-                .prepend(connectionStringsUpdateUrlMiddleware.middleware),
+                .prepend(connectionStringsUpdateUrlMiddleware.middleware)
+                .prepend(databaseMiddleware.middleware),
     });
 }
 

@@ -15,6 +15,7 @@ using Raven.Server.Documents.Includes;
 using Raven.Server.Documents.Queries.Revisions;
 using Raven.Server.Documents.Replication;
 using Raven.Server.Json;
+using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.Utils;
 using Sparrow.Json;
@@ -23,13 +24,16 @@ namespace Raven.Server.Documents.Handlers.Processors.Documents;
 
 internal sealed class DocumentHandlerProcessorForGet : AbstractDocumentHandlerProcessorForGet<DocumentHandler, DocumentsOperationContext, Document>
 {
-    public DocumentHandlerProcessorForGet(HttpMethod method, [NotNull] DocumentHandler requestHandler) : base(method, requestHandler)
+    private readonly OperationCancelToken _cts;
+
+    public DocumentHandlerProcessorForGet(HttpMethod method, [NotNull] DocumentHandler requestHandler, [CanBeNull] List<ReadOnlyMemory<char>> ids = null) : base(method, requestHandler, ids)
     {
+        _cts = RequestHandler.CreateHttpRequestBoundOperationToken();
     }
 
     protected override bool SupportsShowingRequestInTrafficWatch => true;
 
-    protected override CancellationToken CancellationToken => RequestHandler.Database.DatabaseShutdown;
+    protected override CancellationToken CancellationToken => _cts.Token;
 
     protected override ValueTask<DocumentsByIdResult<Document>> GetDocumentsByIdImplAsync(
         DocumentsOperationContext context,
@@ -69,11 +73,11 @@ internal sealed class DocumentHandlerProcessorForGet : AbstractDocumentHandlerPr
         if (compareExchangeValues.Count > 0 || clusterWideTx)
         {
             includeCompareExchangeValues = IncludeCompareExchangeValuesCommand.InternalScope(RequestHandler.Database, compareExchangeValues);
-            Disposables.Add(includeCompareExchangeValues);
+            RegisterForDisposal(includeCompareExchangeValues);
         }
 
         long lastModifiedIndex = RequestHandler.Database.ClusterWideTransactionIndexWaiter.LastIndex;
-        context.OpenReadTransaction();
+        var readTx = context.OpenReadTransaction();
 
         foreach (var id in ids)
         {
@@ -156,7 +160,8 @@ internal sealed class DocumentHandlerProcessorForGet : AbstractDocumentHandlerPr
             RevisionIncludes = includeRevisions,
             CounterIncludes = includeCounters,
             TimeSeriesIncludes = includeTimeSeries,
-            CompareExchangeIncludes = includeCompareExchangeValues?.Results
+            CompareExchangeIncludes = includeCompareExchangeValues?.Results,
+            ReadTransaction = readTx
         });
     }
 
@@ -180,7 +185,7 @@ internal sealed class DocumentHandlerProcessorForGet : AbstractDocumentHandlerPr
 
     protected override ValueTask<DocumentsResult> GetDocumentsImplAsync(DocumentsOperationContext context, long? etag, StartsWithParams startsWith, string changeVector)
     {
-        context.OpenReadTransaction();
+        var readTx = context.OpenReadTransaction();
 
         var databaseChangeVector = DocumentsStorage.GetDatabaseChangeVector(context);
 
@@ -213,7 +218,15 @@ internal sealed class DocumentHandlerProcessorForGet : AbstractDocumentHandlerPr
         return new ValueTask<DocumentsResult>(new DocumentsResult
         {
             Documents = documents,
-            Etag = databaseChangeVector
+            Etag = databaseChangeVector,
+            ReadTransaction = readTx
         });
+    }
+
+    public override void Dispose()
+    {
+        base.Dispose();
+
+        _cts?.Dispose();
     }
 }

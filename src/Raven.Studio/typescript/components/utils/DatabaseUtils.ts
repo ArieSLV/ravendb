@@ -73,6 +73,10 @@ export default class DatabaseUtils {
     }
 
     static hasInternalReplication(db: DatabaseSharedInfo): boolean {
+        if (!db) {
+            return false;
+        }
+
         if (db.isSharded) {
             return db.shards.some((x) => x.nodes.length > 1);
         } else {
@@ -101,7 +105,6 @@ export default class DatabaseUtils {
         } else {
             return db.nodes.map((node) => ({
                 nodeTag: node.tag,
-                shardNumber: undefined,
             }));
         }
     }

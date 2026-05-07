@@ -1,5 +1,7 @@
 /// <reference path="../tsd.d.ts"/>
 
+import License = Raven.Server.Commercial.License;
+
 interface disposable {
     dispose(): void;
 }
@@ -147,6 +149,35 @@ type timeSeriesDeleteMode = "all" | "range" | "selection";
 interface timeSeriesDeleteCriteria {
     mode: timeSeriesDeleteMode;
     selection?: Raven.Client.Documents.Session.TimeSeriesValue[];
+}
+
+type FreeLicenseType = "Community" | "Developer"
+
+interface SendFreeLicenseVerificationRequest {
+    FirstName: string;
+    LastName: string;
+    Email: string;
+    Country: string;
+    JobTitle: string;
+    Company: string;
+    HowDoYouPlanToUseRavenDb: string;
+    Type: FreeLicenseType;
+    MarketingConsent: boolean;
+    AcceptTheTermsAndConditions: boolean;
+    Industry: string;
+    LicenseType: Raven.Server.Commercial.LicenseType;
+}
+
+interface DownloadFreeLicenseRequest {
+    Email: string;
+    VerificationCode: string;
+}
+
+type FreeLicenseDownloadStatus = "Success" | "InvalidCredentials" | "CodeExpired" | "CodeAlreadyUsed";
+
+interface DownloadFreeLicenseResponse {
+    License: License;
+    LicenseDownloadStatus: FreeLicenseDownloadStatus;
 }
 
 type postTimeSeriesDeleteAction = "reloadCurrent" | "changeTimeSeries" | "doNothing";
@@ -564,6 +595,11 @@ interface domainAvailabilityResult {
     IsOwnedByMe: boolean;
 }
 
+interface ClaimDomainResult extends Omit<Raven.Server.Commercial.UserDomainsWithIps, "Domains"> {
+    Email: string
+    Domains: Record<string, string[]>
+}
+
 interface collectionInfoDto extends Raven.Client.Documents.Queries.QueryResult<Array<documentDto>, any> {
 }
 
@@ -616,6 +652,7 @@ interface explainQueryResponse extends resultsDto<Raven.Server.Documents.Queries
 
 interface virtualBulkOperationItem {
     id: string;
+    operationId: number;
     date: string;
     duration: number;
     totalItemsProcessed: number;
@@ -627,6 +664,7 @@ interface virtualBulkOperationItem {
 
 interface virtualBulkOperationFailureItem {
     id: string;
+    operationId: number;
     date: string;
     duration: number;
     errorMsg: string;
@@ -1016,7 +1054,7 @@ interface ReactLocationProps {
 
 interface ReactInKnockoutOptions<T> {
     component: T;
-    props?: Parameters<typeof T>[0];
+    props?: Parameters<T>[0];
     dirtyFlag?: ReactDirtyFlag;
 }
 
@@ -1076,8 +1114,9 @@ type CertificateDto = Partial<Raven.Client.ServerWide.Operations.Certificates.Ce
 type CertificatesResponseDto = {
     Certificates: CertificateDto[],
     LoadedServerCert: string,
+    LoadedServerCertForCommunication?: string,
     WellKnownAdminCerts: string[],
-    WellKnownIssuers: string[]
+    WellKnownIssuers: string[],
 }
 
 interface TrafficWatchPostgresChange extends Raven.Client.Documents.Changes.TrafficWatchChangeBase {
@@ -1085,3 +1124,5 @@ interface TrafficWatchPostgresChange extends Raven.Client.Documents.Changes.Traf
     Source: string;
     Query: string;
 }
+
+type Browser = "Chrome" | "Firefox" | "Safari" | "Other";

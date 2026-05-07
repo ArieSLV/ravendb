@@ -1,4 +1,5 @@
-﻿using Corax.Utils;
+using Corax.Utils;
+using System;
 using Sparrow;
 using Sparrow.Compression;
 using Sparrow.Server;
@@ -36,7 +37,7 @@ public partial class IndexWriter
                     keysPtr[i] = keys[i];
                     if ((keys[i] & (long)TermIdMask.EnsureIsSingleMask) != 0)
                     {
-                        keysPtr[i] = EntryIdEncodings.GetContainerId(keys[i]);
+                        keysPtr[i] = (long)EntryIdEncodings.GetContainerId(keys[i]);
                         continue;
                     }
 
@@ -44,7 +45,7 @@ public partial class IndexWriter
                 }
 
 
-                Container.GetAll(writer._transaction.LowLevelTransaction, keysPtr[..read], containersPtr, -1, writer._transaction.LowLevelTransaction.PageLocator);
+                Container.GetAll(writer._transaction.LowLevelTransaction, keysPtr[..read], new Span<UnmanagedSpan>(containersPtr, read), -1, writer._transaction.LowLevelTransaction.PageLocator);
                 for (int i = 0; i < read; i++)
                 {
                     var currentKey = keys[i];

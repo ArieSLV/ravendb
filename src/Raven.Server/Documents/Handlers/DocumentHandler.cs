@@ -1,10 +1,5 @@
-﻿// -----------------------------------------------------------------------
-//  <copyright file="DocumentHandler.cs" company="Hibernating Rhinos LTD">
-//      Copyright (c) Hibernating Rhinos LTD. All rights reserved.
-//  </copyright>
-// -----------------------------------------------------------------------
-
-using System;
+﻿using System;
+using System.Collections.Generic;
 using System.Net.Http;
 using System.Runtime.ExceptionServices;
 using System.Threading.Tasks;
@@ -41,15 +36,18 @@ namespace Raven.Server.Documents.Handlers
         [RavenAction("/databases/*/docs", "GET", AuthorizationStatus.ValidUser, EndpointType.Read)]
         public Task Get()
         {
-            // Disposal of the processor is handled in the `ExecuteAsTaskAsync` method.
-            return new DocumentHandlerProcessorForGet(HttpMethod.Get, this).ExecuteAsTaskAsync();
+            // Disposal of the processor is done by having it auto-register to the request context disposal mechanism
+            return new DocumentHandlerProcessorForGet(HttpMethod.Get, this).ExecuteAsync().AsTask();
         }
 
         [RavenAction("/databases/*/docs", "POST", AuthorizationStatus.ValidUser, EndpointType.Read, DisableOnCpuCreditsExhaustion = true)]
-        public Task PostGet()
+        public async Task PostGet()
         {
-            // Disposal of the processor is handled in the `ExecuteAsTaskAsync` method.
-            return new DocumentHandlerProcessorForGet(HttpMethod.Post, this).ExecuteAsTaskAsync();
+            DocumentsOperationContext context = GetContextScopedToRequest();
+            List<ReadOnlyMemory<char>> ids = await DocumentHandlerProcessorForGet.GetIdsFromRequestBodyAsync(context, this);
+            
+            // Disposal of the processor is done by having it auto-register to the request context disposal mechanism
+            await new DocumentHandlerProcessorForGet(HttpMethod.Post, this, ids).ExecuteAsync();
         }
 
         [RavenAction("/databases/*/docs", "DELETE", AuthorizationStatus.ValidUser, EndpointType.Write, DisableOnCpuCreditsExhaustion = true)]
@@ -98,12 +96,7 @@ namespace Raven.Server.Documents.Handlers
         private readonly DocumentDatabase _database;
         private readonly bool _shouldValidateAttachments;
         public DocumentsStorage.PutOperationResults PutResult;
-
-        public static string GenerateNonConflictingId(DocumentDatabase database, string prefix)
-        {
-            return prefix + database.DocumentsStorage.GenerateNextEtag().ToString("D19") + "-" + Guid.NewGuid().ToBase64Unpadded();
-        }
-
+        
         public MergedPutCommand(BlittableJsonReaderObject doc, string id, LazyStringValue changeVector, DocumentDatabase database, bool shouldValidateAttachments = false)
         {
             _document = doc;
@@ -127,19 +120,15 @@ namespace Raven.Server.Documents.Handlers
             {
                 PutResult = _database.DocumentsStorage.Put(context, _id, _expectedChangeVector, _document);
             }
-            catch (Voron.Exceptions.VoronConcurrencyErrorException)
+            catch (Voron.Exceptions.VoronConcurrencyErrorException e)
             {
-                // RavenDB-10581 - If we have a concurrency error on "doc-id/"
-                // this means that we have existing values under the current etag
-                // we'll generate a new (random) id for them.
-
-                // The TransactionMerger will re-run us when we ask it to as a
-                // separate transaction
-                if (_id?.EndsWith(_database.IdentityPartsSeparator) == true)
+                if (DocumentPutAction.TryHandleVoronConcurrencyError(e, _database, _id, out var newId))
                 {
-                    _id = GenerateNonConflictingId(_database, _id);
+                    _id = newId;
+                    // The TransactionMerger will re-run us when we ask it to as a separate transaction
                     RetryOnError = true;
                 }
+                
                 throw;
             }
             return 1;

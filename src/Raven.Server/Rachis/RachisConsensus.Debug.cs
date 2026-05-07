@@ -1,8 +1,9 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Text.Json.Serialization;
 using Raven.Client.Extensions;
 using Raven.Client.ServerWide;
 using Raven.Client.ServerWide.Tcp;
@@ -213,7 +214,7 @@ public abstract partial class RachisConsensus
         }
     }
 
-    public class UnrecoverableClusterError : IDynamicJsonValueConvertible
+    public class UnrecoverableClusterError : IDynamicJson
     {
         public string Id;
         public string Title;
@@ -233,13 +234,14 @@ public abstract partial class RachisConsensus
         }
     }
 
-    public class RachisDebugLogEntry : IDynamicJsonValueConvertible
+    public class RachisDebugLogEntry : IDynamicJson
     {
         public long Term { get; set; }
         public long Index { get; set; }
         public long SizeInBytes { get; set; }
         public string CommandType { get; set; }
         public DateTime? CreateAt { get; set; }
+        [JsonIgnore]
         public BlittableJsonReaderObject Entry { get; set; }
         public RachisEntryFlags Flags { get; set; }
         public DynamicJsonValue ToJson()
@@ -281,7 +283,7 @@ public abstract partial class RachisConsensus
 }
 
 
-public abstract class RaftDebugView : IDynamicJsonValueConvertible
+public abstract class RaftDebugView : IDynamicJson
 {
     private readonly RachisConsensus _engine;
     public abstract string Role { get; }
@@ -308,7 +310,7 @@ public abstract class RaftDebugView : IDynamicJsonValueConvertible
         Log = _engine.GetLogDetails(context, fromIndex, take, detailed);
     }
 
-    public class PeerConnection(string destination, string status, bool connected) : IDynamicJsonValueConvertible
+    public class PeerConnection(string destination, string status, bool connected) : IDynamicJson
     {
         public bool Connected = connected;
         public string Destination = destination;
@@ -367,7 +369,7 @@ public abstract class RaftDebugView : IDynamicJsonValueConvertible
         }
     }
 
-    public class RaftCommandsVersion : IDynamicJsonValueConvertible
+    public class RaftCommandsVersion : IDynamicJson
     {
         public int Cluster;
         public int Local;
@@ -455,7 +457,7 @@ public class CandidateDebugView(Candidate candidate) : RaftDebugView(candidate.E
 }
 
 
-public class RachisDebugMessage : IDynamicJsonValueConvertible
+public class RachisDebugMessage : IDynamicJson
 {
     public DateTime At = DateTime.UtcNow;
     public string Message;

@@ -79,7 +79,8 @@ namespace Corax
 
             public static readonly Slice LargePostingListsSetSlice, PostingListsSlice,  EntryIdToLocationSlice, LastEntryIdSlice, 
                 StoredFieldsSlice, EntriesTermsContainerSlice, FieldsSlice, NumberOfEntriesSlice, EntriesToSpatialSlice, EntriesToTermsSlice,
-                DynamicFieldsAnalyzersSlice, NumberOfTermsInIndex, MultipleTermsInField, NullPostingLists, NonExistingPostingLists;            
+                DynamicFieldsAnalyzersSlice, NumberOfTermsInIndex, MultipleTermsInField, NullPostingLists, NonExistingPostingLists,
+                PaginationBasedOnEntryIdSupportStatus;            
             
             public const int DynamicField = -2;
 
@@ -93,6 +94,13 @@ namespace Corax
             public const int MaxSizeOfTermVectorList = int.MaxValue >> 1;
             
             public const int InvalidPageId = -1;
+
+            /// <summary>
+            /// Sentinel value used to mark dictionary entries as "in-progress" during atomic Dictionary+Storage updates.
+            /// If Storage.AddByRef throws, the dictionary entry remains at this value, allowing retry on next access.
+            /// See RavenDB-25907.
+            /// </summary>
+            public const int InvalidStorageIndex = -1;
 
             static IndexWriter()
             {
@@ -113,6 +121,7 @@ namespace Corax
                     Slice.From(ctx, "MultipleTermsInField", ByteStringType.Immutable, out MultipleTermsInField);
                     Slice.From(ctx, "NullPostingLists", ByteStringType.Immutable, out NullPostingLists);
                     Slice.From(ctx, "NonExistingPostingLists", ByteStringType.Immutable, out NonExistingPostingLists);
+                    Slice.From(ctx, "PaginationBasedOnEntryIdSupportStatus", ByteStringType.Immutable, out PaginationBasedOnEntryIdSupportStatus);
                 }
             }
         }

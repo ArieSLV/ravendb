@@ -21,16 +21,18 @@ namespace StressTests.Server.Replication
         {
         }
 
-        [RavenFact(RavenTestCategory.Core)]
-        public async Task PullExternalReplicationWithCertificateShouldWork()
+        [RavenTheory(RavenTestCategory.Replication | RavenTestCategory.Certificates)]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task PullExternalReplicationWithCertificateShouldWork(bool with2Eku)
         {
             var hubSettings = new ConcurrentDictionary<string, string>();
             var sinkSettings = new ConcurrentDictionary<string, string>();
 
-            var hubCertificates = Certificates.GenerateAndSaveSelfSignedCertificate(createNew: true);
+            var hubCertificates = Certificates.GenerateAndSaveSelfSignedCertificate(createNew: true, with2Eku: with2Eku);
             var hubCerts = Certificates.SetupServerAuthentication(hubSettings, certificates: hubCertificates);
 
-            var sinkCertificates = Certificates.GenerateAndSaveSelfSignedCertificate(createNew: false);
+            var sinkCertificates = Certificates.GenerateAndSaveSelfSignedCertificate(createNew: true, with2Eku: with2Eku);
             var sinkCerts = Certificates.SetupServerAuthentication(sinkSettings, certificates: sinkCertificates);
 
             var hubDB = GetDatabaseName();
@@ -40,19 +42,19 @@ namespace StressTests.Server.Replication
             var hubServer = GetNewServer(new ServerCreationOptions { CustomSettings = hubSettings, RegisterForDisposal = true });
             var sinkServer = GetNewServer(new ServerCreationOptions { CustomSettings = sinkSettings, RegisterForDisposal = true });
 
-            var dummy = Certificates.GenerateAndSaveSelfSignedCertificate(createNew: false);
+            var dummy = Certificates.GenerateAndSaveSelfSignedCertificate(createNew: true);
             var pullReplicationCertificate = new X509Certificate2(dummy.ServerCertificatePath, (string)null, X509KeyStorageFlags.MachineKeySet | CertificateLoaderUtil.FlagsForExport);
             Assert.True(pullReplicationCertificate.HasPrivateKey);
 
             using (var hubStore = GetDocumentStore(new Options
             {
-                ClientCertificate = hubCerts.ServerCertificate.Value,
+                ClientCertificate = hubCerts.ServerCertificateForCommunication.Value,
                 Server = hubServer,
                 ModifyDatabaseName = _ => hubDB
             }))
             using (var sinkStore = GetDocumentStore(new Options
             {
-                ClientCertificate = sinkCerts.ServerCertificate.Value,
+                ClientCertificate = sinkCerts.ServerCertificateForCommunication.Value,
                 Server = sinkServer,
                 ModifyDatabaseName = _ => sinkDB
             }))
@@ -75,15 +77,18 @@ namespace StressTests.Server.Replication
                 var timeout = 5000;
                 Assert.True(WaitForDocument(sinkStore, "foo/bar", timeout), sinkStore.Identifier);
                 
-                // test if certificate is retained when we don't send one
-                // sending null as cert - but it should copy old one
+                // Test if certificate is retained when we don't send one and specify the flag to keep the old one.
                 await sinkStore.Maintenance.SendAsync(new UpdatePullReplicationAsSinkOperation(new PullReplicationAsSink
-                {
-                    TaskId = sinkTaskId,
-                    Name = pullReplicationName,
-                    HubName = pullReplicationName,
-                    ConnectionStringName = "ConnectionString-" + hubStore.Database
-                }));
+                    {
+                        TaskId = sinkTaskId,
+                        Name = pullReplicationName,
+                        HubName = pullReplicationName,
+                        ConnectionStringName = "ConnectionString-" + hubStore.Database,
+                        
+                        CertificateWithPrivateKey = null
+                    }, 
+                    useServerCertificate: true
+                ));
                 
                 using (var hubSession = hubStore.OpenSession())
                 {
@@ -116,6 +121,68 @@ namespace StressTests.Server.Replication
                 resList.Add(await task);
             }
             return resList;
+        }
+
+        [RavenTheory(RavenTestCategory.Replication | RavenTestCategory.Certificates)]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task PullReplicationWithSinkServerCertificateUsage(bool with2Eku)
+        {
+            var hubSettings = new ConcurrentDictionary<string, string>();
+            var sinkSettings = new ConcurrentDictionary<string, string>();
+
+            var hubCertificates = Certificates.GenerateAndSaveSelfSignedCertificate(createNew: true, with2Eku: with2Eku);
+            var hubCerts = Certificates.SetupServerAuthentication(hubSettings, certificates: hubCertificates);
+
+            var sinkCertificates = Certificates.GenerateAndSaveSelfSignedCertificate(createNew: false, with2Eku: with2Eku);
+            var sinkCerts = Certificates.SetupServerAuthentication(sinkSettings, certificates: sinkCertificates);
+
+            var hubDB = GetDatabaseName();
+            var sinkDB = GetDatabaseName();
+            var pullReplicationName = $"{hubDB}-pull";
+
+            var hubServer = GetNewServer(new ServerCreationOptions { CustomSettings = hubSettings, RegisterForDisposal = true });
+            var sinkServer = GetNewServer(new ServerCreationOptions { CustomSettings = sinkSettings, RegisterForDisposal = true });
+
+            // let's export a sink's server certificate and register it on a hub
+            var pullReplicationCertificate = CertificateLoaderUtil.CreateCertificate(sinkCerts.ServerCertificate.Value.Export(X509ContentType.Cert));
+            Assert.False(pullReplicationCertificate.HasPrivateKey);
+
+            using (var hubStore = GetDocumentStore(new Options
+                   {
+                       ClientCertificate = hubCerts.ServerCertificateForCommunication.Value,
+                       Server = hubServer,
+                       ModifyDatabaseName = _ => hubDB
+                   }))
+            using (var sinkStore = GetDocumentStore(new Options
+                   {
+                       ClientCertificate = sinkCerts.ServerCertificateForCommunication.Value,
+                       Server = sinkServer,
+                       ModifyDatabaseName = _ => sinkDB
+                   }))
+            {
+                await hubStore.Maintenance.SendAsync(new PutPullReplicationAsHubOperation(new PullReplicationDefinition(pullReplicationName)));
+                await hubStore.Maintenance.SendAsync(new RegisterReplicationHubAccessOperation(pullReplicationName, new ReplicationHubAccess
+                {
+                    Name = pullReplicationCertificate.Thumbprint,
+                    CertificateBase64 = Convert.ToBase64String(pullReplicationCertificate.Export(X509ContentType.Cert))
+                }));
+
+                var configurationResult = await SetupPullReplicationAsync(
+                    pullReplicationName,
+                    sinkStore,
+                    null /* it forces to use server certificate */,
+                    hubStore);
+
+                using (var hubSession = hubStore.OpenSession())
+                {
+                    hubSession.Store(new User(), "foo/bar");
+                    hubSession.SaveChanges();
+                }
+
+                var timeout = 5000;
+                Assert.True(WaitForDocument(sinkStore, "foo/bar", timeout), sinkStore.Identifier);
+            }
         }
     }
 }

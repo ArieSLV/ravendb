@@ -1,4 +1,4 @@
-import { resetAllMocks } from "@storybook/test";
+import { resetAllMocks } from "storybook/test";
 import { useState } from "react";
 import { createStoreConfiguration } from "../typescript/components/store";
 import { setEffectiveTestStore } from "../typescript/components/storeCompat";
@@ -56,4 +56,6 @@ function useTheme(theme: Theme) {
     themeLink.rel = "stylesheet";
     themeLink.href = stylesheetPrefix + fileName;
     document.head.insertBefore(themeLink, document.head.firstChild);
+
+    document.body.setAttribute("data-theme", theme);
 }

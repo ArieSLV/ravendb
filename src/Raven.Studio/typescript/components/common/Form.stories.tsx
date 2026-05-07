@@ -1,4 +1,4 @@
-import { Meta } from "@storybook/react";
+import { Meta } from "@storybook/react-webpack5";
 import {
     FormAceEditor,
     FormCheckbox,
@@ -12,8 +12,10 @@ import {
     FormRadio,
     FormRadioToggleWithIcon,
     FormSelect,
+    FormSelectAutocomplete,
     FormSelectCreatable,
     FormSwitch,
+    FormVerificationCodeInput,
 } from "./Form";
 import { useEffect } from "react";
 import { withBootstrap5, withStorybookContexts } from "test/storybookTestUtils";
@@ -138,8 +140,8 @@ export function Form({ isDefaultValid }: { isDefaultValid: boolean }) {
                     control={control}
                     name="inputSelect"
                     options={[
-                        { label: "Option 1", value: 1 },
-                        { label: "Option 2", value: 2 },
+                        { label: "Option first", value: 1 },
+                        { label: "Option second", value: 2 },
                     ]}
                 />
             </FormGroup>
@@ -149,8 +151,19 @@ export function Form({ isDefaultValid }: { isDefaultValid: boolean }) {
                     control={control}
                     name="inputSelectCreatable"
                     options={[
-                        { label: "Option 1", value: 1 },
-                        { label: "Option 2", value: 2 },
+                        { label: "Option first", value: 1 },
+                        { label: "Option second", value: 2 },
+                    ]}
+                />
+            </FormGroup>
+            <FormGroup>
+                <FormLabel>Select autocomplete</FormLabel>
+                <FormSelectAutocomplete
+                    control={control}
+                    name="inputSelectAutocomplete"
+                    options={[
+                        { label: "Option first", value: 1 },
+                        { label: "Option second", value: 2 },
                     ]}
                 />
             </FormGroup>
@@ -198,6 +211,14 @@ export function Form({ isDefaultValid }: { isDefaultValid: boolean }) {
                     getPathDependencies={(path: string) => [path]}
                 />
             </FormGroup>
+            <FormGroup>
+                <FormLabel>Verification Code Input</FormLabel>
+                <FormVerificationCodeInput
+                    control={control}
+                    name="inputVerificationCode"
+                    onLastDigitInsertSubmit={() => console.log("last digit inserted")}
+                />
+            </FormGroup>
         </div>
     );
 }
@@ -215,10 +236,12 @@ const schema = yup.object().shape({
     inputSelect: yup.number().nullable().required(),
     inputMultiSelect: yup.number().nullable().required(),
     inputSelectCreatable: yup.number().nullable().required(),
+    inputSelectAutocomplete: yup.number().nullable().required(),
     inputDatePicker: yup.date().required(),
     inputDurationPicker: yup.number().required(),
     inputAceEditor: yup.string().required(),
     inputPath: yup.string().required(),
+    inputVerificationCode: yup.string().required(),
 });
 
 const formResolver = yupResolver(schema);
@@ -235,6 +258,7 @@ const validValues: FormData = {
     inputSelect: 1,
     inputMultiSelect: 1,
     inputSelectCreatable: 1,
+    inputSelectAutocomplete: 1,
     inputDatePicker: new Date(),
     inputDurationPicker: 2,
     inputAceEditor: "const x = 1;",
@@ -252,6 +276,7 @@ const invalidValues: FormData = {
     inputSelect: null,
     inputMultiSelect: null,
     inputSelectCreatable: null,
+    inputSelectAutocomplete: null,
     inputDatePicker: null,
     inputDurationPicker: null,
     inputAceEditor: "",

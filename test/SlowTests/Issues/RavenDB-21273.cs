@@ -1,23 +1,13 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 using FastTests;
-using Raven.Client.Documents;
-using Raven.Client.Documents.Indexes;
 using Raven.Client.Documents.Operations.Backups;
-using Raven.Client.Documents.Operations.ConnectionStrings;
 using Raven.Client.Documents.Operations.ETL;
 using Raven.Client.Documents.Operations.Indexes;
 using Raven.Client.Documents.Operations.Replication;
-using Raven.Client.Documents.Operations.TimeSeries;
 using Raven.Client.Documents.Smuggler;
 using Raven.Client.Exceptions.Commercial;
-using Raven.Client.ServerWide.Operations;
-using Raven.Client.Util;
-using Raven.Server;
-using Raven.Server.Commercial;
-using Sparrow;
 using Tests.Infrastructure;
 using Xunit;
 using Xunit.Abstractions;
@@ -26,14 +16,12 @@ namespace SlowTests.Issues
 {
     public class RavenDB_21273 : RavenTestBase
     {
-        private const string RL_COMM = "RAVEN_LICENSE_COMMUNITY";
-        private const string RL_PRO = "RAVEN_LICENSE_PROFESSIONAL";
 
         public RavenDB_21273(ITestOutputHelper output) : base(output)
         {
         }
 
-        [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing | RavenTestCategory.Smuggler | RavenTestCategory.Compression)]
+        [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing | RavenTestCategory.Smuggler | RavenTestCategory.Compression, Architecture = RavenArchitecture.AllX64)]
         public async Task ExceptionWhenImportingAdditionalAssembliesWithCommunityLicense()
         {
             DoNotReuseServer();
@@ -42,27 +30,18 @@ namespace SlowTests.Issues
             {
                 using (var store = GetDocumentStore())
                 {
-                    var dbrecord = store.Maintenance.Server.Send(new GetDatabaseRecordOperation(store.Database));
-                    dbrecord.DocumentsCompression.CompressRevisions = false;
-                    store.Maintenance.Server.Send(new UpdateDatabaseOperation(dbrecord, dbrecord.Etag));
+                    await LicenseHelper.DisableRevisionCompression(Server, store);
 
-                    store.Maintenance.Send(new PutIndexesOperation(new[]
-                    {
-                        new IndexDefinition
-                        {
-                            Maps = { "from doc in docs.Images select new { doc.Tags }" },
-                            Name = "test",
-                            AdditionalAssemblies = { AdditionalAssembly.FromNuGet("System.Drawing.Common", "4.7.0") }
-                        }
-                    }));
+                    LicenseHelper.PutIndexWithAdditionalAssemblies(store);
+
                     var operation = await store.Smuggler.ExportAsync(new DatabaseSmugglerExportOptions(), file);
                     await operation.WaitForCompletionAsync(TimeSpan.FromMinutes(1));
-
                 }
 
                 using (var store = GetDocumentStore())
                 {
-                    await ChangeLicense(Server, RL_COMM, store);
+                    await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
+
                     var importOperation = await store.Smuggler.ImportAsync(new DatabaseSmugglerImportOptions(), file);
                     await importOperation.WaitForCompletionAsync(TimeSpan.FromMinutes(5));
 
@@ -84,35 +63,35 @@ namespace SlowTests.Issues
             var file = GetTempFileName();
             try
             {
+                PeriodicBackupConfiguration config;
                 using (var store = GetDocumentStore())
                 {
-                    var config = Backup.CreateBackupConfiguration(backupPath, fullBackupFrequency: "* */1 * * *", incrementalBackupFrequency: "* */2 * * *", backupType: BackupType.Snapshot);
-                    await store.Maintenance.SendAsync(new UpdatePeriodicBackupOperation(config));
+                    await LicenseHelper.DisableRevisionCompression(Server, store);
+
+                    config = await LicenseHelper.CreatePeriodicBackup(backupPath, store, BackupType.Snapshot);
 
                     var operation = await store.Smuggler.ExportAsync(new DatabaseSmugglerExportOptions(), file);
                     await operation.WaitForCompletionAsync(TimeSpan.FromMinutes(1));
-
                 }
 
                 using (var store = GetDocumentStore())
                 {
-                    await ChangeLicense(Server, RL_COMM, store);
+                    await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
 
+                    var importOperation = await store.Smuggler.ImportAsync(new DatabaseSmugglerImportOptions(), file);
+                    await importOperation.WaitForCompletionAsync(TimeSpan.FromMinutes(5));
+                    config.Disabled = false;
                     var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () =>
                     {
-                        var importOperation = await store.Smuggler.ImportAsync(new DatabaseSmugglerImportOptions(), file);
-                        await importOperation.WaitForCompletionAsync(TimeSpan.FromMinutes(5));
+                        await Backup.UpdateConfigAsync(Server, config, store);
                     });
                     Assert.Equal(LimitType.SnapshotBackup, exception.LimitType);
-                    Assert.True(exception.Message.Contains("Your license doesn't support adding Snapshot backups feature"));
                 }
             }
             finally
             {
                 File.Delete(file);
             }
-
-
         }
 
         [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing | RavenTestCategory.BackupExportImport)]
@@ -123,29 +102,29 @@ namespace SlowTests.Issues
             var file = GetTempFileName();
             try
             {
+                PeriodicBackupConfiguration config;
                 using (var store = GetDocumentStore())
                 {
-                    var config = Backup.CreateBackupConfiguration(backupPath, fullBackupFrequency: "* */1 * * *", incrementalBackupFrequency: "* */2 * * *", backupType: BackupType.Snapshot);
-                    await store.Maintenance.SendAsync(new UpdatePeriodicBackupOperation(config));
-
-
+                    await LicenseHelper.DisableRevisionCompression(Server, store);
+                    config = await LicenseHelper.CreatePeriodicBackup(backupPath, store, BackupType.Snapshot);
 
                     var operation = await store.Smuggler.ExportAsync(new DatabaseSmugglerExportOptions(), file);
                     await operation.WaitForCompletionAsync(TimeSpan.FromMinutes(1));
-
                 }
 
                 using (var store = GetDocumentStore())
                 {
-                    await ChangeLicense(Server, RL_PRO, store);
+                    await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_PRO);
 
+                    var importOperation = await store.Smuggler.ImportAsync(new DatabaseSmugglerImportOptions(), file);
+                    await importOperation.WaitForCompletionAsync(TimeSpan.FromMinutes(5));
+                    config.Disabled = false;
                     var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () =>
                     {
-                        var importOperation = await store.Smuggler.ImportAsync(new DatabaseSmugglerImportOptions(), file);
-                        await importOperation.WaitForCompletionAsync(TimeSpan.FromMinutes(5));
+                        await Backup.UpdateConfigAsync(Server, config, store);
+
                     });
                     Assert.Equal(LimitType.SnapshotBackup, exception.LimitType);
-                    Assert.True(exception.Message.Contains("Your license doesn't support adding Snapshot backups feature"));
                 }
             }
             finally
@@ -154,52 +133,45 @@ namespace SlowTests.Issues
             }
         }
 
-
         [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing | RavenTestCategory.Replication)]
         public async Task ExceptionWhenImportingExternalReplicationWithCommunityLicense()
         {
             DoNotReuseServer();
-
-            var file = GetTempFileName();
-            var dbName = $"db/{Guid.NewGuid()}";
-            var csName = $"cs/{Guid.NewGuid()}";
-            try
+            using (var server1 = GetNewServer())
+            using (var server2 = GetNewServer())
             {
-                using (var store = GetDocumentStore())
+                var file = GetTempFileName();
+                var dbName = $"db/{Guid.NewGuid()}";
+                var csName = $"cs/{Guid.NewGuid()}";
+                try
                 {
-                    var connectionString = new RavenConnectionString
+                    using (var store1 = GetDocumentStore(new Options() { Server = server2 }))
+                    using (var store2 = GetDocumentStore(new Options() { Server = server1 }))
                     {
-                        Name = csName,
-                        Database = dbName,
-                        TopologyDiscoveryUrls = new[] { "http://127.0.0.1:12345" }
-                    };
+                        await LicenseHelper.DisableRevisionCompression(server2, store1);
+                        await LicenseHelper.DisableRevisionCompression(server1, store2);
 
-                    var result = await store.Maintenance.SendAsync(new PutConnectionStringOperation<RavenConnectionString>(connectionString));
-                    Assert.NotNull(result.RaftCommandIndex);
+                        ExternalReplication watcher = await LicenseHelper.CreateExternalReplication(csName, dbName, store1);
 
-                    var watcher = new ExternalReplication(dbName, csName);
-                    await store.Maintenance.SendAsync(new UpdateExternalReplicationOperation(watcher));
+                        var operation = await store1.Smuggler.ExportAsync(new DatabaseSmugglerExportOptions(), file);
+                        await operation.WaitForCompletionAsync(TimeSpan.FromMinutes(1));
 
-                    var operation = await store.Smuggler.ExportAsync(new DatabaseSmugglerExportOptions(), file);
-                    await operation.WaitForCompletionAsync(TimeSpan.FromMinutes(1));
-                }
+                        await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(server1, store2, LicenseTestBase.RL_COMM);
 
-                using (var store = GetDocumentStore())
-                {
-                    await ChangeLicense(Server, RL_COMM, store);
-
-                    var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () =>
-                    {
-                        var importOperation = await store.Smuggler.ImportAsync(new DatabaseSmugglerImportOptions(), file);
+                        var importOperation = await store2.Smuggler.ImportAsync(new DatabaseSmugglerImportOptions(), file);
                         await importOperation.WaitForCompletionAsync(TimeSpan.FromMinutes(5));
-                    });
-                    Assert.Equal(LimitType.ExternalReplication, exception.LimitType);
-                    Assert.True(exception.Message.Contains("Your license doesn't support adding External Replication."));
+                        var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () =>
+                        {
+                            watcher.Disabled = false;
+                            await store2.Maintenance.SendAsync(new UpdateExternalReplicationOperation(watcher));
+                        });
+                        Assert.Equal(LimitType.ExternalReplication, exception.LimitType);
+                    }
                 }
-            }
-            finally
-            {
-                File.Delete(file);
+                finally
+                {
+                    File.Delete(file);
+                }
             }
         }
 
@@ -207,36 +179,36 @@ namespace SlowTests.Issues
         public async Task ExceptionWhenImportingDelayedExternalReplicationWithProLicense()
         {
             DoNotReuseServer();
-            using (var server = GetNewServer())
+            using (var server1 = GetNewServer())
+            using (var server2 = GetNewServer())
             {
                 var file = GetTempFileName();
                 var dbName = $"cs/{Guid.NewGuid()}";
                 var csName = $"cs/{Guid.NewGuid()}";
                 try
                 {
-                    using (var store1 = GetDocumentStore())
-                    using (var store2 = GetDocumentStore(new Options(){Server = server}))
+                    using (var store1 = GetDocumentStore(new Options() { Server = server2 }))
+                    using (var store2 = GetDocumentStore(new Options() { Server = server1 }))
                     {
-                        var connectionString = new RavenConnectionString { Name = csName, Database = dbName, TopologyDiscoveryUrls = new[] { "http://127.0.0.1:12345" } };
+                        await LicenseHelper.DisableRevisionCompression(server2, store1);
+                        await LicenseHelper.DisableRevisionCompression(server1, store2);
 
-                        var result = await store1.Maintenance.SendAsync(new PutConnectionStringOperation<RavenConnectionString>(connectionString));
-                        Assert.NotNull(result.RaftCommandIndex);
-
-                        var watcher = new ExternalReplication(dbName, csName);
-                        await store1.Maintenance.SendAsync(new UpdateExternalReplicationOperation(watcher));
+                        ExternalReplication watcher = await LicenseHelper.CreateExternalReplication(csName, dbName, store1);
 
                         var operation = await store1.Smuggler.ExportAsync(new DatabaseSmugglerExportOptions(), file);
                         await operation.WaitForCompletionAsync(TimeSpan.FromMinutes(1));
 
-                        await ChangeLicense(server, RL_COMM, store2);
+                        await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(server1, store2, LicenseTestBase.RL_COMM);
+
+                        var importOperation = await store2.Smuggler.ImportAsync(new DatabaseSmugglerImportOptions(), file);
+                        await importOperation.WaitForCompletionAsync(TimeSpan.FromMinutes(5));
 
                         var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () =>
                         {
-                            var importOperation = await store2.Smuggler.ImportAsync(new DatabaseSmugglerImportOptions(), file);
-                            await importOperation.WaitForCompletionAsync(TimeSpan.FromMinutes(5));
+                            watcher.Disabled = false;
+                            await store2.Maintenance.SendAsync(new UpdateExternalReplicationOperation(watcher));
                         });
                         Assert.Equal(LimitType.ExternalReplication, exception.LimitType);
-                        Assert.True(exception.Message.Contains("Your license doesn't support adding External Replication."));
                     }
                 }
                 finally
@@ -256,19 +228,7 @@ namespace SlowTests.Issues
             {
                 using (var store = GetDocumentStore())
                 {
-                    var salesTsConfig = new TimeSeriesCollectionConfiguration
-                    {
-                        Policies = new List<TimeSeriesPolicy>
-                        {
-                            new("DailyRollupForOneYear",
-                                TimeValue.FromDays(1),
-                                TimeValue.FromYears(1))
-                },
-                        RawPolicy = new RawTimeSeriesPolicy(TimeValue.FromDays(7))
-                    };
-                    var databaseTsConfig = new TimeSeriesConfiguration();
-                    databaseTsConfig.Collections["Sales"] = salesTsConfig;
-                    store.Maintenance.Send(new ConfigureTimeSeriesOperation(databaseTsConfig));
+                    LicenseHelper.CreateTsRollupAndRetention(store);
 
                     var operation = await store.Smuggler.ExportAsync(new DatabaseSmugglerExportOptions(), file);
                     await operation.WaitForCompletionAsync(TimeSpan.FromMinutes(1));
@@ -276,7 +236,7 @@ namespace SlowTests.Issues
 
                 using (var store = GetDocumentStore())
                 {
-                    await ChangeLicense(Server, RL_COMM, store);
+                    await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
 
                     var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () =>
                     {
@@ -302,9 +262,7 @@ namespace SlowTests.Issues
             {
                 using (var store = GetDocumentStore())
                 {
-                    var dbrecord = store.Maintenance.Server.Send(new GetDatabaseRecordOperation(store.Database));
-                    dbrecord.DocumentsCompression.CompressAllCollections = true;
-                    store.Maintenance.Server.Send(new UpdateDatabaseOperation(dbrecord, dbrecord.Etag));
+                    LicenseHelper.CreateCompressAllCollection(store);
 
                     var operation = await store.Smuggler.ExportAsync(new DatabaseSmugglerExportOptions(), file);
                     await operation.WaitForCompletionAsync(TimeSpan.FromMinutes(1));
@@ -312,7 +270,7 @@ namespace SlowTests.Issues
 
                 using (var store = GetDocumentStore())
                 {
-                    await ChangeLicense(Server, RL_COMM, store);
+                    await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
 
                     var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () =>
                     {
@@ -338,9 +296,7 @@ namespace SlowTests.Issues
             {
                 using (var store = GetDocumentStore())
                 {
-                    var dbrecord = store.Maintenance.Server.Send(new GetDatabaseRecordOperation(store.Database));
-                    dbrecord.DocumentsCompression.CompressAllCollections = true;
-                    store.Maintenance.Server.Send(new UpdateDatabaseOperation(dbrecord, dbrecord.Etag));
+                    LicenseHelper.CreateCompressAllCollection(store);
 
                     var operation = await store.Smuggler.ExportAsync(new DatabaseSmugglerExportOptions(), file);
                     await operation.WaitForCompletionAsync(TimeSpan.FromMinutes(1));
@@ -348,7 +304,7 @@ namespace SlowTests.Issues
 
                 using (var store = GetDocumentStore())
                 {
-                    await ChangeLicense(Server, RL_PRO, store);
+                    await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_PRO);
 
                     var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () =>
                     {
@@ -375,11 +331,12 @@ namespace SlowTests.Issues
             var csName = $"cs/{Guid.NewGuid()}";
             try
             {
+                PullReplicationAsSink pullAsSink;
                 using (var store = GetDocumentStore())
                 {
-                    var pullAsSink = new PullReplicationAsSink(dbName, csName, "hub");
-                    var result = await store.Maintenance.SendAsync(new UpdatePullReplicationAsSinkOperation(pullAsSink));
-                    Assert.NotNull(result.RaftCommandIndex);
+                    await LicenseHelper.DisableRevisionCompression(Server, store);
+
+                    pullAsSink = await LicenseHelper.CreatePullReplicationAsSink(dbName, csName, store);
 
                     var operation = await store.Smuggler.ExportAsync(new DatabaseSmugglerExportOptions(), file);
                     await operation.WaitForCompletionAsync(TimeSpan.FromMinutes(1));
@@ -387,15 +344,16 @@ namespace SlowTests.Issues
 
                 using (var store = GetDocumentStore())
                 {
-                    await ChangeLicense(Server, RL_COMM, store);
+                    await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
+                    var importOperation = await store.Smuggler.ImportAsync(new DatabaseSmugglerImportOptions(), file);
+                    await importOperation.WaitForCompletionAsync(TimeSpan.FromMinutes(5));
 
                     var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () =>
                     {
-                        var importOperation = await store.Smuggler.ImportAsync(new DatabaseSmugglerImportOptions(), file);
-                        await importOperation.WaitForCompletionAsync(TimeSpan.FromMinutes(5));
+                        pullAsSink.Disabled = false;
+                        await store.Maintenance.SendAsync(new UpdatePullReplicationAsSinkOperation(pullAsSink));
                     });
                     Assert.Equal(LimitType.PullReplicationAsSink, exception.LimitType);
-                    Assert.True(exception.Message.Contains("Your license doesn't support adding Sink Replication feature."));
                 }
             }
             finally
@@ -412,9 +370,11 @@ namespace SlowTests.Issues
             var file = GetTempFileName();
             try
             {
+                PullReplicationDefinition pull;
                 using (var store = GetDocumentStore())
                 {
-                    store.Maintenance.Send(new PutPullReplicationAsHubOperation("sink"));
+                    await LicenseHelper.DisableRevisionCompression(Server, store);
+                    pull = LicenseHelper.CraetePullReplicationDefinition(store);
 
                     var operation = await store.Smuggler.ExportAsync(new DatabaseSmugglerExportOptions(), file);
                     await operation.WaitForCompletionAsync(TimeSpan.FromMinutes(1));
@@ -422,15 +382,16 @@ namespace SlowTests.Issues
 
                 using (var store = GetDocumentStore())
                 {
-                    await ChangeLicense(Server, RL_COMM, store);
+                    await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
 
-                    var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () =>
+                    var importOperation = await store.Smuggler.ImportAsync(new DatabaseSmugglerImportOptions(), file);
+                    await importOperation.WaitForCompletionAsync(TimeSpan.FromMinutes(5));
+                    pull.Disabled = false;
+                    var exception = Assert.Throws<LicenseLimitException>(() =>
                     {
-                        var importOperation = await store.Smuggler.ImportAsync(new DatabaseSmugglerImportOptions(), file);
-                        await importOperation.WaitForCompletionAsync(TimeSpan.FromMinutes(5));
+                        store.Maintenance.Send(new PutPullReplicationAsHubOperation(pull));
                     });
                     Assert.Equal(LimitType.PullReplicationAsHub, exception.LimitType);
-                    Assert.True(exception.Message.Contains("Your license doesn't support adding Hub Replication feature."));
                 }
             }
             finally
@@ -447,9 +408,11 @@ namespace SlowTests.Issues
             var file = GetTempFileName();
             try
             {
+                PullReplicationDefinition pull;
                 using (var store = GetDocumentStore())
                 {
-                    store.Maintenance.Send(new PutPullReplicationAsHubOperation("sink"));
+                    await LicenseHelper.DisableRevisionCompression(Server, store);
+                    pull = LicenseHelper.CraetePullReplicationDefinition(store);
 
                     var operation = await store.Smuggler.ExportAsync(new DatabaseSmugglerExportOptions(), file);
                     await operation.WaitForCompletionAsync(TimeSpan.FromMinutes(1));
@@ -457,15 +420,16 @@ namespace SlowTests.Issues
 
                 using (var store = GetDocumentStore())
                 {
-                    await ChangeLicense(Server, RL_PRO, store);
+                    await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_PRO);
 
-                    var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () =>
+                    var importOperation = await store.Smuggler.ImportAsync(new DatabaseSmugglerImportOptions(), file);
+                    await importOperation.WaitForCompletionAsync(TimeSpan.FromMinutes(5));
+                    pull.Disabled = false;
+                    var exception = Assert.Throws<LicenseLimitException>(() =>
                     {
-                        var importOperation = await store.Smuggler.ImportAsync(new DatabaseSmugglerImportOptions(), file);
-                        await importOperation.WaitForCompletionAsync(TimeSpan.FromMinutes(5));
+                        store.Maintenance.Send(new PutPullReplicationAsHubOperation(pull));
                     });
                     Assert.Equal(LimitType.PullReplicationAsHub, exception.LimitType);
-                    Assert.True(exception.Message.Contains("Your license doesn't support adding Hub Replication feature."));
                 }
             }
             finally
@@ -483,24 +447,12 @@ namespace SlowTests.Issues
             var file = GetTempFileName();
             try
             {
+                AddEtlOperationResult etl;
+                RavenEtlConfiguration etlConfiguration;
                 using (var store = GetDocumentStore())
                 {
-                    var etlConfiguration = new RavenEtlConfiguration
-                    {
-                        Name = csName,
-                        ConnectionStringName = csName,
-                        Transforms = { new Transformation { Name = $"ETL : {csName}", ApplyToAllDocuments = true } },
-                        MentorNode = "A",
-                    };
-                    var connectionString = new RavenConnectionString
-                    {
-                        Name = csName,
-                        Database = dbName,
-                        TopologyDiscoveryUrls = new[] { "http://127.0.0.1:12345" },
-                    };
-
-                    Assert.NotNull(store.Maintenance.Send(new PutConnectionStringOperation<RavenConnectionString>(connectionString)));
-                    store.Maintenance.Send(new AddEtlOperation<RavenConnectionString>(etlConfiguration));
+                    await LicenseHelper.DisableRevisionCompression(Server, store);
+                    etlConfiguration = LicenseHelper.CreateRavenEtlConfiguration(csName, dbName, store, out etl);
 
                     var operation = await store.Smuggler.ExportAsync(new DatabaseSmugglerExportOptions(), file);
                     await operation.WaitForCompletionAsync(TimeSpan.FromMinutes(1));
@@ -508,30 +460,24 @@ namespace SlowTests.Issues
 
                 using (var store = GetDocumentStore())
                 {
-                    await ChangeLicense(Server, RL_COMM, store);
+                    await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store,LicenseTestBase.RL_COMM);
 
-                    var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () =>
+                    var importOperation = await store.Smuggler.ImportAsync(new DatabaseSmugglerImportOptions(), file);
+                    await importOperation.WaitForCompletionAsync(TimeSpan.FromMinutes(5));
+                    etlConfiguration.Disabled = false;
+                    var op = new UpdateEtlOperation<RavenConnectionString>(etl.TaskId, etlConfiguration);
+
+                    var exception = Assert.Throws<LicenseLimitException>( () =>
                     {
-                        var importOperation = await store.Smuggler.ImportAsync(new DatabaseSmugglerImportOptions(), file);
-                        await importOperation.WaitForCompletionAsync(TimeSpan.FromMinutes(5));
+                        store.Maintenance.Send(op);
                     });
                     Assert.Equal(LimitType.RavenEtl, exception.LimitType);
-                    Assert.True(exception.Message.Contains("Your license doesn't support adding Raven ETL feature."));
                 }
             }
             finally
             {
                 File.Delete(file);
             }
-        }
-
-
-        private static async Task ChangeLicense(RavenServer server, string licenseType, DocumentStore store)
-        {
-            var license = Environment.GetEnvironmentVariable(licenseType);
-            LicenseHelper.TryDeserializeLicense(license, out License li);
-            await RavenDB_21427.DisableRevisionCompression(server, store);
-            await server.ServerStore.PutLicenseAsync(li, RaftIdGenerator.NewId());
         }
     }
 }

@@ -46,7 +46,7 @@ namespace Raven.Server.Documents.PeriodicBackup.Restore.Sharding
             InitializeShardingConfiguration();
 
             var databaseRecord = RestoreSettings.DatabaseRecord;
-
+            DisableOngoingTasksIfNeeded(databaseRecord);
             // we are currently restoring, shouldn't try to access it
             databaseRecord.DatabaseState = DatabaseStateStatus.RestoreInProgress;
             var index = await SaveDatabaseRecordAsync(DatabaseName, databaseRecord, databaseValues: null, Result, Progress);
@@ -77,8 +77,6 @@ namespace Raven.Server.Documents.PeriodicBackup.Restore.Sharding
 
         protected override async Task OnAfterRestoreAsync()
         {
-            DisableOngoingTasksIfNeeded(RestoreSettings.DatabaseRecord);
-
             Progress.Invoke(Result.Progress);
 
             // after the db for restore is done, we can safely set the db state to normal and write the DatabaseRecord

@@ -30,6 +30,8 @@ namespace Corax.Querying.Matches
             _bufferCurrentIdx = 0;
         }
 
+        public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
+        
         public Span<long> FillAndRetrieve() => _inner.FillAndRetrieve();
         
         public int Fill(Span<long> matches)
@@ -69,6 +71,14 @@ namespace Corax.Querying.Matches
         {
             _inner.Score(matches, scores, boostFactor);
         }
+
+        public void Dispose()
+        {
+            _inner.Dispose();
+        }
+        
+        public void InnerRetriever(out TInner inner) => _inner.InnerRetriever(out inner);
+        
         string DebugView => Inspect().ToString();
 
         public QueryInspectionNode Inspect()

@@ -214,9 +214,9 @@ public sealed class MetricsProvider
     {
         var result = new CertificateMetrics();
         var certificateHolder = _serverStore.Server.Certificate;
-        if (certificateHolder?.Certificate != null)
+        if (certificateHolder?.ServerCertificate != null)
         {
-            var notAfter = certificateHolder.Certificate.NotAfter.ToUniversalTime();
+            var notAfter = certificateHolder.ServerCertificate.NotAfter.ToUniversalTime();
             var timeLeft = notAfter - SystemTime.UtcNow;
             result.ServerCertificateExpirationLeftInSec = (timeLeft.TotalSeconds > 0 ? timeLeft : TimeSpan.Zero).TotalSeconds;
         }
@@ -414,7 +414,7 @@ public sealed class MetricsProvider
         result.MapReduceIndexReducedPerSec = database.Metrics.MapReduceIndexes.ReducedPerSec.OneMinuteRate;
         result.RequestsPerSec = database.Metrics.Requests.RequestsPerSec.OneMinuteRate;
         result.RequestsCount = (int)database.Metrics.Requests.RequestsPerSec.Count;
-        result.RequestAverageDurationInMs = database.Metrics.Requests.AverageDuration.GetRate();
+        result.RequestAverageDurationInMs = database.Metrics.Requests.AverageDuration;
         return result;
     }
 

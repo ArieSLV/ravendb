@@ -1,4 +1,4 @@
-import { Meta, StoryObj } from "@storybook/react";
+import { Meta, StoryObj } from "@storybook/react-webpack5";
 import { withBootstrap5, withStorybookContexts } from "test/storybookTestUtils";
 import { NumberedList, NumberedListItem } from "components/common/NumberedList";
 
@@ -21,7 +21,7 @@ export const Default: StoryObj<NumberedListStoryProps> = {
     },
     render: ({ length }) => {
         const items = Array.from({ length }, (_, i) => (
-            <NumberedListItem key={i} stepKey={i}>
+            <NumberedListItem key={i} stepKey={i + 1}>
                 This is a description for step {i + 1}
             </NumberedListItem>
         ));

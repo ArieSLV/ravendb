@@ -48,6 +48,8 @@ const selectStateFilterOptions = createSelector(
             }
             if (state === "About to expire") {
                 aboutToExpireCount++;
+                // About to expire certificates are still valid
+                validCount++;
             }
             if (state === "Expired") {
                 expiredCount++;
@@ -91,7 +93,12 @@ const selectFilteredCertificates = createSelector(
                 return false;
             }
 
-            if (stateFilter.length > 0 && !stateFilter.includes(certificatesUtils.getState(cert.NotAfter))) {
+            const state = certificatesUtils.getState(cert.NotAfter);
+            if (stateFilter.includes("Valid") && (state === "Valid" || state === "About to expire")) {
+                return true;
+            }
+
+            if (stateFilter.length > 0 && !stateFilter.includes(state)) {
                 return false;
             }
 
@@ -99,8 +106,6 @@ const selectFilteredCertificates = createSelector(
         });
 
         switch (sortMode) {
-            case "Default":
-                return filteredCertificates;
             case "By Name - Asc":
                 return orderBy(filteredCertificates, (cert) => cert.Name, ["asc"]);
             case "By Name - Desc":
@@ -137,6 +142,8 @@ export const certificatesSelectors = {
     wellKnownAdminCerts: (state: RootState) => state.certificates.wellKnownAdminCerts,
     wellKnownIssuers: (state: RootState) => state.certificates.wellKnownIssuers,
     serverCertificateThumbprint: (state: RootState) => state.certificates.serverCertificateThumbprint,
+    serverCertificateForCommunicationThumbprint: (state: RootState) =>
+        state.certificates.serverCertificateForCommunicationThumbprint,
     serverCertificateSetupMode: (state: RootState) => state.certificates.serverCertificateSetupMode,
     serverCertificateRenewalDate: (state: RootState) => state.certificates.serverCertificateRenewalDate,
     nameOrThumbprintFilter: (state: RootState) => state.certificates.nameOrThumbprintFilter,

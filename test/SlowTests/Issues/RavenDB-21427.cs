@@ -32,15 +32,16 @@ using Raven.Client.Exceptions.Documents.Indexes;
 using Raven.Client.Http;
 using Raven.Client.ServerWide;
 using Raven.Client.ServerWide.Commands.Cluster;
+using Raven.Client.ServerWide.Operations;
 using Raven.Client.ServerWide.Operations.Configuration;
 using Raven.Client.ServerWide.Sharding;
 using Raven.Client.Util;
-using Raven.Server;
-using Raven.Server.Commercial;
 using Raven.Server.Documents;
 using Raven.Server.Documents.Indexes;
 using Raven.Server.Documents.Indexes.Auto;
 using Raven.Server.ServerWide.Commands;
+using Raven.Server.ServerWide.Commands.ETL;
+using Raven.Server.ServerWide.Commands.QueueSink;
 using SlowTests.Core.Utils.Entities;
 using Sparrow;
 using Sparrow.Json;
@@ -56,10 +57,6 @@ namespace SlowTests.Issues
         public RavenDB_21427(ITestOutputHelper output) : base(output)
         {
         }
-
-        private const string RL_COMM = "RAVEN_LICENSE_COMMUNITY";
-        private const string RL_DEV = "RAVEN_LICENSE_DEVELOPER";
-        private const string RL_PRO = "RAVEN_LICENSE_PROFESSIONAL";
 
         // ----------------------------------------
         // Tests for Sharding License Limits
@@ -83,9 +80,9 @@ namespace SlowTests.Issues
 
             using (GetDocumentStore(options))
             {
-                await FailToChangeLicense(leader, RL_COMM, LimitType.Sharding);
-                await FailToChangeLicense(leader, RL_DEV, LimitType.Sharding);
-                await FailToChangeLicense(leader, RL_PRO, LimitType.Sharding);
+                await LicenseHelper.FailToChangeLicense(leader, LicenseTestBase.RL_COMM, LimitType.Sharding);
+                await LicenseHelper.FailToChangeLicense(leader, LicenseTestBase.RL_DEV, LimitType.Sharding);
+                await LicenseHelper.FailToChangeLicense(leader, LicenseTestBase.RL_PRO, LimitType.Sharding);
             }
         }
 
@@ -102,9 +99,9 @@ namespace SlowTests.Issues
                 var config = new DataArchivalConfiguration { Disabled = false, ArchiveFrequencyInSec = 100 };
 
                 await DataArchivalHelper.SetupDataArchival(store, Server.ServerStore, config);
-                await FailToChangeLicense(Server, RL_COMM, LimitType.DataArchival);
-                await FailToChangeLicense(Server, RL_PRO, LimitType.DataArchival);
-                await ChangeLicense(Server, RL_DEV);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.DataArchival);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_PRO, LimitType.DataArchival);
+                await LicenseHelper.ChangeLicense(Server, LicenseTestBase.RL_DEV);
             }
         }
 
@@ -125,7 +122,7 @@ namespace SlowTests.Issues
                         new IndexDefinition { Maps = { "from doc in docs.Images select new { doc.Tags }" }, Name = "test" + i }
                     }));
                 }
-                await FailToChangeLicense(Server, RL_COMM, LimitType.Indexes);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.Indexes);
             }
         }
 
@@ -135,8 +132,7 @@ namespace SlowTests.Issues
             DoNotReuseServer();
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
                 for (int i = 0; i < 12; i++)
                 {
                     store.Maintenance.Send(new PutIndexesOperation(new IndexDefinition { Maps = { "from doc in docs.Images select new { doc.Tags }" }, Name = "test" + i }));
@@ -166,7 +162,7 @@ namespace SlowTests.Issues
                     }
                 }
 
-                await FailToChangeLicense(Server, RL_COMM, LimitType.Indexes);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.Indexes);
             }
             finally
             {
@@ -188,8 +184,7 @@ namespace SlowTests.Issues
                 for (int i = 0; i < 6; i++)
                 {
                     DocumentStore store = GetDocumentStore();
-                    await DisableRevisionCompression(Server, store);
-                    await PutLicense(Server, RL_COMM);
+                    await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
                     storeList.Add(store);
                     for (int j = 0; j < 10; j++)
                     {
@@ -220,7 +215,7 @@ namespace SlowTests.Issues
                     await database.IndexStore.CreateIndex(new AutoMapIndexDefinition("Users", new[] { new AutoIndexField { Name = "Name" + j } }),
                         Guid.NewGuid().ToString());
                 }
-                await FailToChangeLicense(Server, RL_COMM, LimitType.Indexes);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.Indexes);
             }
         }
 
@@ -230,8 +225,7 @@ namespace SlowTests.Issues
             DoNotReuseServer();
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
                 DocumentDatabase database;
                 for (int j = 0; j < 24; j++)
                 {
@@ -265,7 +259,7 @@ namespace SlowTests.Issues
                     }
                 }
 
-                await FailToChangeLicense(Server, RL_COMM, LimitType.Indexes);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.Indexes);
             }
             finally
             {
@@ -288,8 +282,7 @@ namespace SlowTests.Issues
                 for (int i = 0; i < 6; i++)
                 {
                     var store = GetDocumentStore();
-                    await DisableRevisionCompression(Server, store);
-                    await PutLicense(Server, RL_COMM);
+                    await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
                     storeList.Add(store);
                     for (int j = 0; j < 20; j++)
                     {
@@ -311,7 +304,7 @@ namespace SlowTests.Issues
             }
         }
 
-        [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing | RavenTestCategory.Indexes)]
+        [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing | RavenTestCategory.Indexes, Architecture = RavenArchitecture.AllX64)]
         public async Task Prevent_License_Downgrade_Index_Additional_Assemblies()
         {
             DoNotReuseServer();
@@ -323,22 +316,20 @@ namespace SlowTests.Issues
                     Name = "test",
                     AdditionalAssemblies = { AdditionalAssembly.FromNuGet("System.Drawing.Common", "4.7.0") }
                 }));
-                await FailToChangeLicense(Server, RL_COMM, LimitType.AdditionalAssembliesFromNuGet);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.AdditionalAssembliesFromNuGet);
 
-                await DisableRevisionCompression(Server, store);
-                await ChangeLicense(Server, RL_DEV);
-                await ChangeLicense(Server, RL_PRO);
+                await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_DEV);
+                await LicenseHelper.ChangeLicense(Server, LicenseTestBase.RL_PRO);
             }
         }
 
-        [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing | RavenTestCategory.Indexes)]
+        [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing | RavenTestCategory.Indexes, Architecture = RavenArchitecture.AllX64)]
         public async Task Prevent_Put_Index_Additional_Assemblies()
         {
             DoNotReuseServer();
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
                 var exception = Assert.Throws<LicenseLimitException>(() => store.Maintenance.Send(new PutIndexesOperation(new IndexDefinition
                 {
                     Maps = { "from doc in docs.Images select new { doc.Tags }" },
@@ -347,7 +338,7 @@ namespace SlowTests.Issues
                 })));
                 Assert.Equal(LimitType.AdditionalAssembliesFromNuGet, exception.LimitType);
 
-                await PutLicense(Server, RL_PRO);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_PRO);
                 store.Maintenance.Send(new PutIndexesOperation(new IndexDefinition
                 {
                     Maps = { "from doc in docs.Images select new { doc.Tags }" },
@@ -369,14 +360,13 @@ namespace SlowTests.Issues
                 var configuration = new RevisionsConfiguration { Default = new RevisionsCollectionConfiguration { Disabled = false, MinimumRevisionsToKeep = 0 } };
                 await store.Maintenance.SendAsync(new ConfigureRevisionsOperation(configuration));
 
-                await FailToChangeLicense(Server, RL_COMM, LimitType.RevisionsConfiguration);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.RevisionsConfiguration);
 
                 await store.Maintenance.SendAsync(new ConfigureRevisionsOperation(configuration));
-                await FailToChangeLicense(Server, RL_COMM, LimitType.RevisionsConfiguration);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.RevisionsConfiguration);
 
-                await DisableRevisionCompression(Server, store);
-                await ChangeLicense(Server, RL_PRO);
-                await ChangeLicense(Server, RL_DEV);
+                await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_DEV);
+                await LicenseHelper.ChangeLicense(Server, LicenseTestBase.RL_PRO);
             }
         }
 
@@ -386,17 +376,16 @@ namespace SlowTests.Issues
             DoNotReuseServer();
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
                 var configuration = new RevisionsConfiguration { Default = new RevisionsCollectionConfiguration { Disabled = false, MinimumRevisionsToKeep = 0 } };
                 var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () => await store.Maintenance.SendAsync(new ConfigureRevisionsOperation(configuration)));
                 Assert.Equal(LimitType.RevisionsConfiguration, exception.LimitType);
 
-                await PutLicense(Server, RL_PRO);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_PRO);
                 configuration = new RevisionsConfiguration { Default = new RevisionsCollectionConfiguration { Disabled = false, MinimumRevisionsToKeep = 0 } };
                 await store.Maintenance.SendAsync(new ConfigureRevisionsOperation(configuration));
 
-                await PutLicense(Server, RL_DEV);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_DEV);
                 configuration = new RevisionsConfiguration { Default = new RevisionsCollectionConfiguration { Disabled = false, MinimumRevisionsToKeep = 0 } };
                 await store.Maintenance.SendAsync(new ConfigureRevisionsOperation(configuration));
             }
@@ -408,13 +397,13 @@ namespace SlowTests.Issues
             DoNotReuseServer();
             using (GetDocumentStore())
             {
-                var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () => await PutLicense(Server, RL_COMM));
+                var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () => await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_COMM));
                 Assert.Equal(LimitType.DocumentsCompression, exception.LimitType);
 
-                 exception = await Assert.ThrowsAsync<LicenseLimitException>(async () => await PutLicense(Server, RL_PRO));
+                 exception = await Assert.ThrowsAsync<LicenseLimitException>(async () => await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_PRO));
                 Assert.Equal(LimitType.DocumentsCompression, exception.LimitType);
 
-                await PutLicense(Server, RL_DEV);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_DEV);
             }
         }
 
@@ -424,21 +413,32 @@ namespace SlowTests.Issues
             DoNotReuseServer();
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
 
                 var configuration = new DocumentsCompressionConfiguration { CompressRevisions = true, Collections = new string[] { } };
 
                 var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () => await Server.ServerStore.SendToLeaderAsync(new EditDocumentsCompressionCommand(configuration, store.Database, RaftIdGenerator.DontCareId)));
                 Assert.Equal(LimitType.DocumentsCompression, exception.LimitType);
 
-                await PutLicense(Server, RL_PRO);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_PRO);
 
                 exception = await Assert.ThrowsAsync<LicenseLimitException>(async () => await Server.ServerStore.SendToLeaderAsync(new EditDocumentsCompressionCommand(configuration, store.Database, RaftIdGenerator.DontCareId)));
                 Assert.Equal(LimitType.DocumentsCompression, exception.LimitType);
 
-                await PutLicense(Server, RL_DEV);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_DEV);
                 await Server.ServerStore.SendToLeaderAsync(new EditDocumentsCompressionCommand(configuration, store.Database, RaftIdGenerator.DontCareId));
+            }
+        }
+
+        [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing | RavenTestCategory.Revisions)]
+        public async Task Put_Disabled_Revisions()
+        {
+            DoNotReuseServer();
+            using (var store = GetDocumentStore())
+            {
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
+                var configuration = new RevisionsConfiguration { Default = new RevisionsCollectionConfiguration { Disabled = true, MinimumRevisionsToKeep = 0 } };
+                await store.Maintenance.SendAsync(new ConfigureRevisionsOperation(configuration));
             }
         }
 
@@ -454,11 +454,10 @@ namespace SlowTests.Issues
             {
                 var config = Backup.CreateBackupConfiguration(backupPath, fullBackupFrequency: "* */1 * * *", incrementalBackupFrequency: "* */2 * * *");
                 await store.Maintenance.SendAsync(new UpdatePeriodicBackupOperation(config));
-                await FailToChangeLicense(Server, RL_COMM, LimitType.PeriodicBackup);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.PeriodicBackup);
 
-                await DisableRevisionCompression(Server, store);
-                await ChangeLicense(Server, RL_PRO);
-                await ChangeLicense(Server, RL_DEV);
+                await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_DEV);
+                await LicenseHelper.ChangeLicense(Server, LicenseTestBase.RL_PRO);
             }
         }
 
@@ -469,15 +468,14 @@ namespace SlowTests.Issues
             var backupPath = NewDataPath(suffix: "BackupFolder");
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
                 var config = Backup.CreateBackupConfiguration(backupPath, fullBackupFrequency: "* */1 * * *", incrementalBackupFrequency: "* */2 * * *");
                 var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () => await store.Maintenance.SendAsync(new UpdatePeriodicBackupOperation(config)));
                 Assert.Equal(LimitType.PeriodicBackup, exception.LimitType);
 
-                await PutLicense(Server, RL_PRO);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_PRO);
                 await store.Maintenance.SendAsync(new UpdatePeriodicBackupOperation(config));
-                await PutLicense(Server, RL_DEV);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_DEV);
                 await store.Maintenance.SendAsync(new UpdatePeriodicBackupOperation(config));
             }
         }
@@ -498,11 +496,10 @@ namespace SlowTests.Issues
                         Key = "OI7Vll7DroXdUORtc6Uo64wdAk1W0Db9ExXXgcg5IUs="
                     });
                 await store.Maintenance.SendAsync(new UpdatePeriodicBackupOperation(config));
-                await FailToChangeLicense(Server, RL_COMM, LimitType.EncryptedBackup);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.EncryptedBackup);
 
-                await DisableRevisionCompression(Server, store);
-                await ChangeLicense(Server, RL_DEV);
-                await ChangeLicense(Server, RL_PRO);
+                await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_DEV);
+                await LicenseHelper.ChangeLicense(Server, LicenseTestBase.RL_PRO);
             }
         }
 
@@ -519,11 +516,10 @@ namespace SlowTests.Issues
                     backupType: BackupType.Snapshot);
 
                 await store.Maintenance.SendAsync(new UpdatePeriodicBackupOperation(config));
-                await FailToChangeLicense(Server, RL_COMM, LimitType.SnapshotBackup);
-                await FailToChangeLicense(Server, RL_PRO, LimitType.SnapshotBackup);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.SnapshotBackup);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_PRO, LimitType.SnapshotBackup);
 
-                await DisableRevisionCompression(Server, store);
-                await ChangeLicense(Server, RL_DEV);
+                await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_DEV);
             }
         }
 
@@ -533,8 +529,7 @@ namespace SlowTests.Issues
             DoNotReuseServer();
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
 
                 var config = new PeriodicBackupConfiguration
                 {
@@ -550,12 +545,12 @@ namespace SlowTests.Issues
                     await store.Maintenance.SendAsync(new UpdatePeriodicBackupOperation(config)));
                 Assert.Equal(LimitType.SnapshotBackup, exception.LimitType);
 
-                await PutLicense(Server, RL_PRO);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_PRO);
                 exception = await Assert.ThrowsAsync<LicenseLimitException>(async () =>
                     await store.Maintenance.SendAsync(new UpdatePeriodicBackupOperation(config)));
                 Assert.Equal(LimitType.SnapshotBackup, exception.LimitType);
 
-                await PutLicense(Server, RL_DEV);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_DEV);
                 await store.Maintenance.SendAsync(new UpdatePeriodicBackupOperation(config));
             }
         }
@@ -577,9 +572,9 @@ namespace SlowTests.Issues
                     }
                 };
                 await store.Maintenance.SendAsync(new UpdatePeriodicBackupOperation(config));
-                await FailToChangeLicense(Server, RL_COMM, LimitType.SnapshotBackup);
-                await FailToChangeLicense(Server, RL_PRO, LimitType.SnapshotBackup);
-                await ChangeLicense(Server, RL_DEV);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.SnapshotBackup);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_PRO, LimitType.SnapshotBackup);
+                await LicenseHelper.ChangeLicense(Server, LicenseTestBase.RL_DEV);
             }
         }
 
@@ -589,8 +584,7 @@ namespace SlowTests.Issues
             DoNotReuseServer();
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
                 var config = new PeriodicBackupConfiguration
                 {
                     BackupType = BackupType.Backup,
@@ -607,10 +601,10 @@ namespace SlowTests.Issues
                     await store.Maintenance.SendAsync(new UpdatePeriodicBackupOperation(config)));
                 Assert.Equal(LimitType.CloudBackup, exception.LimitType);
 
-                await PutLicense(Server, RL_PRO);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_PRO);
                 await store.Maintenance.SendAsync(new UpdatePeriodicBackupOperation(config));
 
-                await PutLicense(Server, RL_DEV);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_DEV);
                 await store.Maintenance.SendAsync(new UpdatePeriodicBackupOperation(config));
             }
         }
@@ -635,11 +629,23 @@ namespace SlowTests.Issues
                     }
                 };
                 await store.Maintenance.SendAsync(new UpdatePeriodicBackupOperation(config));
-                await FailToChangeLicense(Server, RL_COMM, LimitType.CloudBackup);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.CloudBackup);
 
-                await DisableRevisionCompression(Server, store);
-                await ChangeLicense(Server, RL_DEV);
-                await ChangeLicense(Server, RL_PRO);
+                await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_DEV);
+                await LicenseHelper.ChangeLicense(Server, LicenseTestBase.RL_PRO);
+            }
+        }
+
+        [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing | RavenTestCategory.BackupExportImport)]
+        public async Task Put_Disabled_PeriodicBackup()
+        {
+            DoNotReuseServer();
+            var backupPath = NewDataPath(suffix: "BackupFolder");
+            using (var store = GetDocumentStore())
+            {
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
+                var config = Backup.CreateBackupConfiguration(backupPath, fullBackupFrequency: "* */1 * * *", incrementalBackupFrequency: "* */2 * * *", disabled: true);
+                await store.Maintenance.SendAsync(new UpdatePeriodicBackupOperation(config));
             }
         }
 
@@ -668,11 +674,10 @@ namespace SlowTests.Issues
                        }
             }))
             {
-                await FailToChangeLicense(Server, RL_COMM, LimitType.CustomSorters);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.CustomSorters);
 
-                await DisableRevisionCompression(Server, store);
-                await ChangeLicense(Server, RL_DEV);
-                await ChangeLicense(Server, RL_PRO);
+                await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_DEV);
+                await LicenseHelper.ChangeLicense(Server, LicenseTestBase.RL_PRO);
             }
         }
 
@@ -683,8 +688,7 @@ namespace SlowTests.Issues
             var sorterName = GetDatabaseName();
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
 
                 var sorterCode1 = GetSorter("RavenDB_8355.MySorter.cs", "MySorter", sorterName);
                 var sorterCode2 = GetSorter("RavenDB_8355.MySorter.cs", "MySorter", sorterName + "2");
@@ -694,7 +698,7 @@ namespace SlowTests.Issues
                 var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () => await store.Maintenance.SendAsync(new PutSortersOperation(new SorterDefinition { Name = sorterName + "2", Code = sorterCode2 })));
                 Assert.Equal(LimitType.CustomSorters, exception.LimitType);
 
-                await PutLicense(Server, RL_PRO);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_PRO);
                 await store.Maintenance.SendAsync(new PutSortersOperation(new SorterDefinition { Name = sorterName + "2", Code = sorterCode2 }));
             }
         }
@@ -721,7 +725,7 @@ namespace SlowTests.Issues
                     });
                     storeList.Add(store);
                 }
-                await FailToChangeLicense(Server, RL_COMM, LimitType.CustomSorters);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.CustomSorters);
             }
             finally
             {
@@ -781,11 +785,10 @@ public class MyAnalyzer2 : Analyzer
                 }
             }))
             {
-                await FailToChangeLicense(Server, RL_COMM, LimitType.CustomAnalyzers);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.CustomAnalyzers);
 
-                await DisableRevisionCompression(Server, store);
-                await ChangeLicense(Server, RL_DEV);
-                await ChangeLicense(Server, RL_PRO);
+                await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_DEV);
+                await LicenseHelper.ChangeLicense(Server, LicenseTestBase.RL_PRO);
             }
         }
 
@@ -824,7 +827,7 @@ public class MyAnalyzer2 : Analyzer
 
                     storeList.Add(store);
                 }
-                await FailToChangeLicense(Server, RL_COMM, LimitType.CustomAnalyzers);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.CustomAnalyzers);
             }
             finally
             {
@@ -841,8 +844,7 @@ public class MyAnalyzer2 : Analyzer
             DoNotReuseServer();
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
                 store.Maintenance.Send(new PutAnalyzersOperation(new AnalyzerDefinition
                 {
                     Name = "MyAnalyzer2",
@@ -857,7 +859,7 @@ public class MyAnalyzer2 : Analyzer
 
                 Assert.Equal(LimitType.CustomAnalyzers, exception.LimitType);
 
-                await PutLicense(Server, RL_PRO);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_PRO);
                 store.Maintenance.Send(new PutAnalyzersOperation(new AnalyzerDefinition
                 {
                     Name = "MyAnalyzer",
@@ -878,7 +880,7 @@ public class MyAnalyzer2 : Analyzer
         }
 
         // ----------------------------------------
-        // Tests for Client Api License Limits
+        // Tests for Client Configuration License Limits
         //  ----------------------------------------
         [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing | RavenTestCategory.ClientApi)]
         public async Task Prevent_License_Downgrade_ClientConfiguration()
@@ -886,11 +888,10 @@ public class MyAnalyzer2 : Analyzer
             DoNotReuseServer();
             using (var store = GetDocumentStore(new Options { ModifyDatabaseRecord = r => r.Client = new ClientConfiguration { MaxNumberOfRequestsPerSession = 50 } }))
             {
-                await FailToChangeLicense(Server, RL_COMM, LimitType.ClientConfiguration);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.ClientConfiguration);
 
-                await DisableRevisionCompression(Server, store);
-                await ChangeLicense(Server, RL_DEV);
-                await ChangeLicense(Server, RL_PRO);
+                await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_DEV);
+                await LicenseHelper.ChangeLicense(Server, LicenseTestBase.RL_PRO);
             }
         }
 
@@ -900,8 +901,7 @@ public class MyAnalyzer2 : Analyzer
             DoNotReuseServer();
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
 
                 var config = new ClientConfiguration { MaxNumberOfRequestsPerSession = 50 };
 
@@ -910,8 +910,45 @@ public class MyAnalyzer2 : Analyzer
                 Assert.Equal(LimitType.ClientConfiguration, exception.LimitType);
 
                 command = new PutDatabaseClientConfigurationCommand(config, store.Database, RaftIdGenerator.NewId());
-                await PutLicense(Server, RL_PRO);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_PRO);
                 await Server.ServerStore.SendToLeaderAsync(command);
+            }
+        }
+
+        [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing)]
+        public async Task Put_Disabled_ClientConfiguration()
+        {
+            DoNotReuseServer();
+            using (var store = GetDocumentStore())
+            {
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
+
+                var config = new ClientConfiguration { MaxNumberOfRequestsPerSession = 50, Disabled = true };
+
+                var command = new PutDatabaseClientConfigurationCommand(config, store.Database, RaftIdGenerator.NewId());
+                await Server.ServerStore.SendToLeaderAsync(command);
+            }
+        }
+
+        [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing)]
+        public async Task Prevent_Put_ServerWideClientConfiguration()
+        {
+            DoNotReuseServer();
+            var server = GetNewServer();
+            var options = new Options() { Server = server };
+            using (var store = GetDocumentStore(options))
+            {
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(server, store, LicenseTestBase.RL_COMM);
+
+                var config = new ClientConfiguration { MaxNumberOfRequestsPerSession = 50 };
+
+                var command = new PutClientConfigurationCommand(config, RaftIdGenerator.NewId());
+                var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () => await server.ServerStore.SendToLeaderAsync(command));
+                Assert.Equal(LimitType.ClientConfiguration, exception.LimitType);
+
+                command = new PutClientConfigurationCommand(config, RaftIdGenerator.NewId());
+                await LicenseHelper.PutLicense(server, LicenseTestBase.RL_PRO);
+                await server.ServerStore.SendToLeaderAsync(command);
             }
         }
 
@@ -929,11 +966,10 @@ public class MyAnalyzer2 : Analyzer
                     RaftIdGenerator.NewId());
                 await Server.ServerStore.SendToLeaderAsync(command);
 
-                await FailToChangeLicense(Server, RL_COMM, LimitType.StudioConfiguration);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.StudioConfiguration);
 
-                await DisableRevisionCompression(Server, store);
-                await ChangeLicense(Server, RL_DEV);
-                await ChangeLicense(Server, RL_PRO);
+                await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_DEV);
+                await LicenseHelper.ChangeLicense(Server, LicenseTestBase.RL_PRO);
             }
         }
 
@@ -943,8 +979,7 @@ public class MyAnalyzer2 : Analyzer
             DoNotReuseServer();
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
                 var command = new PutDatabaseStudioConfigurationCommand(
                     new ServerWideStudioConfiguration { DisableAutoIndexCreation = true },
                     store.Database, RaftIdGenerator.NewId());
@@ -955,7 +990,22 @@ public class MyAnalyzer2 : Analyzer
                 command = new PutDatabaseStudioConfigurationCommand(
                     new ServerWideStudioConfiguration { DisableAutoIndexCreation = true },
                     store.Database, RaftIdGenerator.NewId());
-                await PutLicense(Server, RL_PRO);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_PRO);
+                await Server.ServerStore.SendToLeaderAsync(command);
+            }
+        }
+
+        [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing)]
+        public async Task Put_Disabled_StudioConfiguration()
+        {
+            DoNotReuseServer();
+            using (var store = GetDocumentStore())
+            {
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
+                var command = new PutDatabaseStudioConfigurationCommand(
+                    new ServerWideStudioConfiguration { DisableAutoIndexCreation = true, Disabled = true },
+                    store.Database, RaftIdGenerator.NewId());
+
                 await Server.ServerStore.SendToLeaderAsync(command);
             }
         }
@@ -973,11 +1023,10 @@ public class MyAnalyzer2 : Analyzer
                 var config = new ExpirationConfiguration { Disabled = false, DeleteFrequencyInSec = 100, };
 
                 await ExpirationHelper.SetupExpiration(store, Server.ServerStore, config);
-                await FailToChangeLicense(Server, RL_COMM, LimitType.Expiration);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.Expiration);
 
-                await DisableRevisionCompression(Server, store);
-                await ChangeLicense(Server, RL_DEV);
-                await ChangeLicense(Server, RL_PRO);
+                await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_DEV);
+                await LicenseHelper.ChangeLicense(Server, LicenseTestBase.RL_PRO);
             }
         }
 
@@ -987,16 +1036,31 @@ public class MyAnalyzer2 : Analyzer
             DoNotReuseServer();
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
                 var config = new ExpirationConfiguration { Disabled = false, DeleteFrequencyInSec = 60 };
                 var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () => await ExpirationHelper.SetupExpiration(store, Server.ServerStore, config));
                 Assert.Equal(LimitType.Expiration, exception.LimitType);
 
-                await PutLicense(Server, RL_PRO);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_PRO);
                 await ExpirationHelper.SetupExpiration(store, Server.ServerStore, config);
             }
         }
+
+        [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing)]
+        public async Task Put_Disabled_ExpirationConfiguration()
+        {
+            DoNotReuseServer();
+            using (var store = GetDocumentStore())
+            {
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
+                var config = new ExpirationConfiguration { Disabled = true, DeleteFrequencyInSec = 60 };
+                await ExpirationHelper.SetupExpiration(store, Server.ServerStore, config);
+            }
+        }
+
+        // ----------------------------------------
+        // Tests for Refresh License Limits
+        //  ----------------------------------------
 
         [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing | RavenTestCategory.ExpirationRefresh)]
         public async Task Prevent_License_Downgrade_Refresh_Configuration()
@@ -1006,11 +1070,10 @@ public class MyAnalyzer2 : Analyzer
             {
                 var refConfig = new RefreshConfiguration { RefreshFrequencyInSec = 33, Disabled = false };
                 await store.Maintenance.SendAsync(new ConfigureRefreshOperation(refConfig));
-                await FailToChangeLicense(Server, RL_COMM, LimitType.Refresh);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.Refresh);
 
-                await DisableRevisionCompression(Server, store);
-                await ChangeLicense(Server, RL_DEV);
-                await ChangeLicense(Server, RL_PRO);
+                await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_DEV);
+                await LicenseHelper.ChangeLicense(Server, LicenseTestBase.RL_PRO);
             }
         }
 
@@ -1021,19 +1084,32 @@ public class MyAnalyzer2 : Analyzer
 
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
 
                 var refConfig = new RefreshConfiguration { RefreshFrequencyInSec = 33, Disabled = false };
                 var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () => await store.Maintenance.SendAsync(new ConfigureRefreshOperation(refConfig)));
 
                 Assert.Equal(LimitType.Refresh, exception.LimitType);
 
-                await PutLicense(Server, RL_PRO);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_PRO);
                 await store.Maintenance.SendAsync(new ConfigureRefreshOperation(refConfig));
             }
         }
 
+        [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing | RavenTestCategory.ExpirationRefresh)]
+        public async Task Put_Disabled_Refresh_Configuration()
+        {
+            DoNotReuseServer();
+
+            using (var store = GetDocumentStore())
+            {
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
+
+                var refConfig = new RefreshConfiguration { RefreshFrequencyInSec = 33, Disabled = true };
+                await store.Maintenance.SendAsync(new ConfigureRefreshOperation(refConfig));
+            }
+        }
+        
         // ----------------------------------------
         // Tests for Encryption License Limits
         //  ----------------------------------------
@@ -1054,11 +1130,10 @@ public class MyAnalyzer2 : Analyzer
                 Path = NewDataPath()
             }))
             {
-                await FailToChangeLicense(Server, RL_COMM, LimitType.Encryption);
-                await FailToChangeLicense(Server, RL_PRO, LimitType.Encryption);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.Encryption);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_PRO, LimitType.Encryption);
 
-                await DisableRevisionCompression(Server, store);
-                await ChangeLicense(Server, RL_DEV);
+                await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_DEV);
             }
         }
 
@@ -1069,7 +1144,7 @@ public class MyAnalyzer2 : Analyzer
         public async Task Prevent_Put_Dynamic_Node_Distribution()
         {
             DoNotReuseServer();
-            var (_, leader) = await CreateRaftCluster(3);
+            var (nodes, leader) = await CreateRaftCluster(3);
             var options = Options.ForMode(RavenDatabaseMode.Sharded);
             options.Server = leader;
             options.ModifyDatabaseRecord = record =>
@@ -1084,22 +1159,44 @@ public class MyAnalyzer2 : Analyzer
 
             using (var store = GetDocumentStore(options))
             {
+                var res = await WaitForValueAsync(async () =>
+                {
+                    var sum = 0;
+                    foreach (var node in nodes)
+                    {
+                        using var perNodeStore = new DocumentStore
+                        {
+                            Urls = new[] { node.WebUrl },
+                            Database = store.Database,
+                            Conventions = store.Conventions
+                        }.Initialize();
+
+                        var recored = await perNodeStore.Maintenance.Server.SendAsync(
+                            new GetDatabaseRecordOperation(store.Database));
+
+                        if (recored.Topology.DynamicNodesDistribution)
+                            sum++;
+                    }
+                    return sum;
+                }, 3, timeout: 50_000);
+
+                Assert.Equal(3, res);
+
                 var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () =>
                 {
-                    await PutLicense(leader, RL_COMM);
+                    await LicenseHelper.PutLicense(leader, LicenseTestBase.RL_COMM);
                 });
 
                 Assert.Equal(LimitType.DynamicNodeDistribution, exception.LimitType);
 
                 exception = await Assert.ThrowsAsync<LicenseLimitException>(async () =>
                 {
-                    await PutLicense(leader, RL_PRO);
+                    await LicenseHelper.PutLicense(leader, LicenseTestBase.RL_PRO);
                 });
 
                 Assert.Equal(LimitType.DynamicNodeDistribution, exception.LimitType);
 
-                await DisableRevisionCompression(leader, store);
-                await ChangeLicense(leader, RL_DEV);
+                await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(leader, store, LicenseTestBase.RL_DEV);
             }
         }
 
@@ -1113,8 +1210,7 @@ public class MyAnalyzer2 : Analyzer
 
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
                 var config = new DocumentsCompressionConfiguration
                 {
                     CompressRevisions = true,
@@ -1126,7 +1222,7 @@ public class MyAnalyzer2 : Analyzer
                 );
                 Assert.Equal(LimitType.DocumentsCompression, exception.LimitType);
 
-                await PutLicense(Server, RL_PRO);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_PRO);
                 exception = await Assert.ThrowsAsync<LicenseLimitException>(async () =>
                     await Server.ServerStore.SendToLeaderAsync(
                         new EditDocumentsCompressionCommand(config, store.Database, RaftIdGenerator.NewId()))
@@ -1141,8 +1237,7 @@ public class MyAnalyzer2 : Analyzer
             DoNotReuseServer();
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
 
                 var config = new DocumentsCompressionConfiguration
                 {
@@ -1155,7 +1250,7 @@ public class MyAnalyzer2 : Analyzer
                 );
                 Assert.Equal(LimitType.DocumentsCompression, exception.LimitType);
 
-                await PutLicense(Server, RL_PRO);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_PRO);
                 exception = await Assert.ThrowsAsync<LicenseLimitException>(async () =>
                     await Server.ServerStore.SendToLeaderAsync(
                         new EditDocumentsCompressionCommand(config, store.Database, RaftIdGenerator.NewId()))
@@ -1177,9 +1272,45 @@ public class MyAnalyzer2 : Analyzer
                 };
                 await Server.ServerStore.SendToLeaderAsync(
                     new EditDocumentsCompressionCommand(config, store.Database, RaftIdGenerator.NewId()));
-                await FailToChangeLicense(Server, RL_COMM, LimitType.DocumentsCompression);
-                await FailToChangeLicense(Server, RL_PRO, LimitType.DocumentsCompression);
-                await ChangeLicense(Server, RL_DEV);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.DocumentsCompression);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_PRO, LimitType.DocumentsCompression);
+                await LicenseHelper.ChangeLicense(Server, LicenseTestBase.RL_DEV);
+            }
+        }
+
+        [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing)]
+        public async Task Put_Disabled_Document_Compression()
+        {
+            DoNotReuseServer();
+            using (var store = GetDocumentStore())
+            {
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
+                var config = new DocumentsCompressionConfiguration
+                {
+                    CompressAllCollections = false,
+                    Collections = new string[] { }
+                };
+                await Server.ServerStore.SendToLeaderAsync(
+                    new EditDocumentsCompressionCommand(config, store.Database, RaftIdGenerator.NewId()));
+            }
+        }
+
+        [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing | RavenTestCategory.Revisions)]
+        public async Task Put_Disabled_Revision_Compression()
+        {
+            DoNotReuseServer();
+
+            using (var store = GetDocumentStore())
+            {
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
+                var config = new DocumentsCompressionConfiguration
+                {
+                    CompressRevisions = false,
+                    CompressAllCollections = false,
+                    Collections = new string[] { }
+                };
+                await Server.ServerStore.SendToLeaderAsync(
+                    new EditDocumentsCompressionCommand(config, store.Database, RaftIdGenerator.NewId()));
             }
         }
 
@@ -1192,8 +1323,7 @@ public class MyAnalyzer2 : Analyzer
             DoNotReuseServer();
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
                 var connectionString = new RavenConnectionString
                 {
                     Name = "RavenConnStr",
@@ -1219,7 +1349,7 @@ public class MyAnalyzer2 : Analyzer
                     await store.Maintenance.SendAsync(new AddEtlOperation<RavenConnectionString>(config)));
                 Assert.Equal(LimitType.RavenEtl, exception.LimitType);
 
-                await PutLicense(Server, RL_PRO);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_PRO);
                 await store.Maintenance.SendAsync(new AddEtlOperation<RavenConnectionString>(config));
             }
         }
@@ -1257,11 +1387,10 @@ public class MyAnalyzer2 : Analyzer
 
                 await store.Maintenance.SendAsync(new AddEtlOperation<RavenConnectionString>(config));
 
-                await FailToChangeLicense(Server, RL_COMM, LimitType.RavenEtl);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.RavenEtl);
 
-                await DisableRevisionCompression(Server, store);
-                await ChangeLicense(Server, RL_PRO);
-                await ChangeLicense(Server, RL_DEV);
+                await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_DEV);
+                await LicenseHelper.ChangeLicense(Server, LicenseTestBase.RL_PRO);
             }
         }
 
@@ -1272,8 +1401,7 @@ public class MyAnalyzer2 : Analyzer
 
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
 
                 var connectionString = new SqlConnectionString
                 {
@@ -1304,7 +1432,7 @@ public class MyAnalyzer2 : Analyzer
                     await store.Maintenance.SendAsync(new AddEtlOperation<SqlConnectionString>(config)));
                 Assert.Equal(LimitType.SqlEtl, exception.LimitType);
 
-                await PutLicense(Server, RL_PRO);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_PRO);
                 await store.Maintenance.SendAsync(new AddEtlOperation<SqlConnectionString>(config));
             }
         }
@@ -1316,38 +1444,12 @@ public class MyAnalyzer2 : Analyzer
 
             using (var store = GetDocumentStore())
             {
-                var connectionString = new SqlConnectionString
-                {
-                    Name = "SqlConnStr",
-                    FactoryName = "System.Data.SqlClient",
-                    ConnectionString = "Server=localhost;Database=Test;User Id=sa;Password=123456;"
-                };
+                await LicenseHelper.CreateSqlEtlConfiguration(store);
 
-                await store.Maintenance.SendAsync(new PutConnectionStringOperation<SqlConnectionString>(connectionString));
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.SqlEtl);
 
-                var config = new SqlEtlConfiguration
-                {
-                    Name = "SqlEtlTask",
-                    ConnectionStringName = "SqlConnStr",
-                    SqlTables = { new SqlEtlTable { TableName = "Users", DocumentIdColumn = "Id", InsertOnlyMode = false } },
-                    Transforms =
-                    {
-                        new Transformation
-                        {
-                            Name = "Script1",
-                            Collections = new List<string> { "Users" },
-                            Script = "loadToUsers(this)"
-                        }
-                    }
-                };
-
-                await store.Maintenance.SendAsync(new AddEtlOperation<SqlConnectionString>(config));
-
-                await FailToChangeLicense(Server, RL_COMM, LimitType.SqlEtl);
-
-                await DisableRevisionCompression(Server, store);
-                await ChangeLicense(Server, RL_PRO);
-                await ChangeLicense(Server, RL_DEV);
+                await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_DEV);
+                await LicenseHelper.ChangeLicense(Server, LicenseTestBase.RL_PRO);
             }
         }
 
@@ -1358,8 +1460,7 @@ public class MyAnalyzer2 : Analyzer
 
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
 
                 var connectionString = new OlapConnectionString
                 {
@@ -1392,13 +1493,13 @@ public class MyAnalyzer2 : Analyzer
 
                 Assert.Equal(LimitType.OlapEtl, exception.LimitType);
 
-                await PutLicense(Server, RL_PRO);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_PRO);
                 exception = await Assert.ThrowsAsync<LicenseLimitException>(async () =>
                     await store.Maintenance.SendAsync(new AddEtlOperation<OlapConnectionString>(config)));
 
                 Assert.Equal(LimitType.OlapEtl, exception.LimitType);
 
-                await PutLicense(Server, RL_DEV);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_DEV);
                 await store.Maintenance.SendAsync(new AddEtlOperation<OlapConnectionString>(config));
             }
         }
@@ -1438,11 +1539,10 @@ public class MyAnalyzer2 : Analyzer
 
                 await store.Maintenance.SendAsync(new AddEtlOperation<OlapConnectionString>(config));
 
-                await FailToChangeLicense(Server, RL_COMM, LimitType.OlapEtl);
-                await FailToChangeLicense(Server, RL_PRO, LimitType.OlapEtl);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.OlapEtl);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_PRO, LimitType.OlapEtl);
 
-                await DisableRevisionCompression(Server, store);
-                await ChangeLicense(Server, RL_DEV);
+                await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_DEV);
             }
         }
 
@@ -1453,8 +1553,7 @@ public class MyAnalyzer2 : Analyzer
 
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
 
                 var connectionString = new ElasticSearchConnectionString
                 {
@@ -1484,13 +1583,13 @@ public class MyAnalyzer2 : Analyzer
 
                 Assert.Equal(LimitType.ElasticSearchEtl, exception.LimitType);
 
-                await PutLicense(Server, RL_PRO);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_PRO);
                 exception = await Assert.ThrowsAsync<LicenseLimitException>(async () =>
                     await store.Maintenance.SendAsync(new AddEtlOperation<ElasticSearchConnectionString>(config)));
 
                 Assert.Equal(LimitType.ElasticSearchEtl, exception.LimitType);
 
-                await PutLicense(Server, RL_DEV);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_DEV);
                 await store.Maintenance.SendAsync(new AddEtlOperation<ElasticSearchConnectionString>(config));
             }
         }
@@ -1527,11 +1626,10 @@ public class MyAnalyzer2 : Analyzer
 
                 await store.Maintenance.SendAsync(new AddEtlOperation<ElasticSearchConnectionString>(config));
 
-                await FailToChangeLicense(Server, RL_COMM, LimitType.ElasticSearchEtl);
-                await FailToChangeLicense(Server, RL_PRO, LimitType.ElasticSearchEtl);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.ElasticSearchEtl);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_PRO, LimitType.ElasticSearchEtl);
 
-                await DisableRevisionCompression(Server, store);
-                await ChangeLicense(Server, RL_DEV);
+                await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_DEV);
             }
         }
 
@@ -1542,8 +1640,7 @@ public class MyAnalyzer2 : Analyzer
 
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
 
                 var connectionString = new QueueConnectionString
                 {
@@ -1578,12 +1675,12 @@ public class MyAnalyzer2 : Analyzer
 
                 Assert.Equal(LimitType.QueueEtl, exception.LimitType);
 
-                await PutLicense(Server, RL_PRO);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_PRO);
                 exception = await Assert.ThrowsAsync<LicenseLimitException>(async () =>
                     await store.Maintenance.SendAsync(new AddEtlOperation<QueueConnectionString>(config)));
                 Assert.Equal(LimitType.QueueEtl, exception.LimitType);
 
-                await PutLicense(Server, RL_DEV);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_DEV);
                 await store.Maintenance.SendAsync(new AddEtlOperation<QueueConnectionString>(config));
             }
         }
@@ -1625,11 +1722,10 @@ public class MyAnalyzer2 : Analyzer
 
                 await store.Maintenance.SendAsync(new AddEtlOperation<QueueConnectionString>(config));
 
-                await FailToChangeLicense(Server, RL_COMM, LimitType.QueueEtl);
-                await FailToChangeLicense(Server, RL_PRO, LimitType.QueueEtl);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.QueueEtl);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_PRO, LimitType.QueueEtl);
 
-                await DisableRevisionCompression(Server, store);
-                await ChangeLicense(Server, RL_DEV);
+                await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_DEV);
             }
         }
 
@@ -1660,11 +1756,10 @@ public class MyAnalyzer2 : Analyzer
 
                 store.Maintenance.Send(new AddQueueSinkOperation<QueueConnectionString>(config));
 
-                await FailToChangeLicense(Server, RL_COMM, LimitType.QueueSink);
-                await FailToChangeLicense(Server, RL_PRO, LimitType.QueueSink);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.QueueSink);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_PRO, LimitType.QueueSink);
 
-                await DisableRevisionCompression(Server, store);
-                await ChangeLicense(Server, RL_DEV);
+                await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_DEV);
             }
         }
 
@@ -1674,8 +1769,7 @@ public class MyAnalyzer2 : Analyzer
             DoNotReuseServer();
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
                 store.Maintenance.Send(
                     new PutConnectionStringOperation<QueueConnectionString>(
                         new QueueConnectionString
@@ -1701,16 +1795,242 @@ public class MyAnalyzer2 : Analyzer
                 var exception = Assert.Throws<LicenseLimitException>(() => store.Maintenance.Send(new AddQueueSinkOperation<QueueConnectionString>(config)));
                 Assert.Equal(LimitType.QueueSink, exception.LimitType);
 
-                await PutLicense(Server, RL_PRO);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_PRO);
                 exception = Assert.Throws<LicenseLimitException>(() => store.Maintenance.Send(new AddQueueSinkOperation<QueueConnectionString>(config)));
 
                 Assert.Equal(LimitType.QueueSink, exception.LimitType);
 
-                await PutLicense(Server, RL_DEV);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_DEV);
                 store.Maintenance.Send(new AddQueueSinkOperation<QueueConnectionString>(config));
             }
         }
 
+        [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing | RavenTestCategory.Etl)]
+        public async Task Put_Disabled_Raven_ETL()
+        {
+            DoNotReuseServer();
+            using (var store = GetDocumentStore())
+            {
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
+                var connectionString = new RavenConnectionString
+                {
+                    Name = "RavenConnStr",
+                    Database = store.Database,
+                    TopologyDiscoveryUrls = new[] { "http://127.0.0.1:12345" }
+                };
+                await store.Maintenance.SendAsync(new PutConnectionStringOperation<RavenConnectionString>(connectionString));
+                var config = new RavenEtlConfiguration
+                {
+                    Name = "RavenEtlTask",
+                    ConnectionStringName = "RavenConnStr",
+                    Transforms =
+                    {
+                        new Transformation
+                        {
+                            Name = "Script1",
+                            Collections = new List<string> { "Users" },
+                            Script = null
+                        }
+                    },
+                    Disabled = true
+                };
+                var command = new AddRavenEtlCommand(config, store.Database, RaftIdGenerator.NewId());
+                await Server.ServerStore.SendToLeaderAsync(command);
+            }
+        }
+
+        [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing | RavenTestCategory.Etl)]
+        public async Task Put_Disabled_Sql_ETL()
+        {
+            DoNotReuseServer();
+
+            using (var store = GetDocumentStore())
+            {
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
+
+                var connectionString = new SqlConnectionString
+                {
+                    Name = "SqlConnStr",
+                    FactoryName = "System.Data.SqlClient",
+                    ConnectionString = "Server=localhost;Database=Test;User Id=sa;Password=123456;"
+                };
+
+                await store.Maintenance.SendAsync(new PutConnectionStringOperation<SqlConnectionString>(connectionString));
+
+                var config = new SqlEtlConfiguration
+                {
+                    Name = "SqlEtlTask",
+                    ConnectionStringName = "SqlConnStr",
+                    SqlTables = { new SqlEtlTable { TableName = "Users", DocumentIdColumn = "Id", InsertOnlyMode = false } },
+                    Transforms =
+                    {
+                        new Transformation
+                        {
+                            Name = "Script1",
+                            Collections = new List<string> { "Users" },
+                            Script = "loadToUsers(this)"
+                        }
+                    },
+                    Disabled = true
+                };
+
+                var command = new AddSqlEtlCommand(config, store.Database, RaftIdGenerator.NewId());
+                await Server.ServerStore.SendToLeaderAsync(command);
+            }
+        }
+
+        [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing | RavenTestCategory.Etl)]
+        public async Task Put_Disabled_Olap_ETL()
+        {
+            DoNotReuseServer();
+
+            using (var store = GetDocumentStore())
+            {
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
+
+                var connectionString = new OlapConnectionString
+                {
+                    Name = "OlapConnStr",
+                    LocalSettings = new LocalSettings
+                    {
+                        FolderPath = NewDataPath(suffix: "OlapOutput")
+                    }
+                };
+
+                await store.Maintenance.SendAsync(new PutConnectionStringOperation<OlapConnectionString>(connectionString));
+
+                var config = new OlapEtlConfiguration
+                {
+                    Name = "OlapEtlTask",
+                    ConnectionStringName = "OlapConnStr",
+                    Transforms =
+                    {
+                        new Transformation
+                        {
+                            Name = "OlapTransform",
+                            Collections = new List<string> { "Orders" },
+                            Script = "loadToUsers(this)"
+                        }
+                    },
+                    Disabled = true
+                };
+
+                var command = new AddOlapEtlCommand(config, store.Database, RaftIdGenerator.NewId());
+                await Server.ServerStore.SendToLeaderAsync(command);
+            }
+        }
+
+        [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing | RavenTestCategory.Etl)]
+        public async Task Put_Disabled_Elasticsearch_ETL()
+        {
+            DoNotReuseServer();
+
+            using (var store = GetDocumentStore())
+            {
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
+
+                var connectionString = new ElasticSearchConnectionString
+                {
+                    Name = "ElasticConnStr",
+                    Nodes = new[] { "http://localhost:9200" }
+                };
+
+                await store.Maintenance.SendAsync(new PutConnectionStringOperation<ElasticSearchConnectionString>(connectionString));
+
+                var config = new ElasticSearchEtlConfiguration
+                {
+                    Name = "ElasticEtlTask",
+                    ConnectionStringName = "ElasticConnStr",
+                    Transforms =
+                    {
+                        new Transformation
+                        {
+                            Name = "Script1",
+                            Collections = new List<string> { "Products" },
+                            Script = "loadToUsers(this)"
+                        }
+                    },
+                    Disabled = true
+                };
+                var command = new AddElasticSearchEtlCommand(config, store.Database, RaftIdGenerator.NewId());
+                await Server.ServerStore.SendToLeaderAsync(command);
+            }
+        }
+
+        [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing | RavenTestCategory.Etl)]
+        public async Task Put_Disabled_Queue_ETL()
+        {
+            DoNotReuseServer();
+
+            using (var store = GetDocumentStore())
+            {
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
+
+                var connectionString = new QueueConnectionString
+                {
+                    Name = "QueueConnStr",
+                    BrokerType = QueueBrokerType.Kafka,
+                    KafkaConnectionSettings = new KafkaConnectionSettings
+                    {
+                        BootstrapServers = "localhost:9092"
+                    }
+                };
+
+                await store.Maintenance.SendAsync(new PutConnectionStringOperation<QueueConnectionString>(connectionString));
+
+                var config = new QueueEtlConfiguration
+                {
+                    Name = "QueueEtlTask",
+                    ConnectionStringName = "QueueConnStr",
+                    BrokerType = QueueBrokerType.Kafka,
+                    Transforms =
+                    {
+                        new Transformation
+                        {
+                            Name = "QueueScript",
+                            Collections = new List<string> { "Orders" },
+                            Script = "loadToUsers(this)"
+                        }
+                    },
+                    Disabled = true
+                };
+
+                var command = new AddQueueEtlCommand(config, store.Database, RaftIdGenerator.NewId());
+                await Server.ServerStore.SendToLeaderAsync(command);
+            }
+        }
+
+        [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing | RavenTestCategory.Etl)]
+        public async Task Put_Disabled_Downgrade_QueueSink()
+        {
+            DoNotReuseServer();
+            using (var store = GetDocumentStore())
+            {
+                store.Maintenance.Send(
+                    new PutConnectionStringOperation<QueueConnectionString>(
+                        new QueueConnectionString
+                        {
+                            Name = "KafkaConStr",
+                            BrokerType = QueueBrokerType.Kafka,
+                            KafkaConnectionSettings = new KafkaConnectionSettings() { BootstrapServers = "localhost:9092" }
+                        }));
+
+                QueueSinkScript queueSinkScript = new()
+                {
+                    Name = "orders",
+                    Queues = new List<string>() { "orders" },
+                    Script = @"this['@metadata']['@collection'] = 'Orders';
+               put(this.Id.toString(), this)"
+                };
+
+                var config = new QueueSinkConfiguration() { ConnectionStringName = "KafkaConStr", BrokerType = QueueBrokerType.Kafka, Scripts = { queueSinkScript }, Disabled = true };
+
+                store.Maintenance.Send(new AddQueueSinkOperation<QueueConnectionString>(config));
+
+                var command = new AddQueueSinkCommand(config, store.Database, RaftIdGenerator.NewId());
+                await Server.ServerStore.SendToLeaderAsync(command);
+            }
+        }
         // ----------------------------------------
         // Tests for Replication License Limits
         //  ----------------------------------------
@@ -1748,11 +2068,10 @@ public class MyAnalyzer2 : Analyzer
                     var replicated1 = WaitForDocumentToReplicate<User>(store2, "users/1", 15000);
                     Assert.NotNull(replicated1);
 
-                    await FailToChangeLicense(server1, RL_COMM, LimitType.ExternalReplication);
+                    await LicenseHelper.FailToChangeLicense(server1, LicenseTestBase.RL_COMM, LimitType.ExternalReplication);
 
-                    await DisableRevisionCompression(server1, store1);
-                    await ChangeLicense(server1, RL_DEV);
-                    await ChangeLicense(server1, RL_PRO);
+                    await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(server1, store1, LicenseTestBase.RL_DEV);
+                    await LicenseHelper.ChangeLicense(server1, LicenseTestBase.RL_PRO);
                 }
             }
         }
@@ -1767,17 +2086,17 @@ public class MyAnalyzer2 : Analyzer
                 using (var store1 = GetDocumentStore(options))
                 using (var store2 = GetDocumentStore())
                 {
-                    await DisableRevisionCompression(server1, store1);
-                    await DisableRevisionCompression(Server, store2);
-                    await PutLicense(server1, RL_COMM);
+                    await LicenseHelper.DisableRevisionCompression(server1, store1);
+                    await LicenseHelper.DisableRevisionCompression(Server, store2);
+                    await LicenseHelper.PutLicense(server1, LicenseTestBase.RL_COMM);
 
                     var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () => await SetupReplicationAsync(store1, store2));
                     Assert.Equal(LimitType.ExternalReplication, exception.LimitType);
 
-                    await PutLicense(server1, RL_PRO);
+                    await LicenseHelper.PutLicense(server1, LicenseTestBase.RL_PRO);
                     await SetupReplicationAsync(store1, store2);
 
-                    await PutLicense(server1, RL_DEV);
+                    await LicenseHelper.PutLicense(server1, LicenseTestBase.RL_DEV);
                     await SetupReplicationAsync(store1, store2);
                 }
             }
@@ -1790,12 +2109,11 @@ public class MyAnalyzer2 : Analyzer
             using (var store = GetDocumentStore())
             {
                 await store.Maintenance.ForDatabase(store.Database).SendAsync(new PutPullReplicationAsHubOperation("test"));
-                await FailToChangeLicense(Server, RL_COMM, LimitType.PullReplicationAsHub);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.PullReplicationAsHub);
 
-                await FailToChangeLicense(Server, RL_PRO, LimitType.PullReplicationAsHub);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_PRO, LimitType.PullReplicationAsHub);
 
-                await DisableRevisionCompression(Server, store);
-                await ChangeLicense(Server, RL_DEV);
+                await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_DEV);
             }
         }
 
@@ -1806,13 +2124,12 @@ public class MyAnalyzer2 : Analyzer
 
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
 
                 var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () => await store.Maintenance.ForDatabase(store.Database).SendAsync(new PutPullReplicationAsHubOperation("test")));
                 Assert.Equal(LimitType.PullReplicationAsHub, exception.LimitType);
 
-                await PutLicense(Server, RL_PRO);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_PRO);
                 exception = await Assert.ThrowsAsync<LicenseLimitException>(async () => await store.Maintenance.ForDatabase(store.Database).SendAsync(new PutPullReplicationAsHubOperation("test")));
                 Assert.Equal(LimitType.PullReplicationAsHub, exception.LimitType);
             }
@@ -1824,8 +2141,7 @@ public class MyAnalyzer2 : Analyzer
 
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
 
                 var connectionString = new RavenConnectionString
                 {
@@ -1846,8 +2162,8 @@ public class MyAnalyzer2 : Analyzer
 
                 Assert.Equal(LimitType.PullReplicationAsSink, exception.LimitType);
 
-                await PutLicense(Server, RL_PRO);
-                await PutLicense(Server, RL_DEV);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_PRO);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_DEV);
             }
         }
 
@@ -1874,11 +2190,10 @@ public class MyAnalyzer2 : Analyzer
                 await store.Maintenance.SendAsync(new PutConnectionStringOperation<RavenConnectionString>(connectionString));
                 await store.Maintenance.SendAsync(new UpdatePullReplicationAsSinkOperation(config));
 
-                await FailToChangeLicense(Server, RL_COMM, LimitType.PullReplicationAsSink);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.PullReplicationAsSink);
 
-                await DisableRevisionCompression(Server, store);
-                await ChangeLicense(Server, RL_PRO);
-                await ChangeLicense(Server, RL_DEV);
+                await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_PRO);
+                await LicenseHelper.ChangeLicense(Server, LicenseTestBase.RL_DEV);
             }
         }
 
@@ -1889,8 +2204,7 @@ public class MyAnalyzer2 : Analyzer
 
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
 
                 var delayed = new ExternalReplication("otherDb", "DelayedReplication")
                 {
@@ -1900,12 +2214,12 @@ public class MyAnalyzer2 : Analyzer
                     await store.Maintenance.SendAsync(new UpdateExternalReplicationOperation(delayed)));
                 Assert.Equal(LimitType.ExternalReplication, exception.LimitType);
 
-                await PutLicense(Server, RL_PRO);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_PRO);
                 exception = await Assert.ThrowsAsync<LicenseLimitException>(async () =>
                     await store.Maintenance.SendAsync(new UpdateExternalReplicationOperation(delayed)));
                 Assert.Equal(LimitType.DelayedExternalReplication, exception.LimitType);
 
-                await PutLicense(Server, RL_DEV);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_DEV);
                 await store.Maintenance.SendAsync(new UpdateExternalReplicationOperation(delayed));
             }
         }
@@ -1924,11 +2238,10 @@ public class MyAnalyzer2 : Analyzer
 
                 await store.Maintenance.SendAsync(new UpdateExternalReplicationOperation(delayed));
 
-                await FailToChangeLicense(Server, RL_COMM, LimitType.DelayedExternalReplication);
-                await FailToChangeLicense(Server, RL_PRO, LimitType.DelayedExternalReplication);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.DelayedExternalReplication);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_PRO, LimitType.DelayedExternalReplication);
 
-                await DisableRevisionCompression(Server, store);
-                await ChangeLicense(Server, RL_DEV);
+                await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_DEV);
             }
         }
 
@@ -1944,9 +2257,9 @@ public class MyAnalyzer2 : Analyzer
 
             using (GetDocumentStore())
             {
-                await FailToChangeLicense(leader, RL_COMM, LimitType.ClusterSize);
-                await FailToChangeLicense(leader, RL_DEV, LimitType.ClusterSize);
-                await FailToChangeLicense(leader, RL_PRO, LimitType.ClusterSize);
+                await LicenseHelper.FailToChangeLicense(leader, LicenseTestBase.RL_COMM, LimitType.ClusterSize);
+                await LicenseHelper.FailToChangeLicense(leader, LicenseTestBase.RL_DEV, LimitType.ClusterSize);
+                await LicenseHelper.FailToChangeLicense(leader, LicenseTestBase.RL_PRO, LimitType.ClusterSize);
             }
         }
 
@@ -1959,7 +2272,7 @@ public class MyAnalyzer2 : Analyzer
 
             using (GetDocumentStore())
             {
-                await PutLicense(leader, RL_COMM);
+                await LicenseHelper.PutLicense(leader, LicenseTestBase.RL_COMM);
                 using (var server = GetNewServer(new ServerCreationOptions()))
                 using (var server2 = GetNewServer(new ServerCreationOptions()))
                 using (var server3 = GetNewServer(new ServerCreationOptions()))
@@ -1971,11 +2284,11 @@ public class MyAnalyzer2 : Analyzer
                         var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () => await requestExecutor.ExecuteAsync(command, context));
                         Assert.Equal(LimitType.ClusterSize, exception.LimitType);
 
-                        await PutLicense(leader, RL_DEV);
+                        await LicenseHelper.PutLicense(leader, LicenseTestBase.RL_DEV);
                         exception = await Assert.ThrowsAsync<LicenseLimitException>(async () => await requestExecutor.ExecuteAsync(command, context));
                         Assert.Equal(LimitType.ClusterSize, exception.LimitType);
 
-                        await PutLicense(leader, RL_PRO);
+                        await LicenseHelper.PutLicense(leader, LicenseTestBase.RL_PRO);
                         await requestExecutor.ExecuteAsync(command, context); // cluster size = 4, which is allowed by PRO license
                         command = new AddClusterNodeCommand(server2.WebUrl);
                         await requestExecutor.ExecuteAsync(command, context); // cluster size = 5, which is allowed by PRO license
@@ -1998,8 +2311,7 @@ public class MyAnalyzer2 : Analyzer
 
             using (var store = GetDocumentStore())
             {
-                await DisableRevisionCompression(Server, store);
-                await PutLicense(Server, RL_COMM);
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
 
                 var timeSeriesConfig = new TimeSeriesConfiguration
                 {
@@ -2024,10 +2336,10 @@ public class MyAnalyzer2 : Analyzer
 
                 Assert.Equal(LimitType.TimeSeriesRollupsAndRetention, exception.LimitType);
 
-                await PutLicense(Server, RL_PRO);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_PRO);
                 await store.Maintenance.SendAsync(new ConfigureTimeSeriesOperation(timeSeriesConfig));
 
-                await PutLicense(Server, RL_DEV);
+                await LicenseHelper.PutLicense(Server, LicenseTestBase.RL_DEV);
                 await store.Maintenance.SendAsync(new ConfigureTimeSeriesOperation(timeSeriesConfig));
             }
         }
@@ -2059,45 +2371,44 @@ public class MyAnalyzer2 : Analyzer
 
                 await store.Maintenance.SendAsync(new ConfigureTimeSeriesOperation(timeSeriesConfig));
 
-                await FailToChangeLicense(Server, RL_COMM, LimitType.TimeSeriesRollupsAndRetention);
+                await LicenseHelper.FailToChangeLicense(Server, LicenseTestBase.RL_COMM, LimitType.TimeSeriesRollupsAndRetention);
 
-                await DisableRevisionCompression(Server, store);
-                await ChangeLicense(Server, RL_DEV);
-                await ChangeLicense(Server, RL_PRO);
+                await LicenseHelper.ChangeLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_DEV);
+                await LicenseHelper.ChangeLicense(Server, LicenseTestBase.RL_PRO);
             }
         }
 
-        private static async Task FailToChangeLicense(RavenServer leader, string licenseType, LimitType limitType)
+        [RavenMultiLicenseRequiredFact(RavenTestCategory.Licensing | RavenTestCategory.TimeSeries)]
+        public async Task Put_Disabled_TimeSeries_Configuration()
         {
-            var license = Environment.GetEnvironmentVariable(licenseType);
-            LicenseHelper.TryDeserializeLicense(license, out License li);
+            DoNotReuseServer();
 
-            var exception = await Assert.ThrowsAsync<LicenseLimitException>(async () => await leader.ServerStore.PutLicenseAsync(li, RaftIdGenerator.NewId()));
+            using (var store = GetDocumentStore())
+            {
+                await LicenseHelper.PutLicenseAndDisableRevisionCompression(Server, store, LicenseTestBase.RL_COMM);
 
-            Assert.Equal(limitType, exception.LimitType);
-        }
+                var timeSeriesConfig = new TimeSeriesConfiguration
+                {
+                    Collections = new Dictionary<string, TimeSeriesCollectionConfiguration>
+                    {
+                        {
+                            "Users", new TimeSeriesCollectionConfiguration
+                            {
+                                Policies = new List<TimeSeriesPolicy>
+                                {
+                                    new TimeSeriesPolicy("30Seconds", TimeValue.FromSeconds(30)),
+                                    new TimeSeriesPolicy("1Hour", TimeValue.FromHours(1))
+                                },
+                                RawPolicy = new RawTimeSeriesPolicy(TimeValue.FromMinutes(1)),
+                                Disabled = true
+                            }
+                        }
+                    }
 
-        private static async Task ChangeLicense(RavenServer leader, string licenseType)
-        {
-            var license = Environment.GetEnvironmentVariable(licenseType);
-            LicenseHelper.TryDeserializeLicense(license, out License li);
+                };
 
-            await leader.ServerStore.PutLicenseAsync(li, RaftIdGenerator.NewId());
-        }
-
-        private static async Task PutLicense(RavenServer leader, string licenseType)
-        {
-            var license = Environment.GetEnvironmentVariable(licenseType);
-            LicenseHelper.TryDeserializeLicense(license, out License li);
-
-             await leader.ServerStore.PutLicenseAsync(li, RaftIdGenerator.NewId());
-        }
-
-        internal static async Task DisableRevisionCompression(RavenServer leader, DocumentStore store)
-        {
-            var command = new EditDocumentsCompressionCommand(new DocumentsCompressionConfiguration { CompressRevisions = false, Collections = new string[] { } }, store.Database,
-                RaftIdGenerator.NewId());
-            await leader.ServerStore.SendToLeaderAsync(command);
+                await store.Maintenance.SendAsync(new ConfigureTimeSeriesOperation(timeSeriesConfig));
+            }
         }
 
         private static string GetSorter(string resourceName, string originalSorterName, string sorterName)

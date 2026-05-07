@@ -44,7 +44,6 @@ body {
         width: 100%;
         font-size: 14px;
         letter-spacing: .15em;
-        min-height: @top-alert-height;
         text-align: center;
         color: @gray-dark;
         font-weight: bold;
@@ -227,6 +226,7 @@ body {
     &.pin-notifications {
         #notification-center {
             transition: none;
+            z-index: @zindex-notification-center-pinned !important;
         }
     }
 
@@ -252,6 +252,7 @@ body {
                 #notification-center {
                     transform: none;
                     box-shadow: none;
+                    z-index: @zindex-notification-center-pinned !important;
                 }
             }
 

@@ -11,6 +11,7 @@ using System.Net.Http;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -24,6 +25,7 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Http.Features.Authentication;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
@@ -31,6 +33,7 @@ using OpenTelemetry;
 using OpenTelemetry.Exporter;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
+using Raven.Client;
 using Raven.Client.Documents.Changes;
 using Raven.Client.Documents.Conventions;
 using Raven.Client.Documents.Operations.Replication;
@@ -44,6 +47,7 @@ using Raven.Client.ServerWide.Tcp;
 using Raven.Client.Util;
 using Raven.Server.Commercial;
 using Raven.Server.Config;
+using Raven.Server.Config.Categories;
 using Raven.Server.Documents;
 using Raven.Server.Documents.Patch;
 using Raven.Server.Documents.Subscriptions;
@@ -78,6 +82,11 @@ using Sparrow.Utils;
 using Voron;
 using DateTime = System.DateTime;
 using Raven.Server.Monitoring.OpenTelemetry;
+using Sparrow.Platform;
+using static Raven.Client.ServerWide.Tcp.TcpConnectionHeaderMessage.AuthorizationInfo.AuthorizeMethod;
+using Constants = Sparrow.Global.Constants;
+using TelemetryConstants = Raven.Server.Monitoring.OpenTelemetry.Constants;
+using ClientConstants = Raven.Client.Constants;
 
 namespace Raven.Server
 {
@@ -187,6 +196,12 @@ namespace Raven.Server
             Certificate = LoadCertificateAtStartup() ?? CertificateUtils.CertificateHolder.CreateEmpty();
             ReadWellKnownIssuers();
 
+            // Align default conventions with server protocol configuration for internal HTTP calls.
+            // In unsecured + HTTP/2-only (h2c) mode, Kestrel expects HTTP/2 prior-knowledge (no HTTP/1.1 upgrade).
+            // Ensure RequestExecutor uses RequestVersionExact so server-to-self calls succeed, without mutating frozen conventions instances.
+            if (Configuration.Http.Protocols == HttpProtocols.Http2 && Certificate.ServerCertificate == null)
+                DocumentConventions.DefaultHttpVersionPolicy = HttpVersionPolicy.RequestVersionOrLower;
+
             CpuUsageCalculator = string.IsNullOrEmpty(Configuration.Monitoring.CpuUsageMonitorExec)
                 ? CpuHelper.GetOSCpuUsageCalculator()
                 : CpuHelper.GetExtensionPointCpuUsageCalculator(_tcpContextPool, Configuration.Monitoring, ServerStore.NotificationCenter);
@@ -248,11 +263,62 @@ namespace Raven.Server
                     if (Configuration.Http.MaxStreamsPerConnection.HasValue)
                         options.Limits.Http2.MaxStreamsPerConnection = Configuration.Http.MaxStreamsPerConnection.Value;
 
+                    // HTTP/2 flow control: start from the profile, stretch for latency, respect overrides, clamp to RFC bounds.
+                    long connectionWindowBytes;
+                    long streamWindowBytes;
+                    long maxFrameSizeBytes;
+                    switch (Configuration.Http.Http2Profile)
+                    {
+                        case Http2Profile.Performance:
+                            connectionWindowBytes = 32L * Constants.Size.Megabyte;
+                            streamWindowBytes = 4L * Constants.Size.Megabyte;
+                            maxFrameSizeBytes = 1L * Constants.Size.Megabyte;
+                            break;
+                        case Http2Profile.Balanced:
+                        default:
+                            connectionWindowBytes = 16L * Constants.Size.Megabyte;
+                            streamWindowBytes = 2L * Constants.Size.Megabyte;
+                            maxFrameSizeBytes = 256L * Constants.Size.Kilobyte;
+                            break;
+                        case Http2Profile.Conservative:
+                            connectionWindowBytes = 4L * Constants.Size.Megabyte;
+                            streamWindowBytes = 1L * Constants.Size.Megabyte;
+                            maxFrameSizeBytes = 16L * Constants.Size.Kilobyte; 
+                            break;
+                    }
+
+                    if (Configuration.Http.Http2Latency == Http2LatencyHint.High)
+                    {
+                        connectionWindowBytes *= 2;
+                        streamWindowBytes *= 2;
+                    }
+
+                    connectionWindowBytes = Configuration.Http.InitialConnectionWindowSize?.GetValue(SizeUnit.Bytes) ?? connectionWindowBytes;
+                    streamWindowBytes = Configuration.Http.InitialStreamWindowSize?.GetValue(SizeUnit.Bytes) ?? streamWindowBytes;
+                    maxFrameSizeBytes = Configuration.Http.MaxFrameSize?.GetValue(SizeUnit.Bytes) ?? maxFrameSizeBytes;
+
+                    // Clamp to RFC 9113 legal ranges: Section 6.5.2 (windows), Section 4.2 (frame size)
+                    connectionWindowBytes = Math.Clamp(connectionWindowBytes, 64L * Constants.Size.Kilobyte, int.MaxValue);
+                    streamWindowBytes = Math.Clamp(streamWindowBytes, 64L * Constants.Size.Kilobyte, int.MaxValue);
+                    maxFrameSizeBytes = Math.Clamp(maxFrameSizeBytes, 16L * Constants.Size.Kilobyte, 16L * Constants.Size.Megabyte - 1);
+
+                    options.Limits.Http2.InitialConnectionWindowSize = (int)connectionWindowBytes;
+                    options.Limits.Http2.InitialStreamWindowSize = (int)streamWindowBytes;
+                    options.Limits.Http2.MaxFrameSize = (int)maxFrameSizeBytes;
+
+                    if (Logger.IsOperationsEnabled)
+                    {
+                        var connectionWindow = new Sparrow.Size(connectionWindowBytes, SizeUnit.Bytes);
+                        var streamWindow = new Sparrow.Size(streamWindowBytes, SizeUnit.Bytes);
+                        var maxFrameSize = new Sparrow.Size(maxFrameSizeBytes, SizeUnit.Bytes);
+                        Logger.Operations($"HTTP/2: Profile={Configuration.Http.Http2Profile}, ConnWindow={connectionWindow.GetDoubleValue(SizeUnit.Kilobytes):F1}KB, StreamWindow={streamWindow.GetDoubleValue(SizeUnit.Kilobytes):F1}KB, MaxFrame={maxFrameSize.GetDoubleValue(SizeUnit.Kilobytes):F1}KB, MaxStreams={options.Limits.Http2.MaxStreamsPerConnection}");
+                    }
+
                     options.ConfigureEndpointDefaults(listenOptions => listenOptions.Protocols = Configuration.Http.Protocols);
 
-                    if (Certificate.Certificate != null)
+                    if (Certificate.ServerCertificate != null)
                     {
-                        _httpsConnectionMiddleware = new HttpsConnectionMiddleware(this, options, Certificate.Certificate);
+                        _httpsConnectionMiddleware = new HttpsConnectionMiddleware(this, options, Certificate.ServerCertificate);
 
                         foreach (var address in ListenEndpoints.Addresses)
                         {
@@ -270,6 +336,11 @@ namespace Raven.Server
                 }
 
                 var webHostBuilder = new WebHostBuilder()
+                    .ConfigureAppConfiguration(builder =>
+                    {
+                        if (Configuration.Monitoring.OpenTelemetry.Enabled)
+                            builder.Add(new OpenTelemetryEnvironmentVariablesReader());
+                    })
                     .ConfigureMicrosoftLogging(Configuration.Logs, ServerStore.NotificationCenter)
                     .CaptureStartupErrors(captureStartupErrors: true)
                     .UseKestrel(ConfigureKestrel)
@@ -331,11 +402,24 @@ namespace Raven.Server
                 var serverAddressesFeature = _webHost.ServerFeatures.Get<IServerAddressesFeature>();
                 WebUrl = GetWebUrl(serverAddressesFeature.Addresses.First()).TrimEnd('/');
 
-                if (Certificate.Certificate != null)
+                _tcpListenerStatus = StartTcpListener(ListenToNewTcpConnection);
+
+                try
+                {
+                    ServerStore.Initialize();
+                }
+                catch (Exception e)
+                {
+                    if (Logger.IsOperationsEnabled)
+                        Logger.Operations("Could not open the server store", e);
+                    throw;
+                }
+
+                if (Certificate.ClientCertificate != null)
                 {
                     try
                     {
-                        AssertServerCanContactItselfWhenAuthIsOn(Certificate.Certificate)
+                        AssertServerCanContactItselfWhenAuthIsOn(Certificate.ClientCertificate)
                             .IgnoreUnobservedExceptions()
                             // here we wait a bit, just enough so for normal servers
                             // we'll be successful, but not enough to hang the server
@@ -359,24 +443,11 @@ namespace Raven.Server
                         RedirectsHttpTrafficToHttps();
                     }
 
-                    SecretProtection.AddCertificateChainToTheUserCertificateAuthorityStoreAndCleanExpiredCerts(Certificate.Certificate, Certificate.Certificate.Export(X509ContentType.Cert), Configuration.Security.CertificatePassword);
+                    SecretProtection.AddCertificateChainToTheUserCertificateAuthorityStoreAndCleanExpiredCerts(Certificate.ServerCertificate, Certificate.ServerCertificate.Export(X509ContentType.Cert), Configuration.Security.CertificatePassword);
                 }
 
                 if (Logger.IsInfoEnabled)
                     Logger.Info($"Initialized Server... {WebUrl}");
-
-                _tcpListenerStatus = StartTcpListener(ListenToNewTcpConnection);
-
-                try
-                {
-                    ServerStore.Initialize();
-                }
-                catch (Exception e)
-                {
-                    if (Logger.IsOperationsEnabled)
-                        Logger.Operations("Could not open the server store", e);
-                    throw;
-                }
 
                 ServerStore.TriggerDatabases();
 
@@ -432,14 +503,12 @@ namespace Raven.Server
                 throw;
             }
         }
-        
+
         private void StartOpenTelemetry()
         {
-            if (_openTelemetryInitialized == false)
-                return; // since we're not exposing there is no reason to initialize meters itself.
-            
-            MetricsManager = new MetricsManager(ServerStore.Server); 
-            MetricsManager.Execute();
+            MetricsManager = new MetricsManager(ServerStore.Server, _openTelemetryInitialized); 
+            if (_openTelemetryInitialized)
+                MetricsManager.Execute(); // initialize only when OpenTelemetry is configured in `Initialize()`
         }
 
         private void ConfigureOpenTelemetry(IServiceCollection services)
@@ -456,7 +525,6 @@ namespace Raven.Server
             openTelemetryBuilder.WithMetrics(ConfigureMetrics);
             void ConfigureMetrics(MeterProviderBuilder builder)
             {
-                builder.ConfigureResource(x => x.AddEnvironmentVariableDetector());
                 var configuration = Configuration.Monitoring.OpenTelemetry;
                 builder.SetResourceBuilder(
                     ResourceBuilder.CreateDefault()
@@ -467,25 +535,25 @@ namespace Raven.Server
                     builder.AddRuntimeInstrumentation();
                 
                 if (configuration.GeneralEnabled)
-                    builder.AddMeter(Constants.Meters.GeneralMeter);
+                    builder.AddMeter(TelemetryConstants.Meters.GeneralMeter);
                 
                 if (configuration.Requests)
-                    builder.AddMeter(Constants.Meters.RequestsMeter);
+                    builder.AddMeter(TelemetryConstants.Meters.RequestsMeter);
 
                 if (configuration.ServerStorage)
-                    builder.AddMeter(Constants.Meters.StorageMeter);
+                    builder.AddMeter(TelemetryConstants.Meters.StorageMeter);
                 
                 if (configuration.GcEnabled)
-                    builder.AddMeter(Constants.Meters.GcMeter);
+                    builder.AddMeter(TelemetryConstants.Meters.GcMeter);
                 
                 if (configuration.TotalDatabases)
-                    builder.AddMeter(Constants.Meters.TotalDatabasesMeter);
+                    builder.AddMeter(TelemetryConstants.Meters.TotalDatabasesMeter);
                 
                 if (configuration.Resources)
-                    builder.AddMeter(Constants.Meters.Resources);
+                    builder.AddMeter(TelemetryConstants.Meters.Resources);
                 
                 if (configuration.CPUCredits)
-                    builder.AddMeter(Constants.Meters.CpuCreditsMeter);
+                    builder.AddMeter(TelemetryConstants.Meters.CpuCreditsMeter);
                 
                 if (configuration.ConsoleExporter)
                     builder.AddConsoleExporter();
@@ -553,10 +621,11 @@ namespace Raven.Server
 
         private void UpdateCertificateExpirationAlert()
         {
-            var remainingDays = (Certificate.Certificate.NotAfter - Time.GetUtcNow().ToLocalTime()).TotalDays;
+            var remainingDays = (Certificate.ServerCertificate.NotAfter - Time.GetUtcNow().ToLocalTime()).TotalDays;
+            var daysToRenewBeforeExpiration = CalculateDaysToRenewBeforeExpiration(Certificate.ServerCertificate);
             if (remainingDays <= 0)
             {
-                string msg = $"The server certificate has expired on {Certificate.Certificate.NotAfter.ToShortDateString()}.";
+                string msg = $"The server certificate has expired on {Certificate.ServerCertificate.NotAfter.ToShortDateString()}.";
 
                 if (Configuration.Core.SetupMode == SetupMode.LetsEncrypt)
                 {
@@ -568,9 +637,9 @@ namespace Raven.Server
                 if (Logger.IsOperationsEnabled)
                     Logger.Operations(msg);
             }
-            else if (remainingDays <= 20)
+            else if (remainingDays <= daysToRenewBeforeExpiration)
             {
-                string msg = $"The server certificate will expire on {Certificate.Certificate.NotAfter.ToShortDateString()}. There are only {(int)remainingDays} days left for renewal.";
+                string msg = $"The server certificate will expire on {Certificate.ServerCertificate.NotAfter.ToShortDateString()}. There are only {(int)remainingDays} days left for renewal.";
 
                 if (Configuration.Core.SetupMode == SetupMode.LetsEncrypt)
                 {
@@ -597,6 +666,12 @@ namespace Raven.Server
             }
         }
 
+        private double CalculateDaysToRenewBeforeExpiration(X509Certificate2 serverCertificate)
+        {
+            // % of the certificate lifetime
+            return Math.Floor((serverCertificate.NotAfter - serverCertificate.NotBefore).TotalDays * ServerStore.Configuration.Core.AcmeRenewalThresholdPercentage / 100.0);
+        }
+
         private void OnServerCertificateChanged(object sender, EventArgs e)
         {
             if (RequestExecutor.HasServerCertificateCustomValidationCallback)
@@ -606,7 +681,7 @@ namespace Raven.Server
 
             try
             {
-                AssertServerCanContactItselfWhenAuthIsOn(Certificate.Certificate)
+                AssertServerCanContactItselfWhenAuthIsOn(Certificate.ClientCertificate)
                     .IgnoreUnobservedExceptions()
                     // here we wait a bit, just enough so for normal servers
                     // we'll be successful, but not enough to hang the server
@@ -627,7 +702,7 @@ namespace Raven.Server
             catch (Exception exception)
             {
                 if (Logger.IsOperationsEnabled)
-                    Logger.Operations($"Failed to check the expiration date of the new server certificate '{Certificate.Certificate?.Subject} ({Certificate.Certificate?.Thumbprint})'", exception);
+                    Logger.Operations($"Failed to check the expiration date of the new server certificate '{Certificate.ServerCertificate?.GetDisplayName()} ({Certificate.ServerCertificate?.Thumbprint})'", exception);
             }
         }
 
@@ -1031,7 +1106,7 @@ namespace Raven.Server
                     if (Logger.IsOperationsEnabled)
                         Logger.Operations($"When setting the certificate, validating that the server can authenticate with itself using {url}.");
 
-                    // Using the server certificate as a client certificate to test if we can talk to ourselves
+                    // Using the client certificate generated from the server certificate to test if we can talk to ourselves
                     httpMessageHandler.ClientCertificates.Add(certificateCertificate);
                     using (var client = new RavenHttpClient(httpMessageHandler)
                     {
@@ -1099,7 +1174,7 @@ namespace Raven.Server
             var cert2 = HttpsConnectionMiddleware.ConvertToX509Certificate2(cert);
 
             // We trust ourselves
-            if (cert2?.Thumbprint == Certificate?.Certificate?.Thumbprint)
+            if (IsServerCertificate(cert2))
                 return true;
 
             // self-signed is acceptable only if we have the same issuer as the remote certificate
@@ -1109,7 +1184,7 @@ namespace Raven.Server
                     ? chain.ChainElements[1].Certificate
                     : chain.ChainElements[0].Certificate;
 
-                if (issuer?.Thumbprint == Certificate?.Certificate?.Thumbprint)
+                if (issuer?.Thumbprint == Certificate?.ServerCertificate?.Thumbprint)
                     return true;
             }
 
@@ -1148,7 +1223,7 @@ namespace Raven.Server
             // confirm they got it (or if there are less than 3 days to spare).
 
             var currentCertificate = Certificate;
-            if (currentCertificate.Certificate == null)
+            if (currentCertificate.ServerCertificate == null)
             {
                 return false; // shouldn't happen, but just in case
             }
@@ -1207,9 +1282,9 @@ namespace Raven.Server
                     throw new InvalidOperationException("Tried to load certificate as part of refresh check, but got an error!", e);
                 }
 
-                if (newCertificate.Certificate.Thumbprint != currentCertificate.Certificate.Thumbprint)
+                if (newCertificate.ServerCertificate.Thumbprint != currentCertificate.ServerCertificate.Thumbprint)
                 {
-                    HttpsConnectionMiddleware.EnsureCertificateIsAllowedForServerAuth(newCertificate.Certificate);
+                    HttpsConnectionMiddleware.EnsureCertificateIsAllowedForServerAuth(newCertificate.ServerCertificate);
 
                     if (Interlocked.CompareExchange(ref Certificate, newCertificate, currentCertificate) == currentCertificate)
                         ServerCertificateChanged?.Invoke(this, EventArgs.Empty);
@@ -1271,13 +1346,21 @@ namespace Raven.Server
         {
             try
             {
-                var certHolder = ServerStore.Secrets.LoadCertificateWithExecutable(
+                var (certificate, _) = ServerStore.Secrets.LoadCertificateWithExecutable(
                     Configuration.Security.CertificateRenewExec,
                     Configuration.Security.CertificateRenewExecArguments,
                     ServerStore.GetLicenseType(),
                     ServerStore.Configuration.Security.CertificateValidationKeyUsages);
-
-                return CertificateLoaderUtil.CreateCertificate(certHolder.Certificate.Export(X509ContentType.Pfx), flags: CertificateLoaderUtil.FlagsForPersist);
+                
+                var flags = CertificateLoaderUtil.FlagsForPersist;
+        
+                // macOS Keychain rigidly blocks silent exports of persisted private keys.
+                // Keeping the key in memory (Ephemeral) bypasses the Keychain restriction.
+                if (PlatformDetails.RunningOnMacOsx)
+                {
+                    flags = CertificateLoaderUtil.FlagsForExport;
+                }
+                return CertificateLoaderUtil.CreateCertificate(certificate.Export(X509ContentType.Pfx), flags: flags);
             }
             catch (Exception e)
             {
@@ -1340,7 +1423,7 @@ namespace Raven.Server
                 // We don't want an alert here, this happens frequently.
                 if (Logger.IsOperationsEnabled)
                     Logger.Operations(
-                        $"Renew check: still have time left to renew the server certificate with thumbprint `{currentCertificate.Certificate.Thumbprint}`, estimated renewal date: {renewalDate}");
+                        $"Renew check: still have time left to renew the server certificate with thumbprint `{currentCertificate.ServerCertificate.Thumbprint}`, estimated renewal date: {renewalDate}");
                 return null;
             }
 
@@ -1382,7 +1465,16 @@ namespace Raven.Server
             X509Certificate2 refreshedCertificate;
             try
             {
-                refreshedCertificate = CertificateLoaderUtil.CreateCertificate(newCertBytes, flags: CertificateLoaderUtil.FlagsForPersist);
+                var flags = CertificateLoaderUtil.FlagsForPersist;
+        
+                // macOS Keychain blocks the export of private keys loaded with PersistKeySet.
+                // We must load it as Ephemeral (FlagsForExport) so StartCertificateReplicationAsync can broadcast it.
+                if (PlatformDetails.RunningOnMacOsx)
+                {
+                    flags = CertificateLoaderUtil.FlagsForExport;
+                }
+
+                refreshedCertificate = CertificateLoaderUtil.CreateCertificate(newCertBytes, flags: flags);
             }
             catch (Exception e)
             {
@@ -1405,13 +1497,15 @@ namespace Raven.Server
             if (forceRenew)
                 return (true, DateTime.UtcNow.Date);
 
-            var remainingDays = (currentCertificate.Certificate.NotAfter - Time.GetUtcNow().ToLocalTime()).TotalDays;
-            if (remainingDays <= 20)
+            var remainingDays = (currentCertificate.ServerCertificate.NotAfter - Time.GetUtcNow().ToLocalTime()).TotalDays;
+            var daysToRenewBeforeExpiration = CalculateDaysToRenewBeforeExpiration(Certificate.ServerCertificate);
+            
+            if (remainingDays <= daysToRenewBeforeExpiration)
             {
                 return (true, DateTime.UtcNow.Date);
             }
 
-            var firstPossibleDate = currentCertificate.Certificate.NotAfter.ToUniversalTime().AddDays(-30);
+            var firstPossibleDate = currentCertificate.ServerCertificate.NotAfter.ToUniversalTime().AddDays(-daysToRenewBeforeExpiration);
 
             // We can do this because saturday is last in the DayOfWeek enum
             var daysUntilSaturday = DayOfWeek.Saturday - firstPossibleDate.DayOfWeek;
@@ -1437,32 +1531,32 @@ namespace Raven.Server
             {
                 SecretProtection.ValidateCertificateBeforeReplacement(newCertificate, password, ServerStore.GetLicenseType(), ServerStore.Configuration.Security.CertificateValidationKeyUsages);
 
-                if (Certificate.Certificate.Thumbprint == newCertificate.Thumbprint)
+                if (Certificate.ServerCertificate.Thumbprint == newCertificate.Thumbprint)
                 {
                     if (Logger.IsOperationsEnabled)
                     {
-                        Logger.Operations($"The new certificate matches the current one. No further steps needed. {Certificate.Certificate.GetBasicCertificateInfo()}");
+                        Logger.Operations($"The new certificate matches the current one. No further steps needed. {Certificate.ServerCertificate.GetBasicCertificateInfo()}");
                     }
                     return;
                 }
 
                 if (Logger.IsOperationsEnabled)
                 {
-                    Logger.Operations($"Starting certificate replication. current:'{Certificate.Certificate.GetBasicCertificateInfo()}', new:'{newCertificate.GetBasicCertificateInfo()}'");
+                    Logger.Operations($"Starting certificate replication. current:'{Certificate.ServerCertificate.GetBasicCertificateInfo()}', new:'{newCertificate.GetBasicCertificateInfo()}'");
                 }
 
                 // During replacement of a cluster certificate, we must have both the new and the old server certificates registered in the server store.
                 // This is needed for trust in the case where a node replaced its own certificate while another node still runs with the old certificate.
                 // Since both nodes use different certificates, they will only trust each other if the certs are registered in the server store.
                 // When the certificate replacement is finished throughout the cluster, we will delete both these entries.
-                await ServerStore.PutValueInClusterAsync(new PutCertificateCommand(Certificate.Certificate.Thumbprint,
+                await ServerStore.PutValueInClusterAsync(new PutCertificateCommand(Certificate.ServerCertificate.Thumbprint,
                     new CertificateDefinition
                     {
-                        Certificate = Convert.ToBase64String(Certificate.Certificate.Export(X509ContentType.Cert)),
-                        Thumbprint = Certificate.Certificate.Thumbprint,
-                        PublicKeyPinningHash = Certificate.Certificate.GetPublicKeyPinningHash(),
-                        NotAfter = Certificate.Certificate.NotAfter,
-                        NotBefore = Certificate.Certificate.NotBefore,
+                        Certificate = Convert.ToBase64String(Certificate.ServerCertificate.Export(X509ContentType.Cert)),
+                        Thumbprint = Certificate.ServerCertificate.Thumbprint,
+                        PublicKeyPinningHash = Certificate.ServerCertificate.GetPublicKeyPinningHash(),
+                        NotAfter = Certificate.ServerCertificate.NotAfter,
+                        NotBefore = Certificate.ServerCertificate.NotBefore,
                         Name = "Old Server Certificate - can delete",
                         SecurityClearance = SecurityClearance.ClusterNode
                     }, $"{raftRequestId}/put-old-certificate"));
@@ -1557,7 +1651,7 @@ namespace Raven.Server
                                                     $"but the Security.Certificate.LetsEncrypt.Email configuration setting is: {Configuration.Security.CertificateLetsEncryptEmail}. " +
                                                     "There is a mismatch, therefore cannot automatically renew the Lets Encrypt certificate. Please contact support.");
 
-            var hosts = CertificateUtils.GetCertificateAlternativeNames(existing.Certificate).ToArray();
+            var hosts = CertificateUtils.GetCertificateAlternativeNames(existing.ServerCertificate).ToArray();
 
             // cloud: *.free.iftah.ravendb.cloud => we extract the domain free.iftah
             // normal: *.iftah.development.run => we extract the domain iftah
@@ -1661,20 +1755,25 @@ namespace Raven.Server
                     throw new InvalidOperationException($"Invalid certificate configuration. The configuration property '{RavenConfiguration.GetKey(x => x.Security.CertificateExec)}' has been deprecated since RavenDB 4.2, please use '{RavenConfiguration.GetKey(x => x.Security.CertificateLoadExec)}' along with '{RavenConfiguration.GetKey(x => x.Security.CertificateRenewExec)}' and '{RavenConfiguration.GetKey(x => x.Security.CertificateChangeExec)}'.");
                 }
 
+                X509Certificate2 serverCertificate = null;
+                AsymmetricAlgorithm privateKey = null;
                 if (string.IsNullOrEmpty(Configuration.Security.CertificatePath) == false)
-                    return ServerStore.Secrets.LoadCertificateFromPath(
+                    (serverCertificate, privateKey) = ServerStore.Secrets.LoadCertificateFromPath(
                         Configuration.Security.CertificatePath,
                         Configuration.Security.CertificatePassword,
                         ServerStore.GetLicenseType(),
                         ServerStore.Configuration.Security.CertificateValidationKeyUsages);
                 if (string.IsNullOrEmpty(Configuration.Security.CertificateLoadExec) == false)
-                    return ServerStore.Secrets.LoadCertificateWithExecutable(
+                    (serverCertificate, privateKey) = ServerStore.Secrets.LoadCertificateWithExecutable(
                         Configuration.Security.CertificateLoadExec,
                         Configuration.Security.CertificateLoadExecArguments,
                         ServerStore.GetLicenseType(),
                         ServerStore.Configuration.Security.CertificateValidationKeyUsages);
 
+                if (serverCertificate == null)
                 return null;
+                
+                return new CertificateUtils.CertificateHolder(serverCertificate, privateKey);
             }
             catch (Exception e)
             {
@@ -1852,7 +1951,7 @@ namespace Raven.Server
             }
         }
 
-        internal AuthenticateConnection AuthenticateConnectionCertificate(X509Certificate2 certificate, object connectionInfo)
+        internal AuthenticateConnection AuthenticateConnectionCertificate(X509Certificate2 certificate, object connectionInfo, StringBuilder log = null)
         {
             var authenticationStatus = new AuthenticateConnection(TwoFactor)
             {
@@ -1871,7 +1970,7 @@ namespace Raven.Server
             {
                 authenticationStatus.Status = AuthenticationStatus.NotYetValid;
             }
-            else if (certificate.Equals(Certificate.Certificate))
+            else if (IsServerCertificate(certificate))
             {
                 authenticationStatus.Status = AuthenticationStatus.ClusterAdmin;
             }
@@ -1879,16 +1978,17 @@ namespace Raven.Server
             {
                 authenticationStatus.Status = AuthenticationStatus.ClusterAdmin;
             }
-            else if (CertificateHasWellKnownIssuer(certificate, out var issuer))
+            else if (CertificateHasWellKnownIssuer(certificate, out var issuer, log))
             {
                 string authLogMessage;
 
                 if (Configuration.Security.ValidateSanForCertificateWithWellKnownIssuer)
                 {
-                    if (AreCertificateSansValid(certificate))
+                    log?.AppendLine($"Validating SAN for certificate with {certificate.GetDisplayName()} ({certificate.Thumbprint}) well known issuer '{issuer}'");
+                    if (AreCertificateSansValid(certificate, log))
                     {
                         authLogMessage =
-                            $"Connection from {GetRemoteAddress(connectionInfo)} with new certificate '{certificate.Subject} ({certificate.Thumbprint})' which is not registered in the cluster. " +
+                            $"Connection from {GetRemoteAddress(connectionInfo)} with new certificate '{certificate.GetDisplayName()} ({certificate.Thumbprint})' which is not registered in the cluster. " +
                             "Allowing the connection based on the certificate's *issuer* which is trusted by the cluster and valid SAN matching server domain. " +
                             $"Registering the new certificate explicitly based on permissions of existing certificate '{issuer}'. Security Clearance: {AuthenticationStatus.ClusterAdmin}";
                         authenticationStatus.Status = AuthenticationStatus.ClusterAdmin;
@@ -1897,7 +1997,7 @@ namespace Raven.Server
                     else
                     {
                         authLogMessage =
-                            $"Connection from {GetRemoteAddress(connectionInfo)} with new certificate '{certificate.Subject} ({certificate.Thumbprint})' which is not registered in the cluster. " +
+                            $"Connection from {GetRemoteAddress(connectionInfo)} with new certificate '{certificate.GetDisplayName()} ({certificate.Thumbprint})' which is not registered in the cluster. " +
                             "Certificate's *issuer* is trusted by the cluster. " +
                             "Rejecting the connection based on certificate SAN not matching server domain.";
                         authenticationStatus.Status = AuthenticationStatus.UnfamiliarCertificate;
@@ -1906,7 +2006,7 @@ namespace Raven.Server
                 else 
                 {
                     authLogMessage =
-                        $"Connection from {GetRemoteAddress(connectionInfo)} with new certificate '{certificate.Subject} ({certificate.Thumbprint})' which is not registered in the cluster. " +
+                        $"Connection from {GetRemoteAddress(connectionInfo)} with new certificate '{certificate.GetDisplayName()} ({certificate.Thumbprint})' which is not registered in the cluster. " +
                         "Allowing the connection based on the certificate's *issuer* which is trusted by the cluster. " +
                         $"Registering the new certificate explicitly based on permissions of existing certificate '{issuer}'. Security Clearance: {AuthenticationStatus.ClusterAdmin}";
                     authenticationStatus.Status = AuthenticationStatus.ClusterAdmin;
@@ -1987,7 +2087,7 @@ namespace Raven.Server
             if (certWithSameHash == null)
             {
                 if (_authAuditLog.IsInfoEnabled)
-                    _authAuditLog.Info($"Connection from {remoteAddress} with certificate '{certificate.Subject} ({certificate.Thumbprint})' which is not registered in the cluster. " +
+                    _authAuditLog.Info($"Connection from {remoteAddress} with certificate '{certificate.GetDisplayName()} ({certificate.Thumbprint})' which is not registered in the cluster. " +
                                        "Tried to allow the connection implicitly based on the client certificate's Public Key Pinning Hash but the client certificate was signed by an unknown issuer - closing the connection. " +
                                        $"Alternatively, the admin can register the actual certificate ({certificate.FriendlyName} '{certificate.Thumbprint}') explicitly in the cluster.");
 
@@ -2032,7 +2132,7 @@ namespace Raven.Server
 
             if (_authAuditLog.IsInfoEnabled)
                 _authAuditLog.Info(
-                    $"Connection from {remoteAddress} with new certificate '{certificate.Subject} ({certificate.Thumbprint})' which is not registered in the cluster. " +
+                    $"Connection from {remoteAddress} with new certificate '{certificate.GetDisplayName()} ({certificate.Thumbprint})' which is not registered in the cluster. " +
                     "Allowing the connection based on the certificate's Public Key Pinning Hash which is trusted by the cluster. " +
                     $"Registering the new certificate explicitly based on permissions of existing certificate '{certWithSameHash.Thumbprint}'. Security Clearance: {newCertDef.SecurityClearance}, " +
                     $"Permissions:{Environment.NewLine}{string.Join(Environment.NewLine, newCertDef.Permissions.Select(kvp => kvp.Key + ": " + kvp.Value.ToString()))}");
@@ -2313,13 +2413,13 @@ namespace Raven.Server
                                 if (tcpAuditLog != null)
                                 {
                                     tcpAuditLog.Info(
-                                        $"Failed to negotiate TCP connection from '{remoteEndPoint}' with certificate '{cert?.Subject} ({cert?.Thumbprint})'. Error: {e}");
+                                        $"Failed to negotiate TCP connection from '{remoteEndPoint}' with certificate '{cert?.GetDisplayName()} ({cert?.Thumbprint})'. Error: {e}");
                                 }
                                 throw;
                             }
 
                             if (tcpAuditLog != null)
-                                tcpAuditLog.Info($"Opened TCP connection '{remoteEndPoint}' with certificate '{cert?.Subject} ({cert?.Thumbprint})'. Accepted for {header.Operation} on {header.DatabaseName ?? "Server"}.");
+                                tcpAuditLog.Info($"Opened TCP connection '{remoteEndPoint}' with certificate '{cert?.GetDisplayName()} ({cert?.Thumbprint})'. Accepted for {header.Operation} on {header.DatabaseName ?? "Server"}.");
 
                             if (ShouldUseDataCompression(header))
                             {
@@ -2353,7 +2453,7 @@ namespace Raven.Server
                         finally
                         {
                             if (tcpAuditLog != null)
-                                tcpAuditLog.Info($"Closed TCP connection '{remoteEndPoint}' with certificate '{cert?.Subject} ({cert?.Thumbprint})'.");
+                                tcpAuditLog.Info($"Closed TCP connection '{remoteEndPoint}' with certificate '{cert?.GetDisplayName()} ({cert?.Thumbprint})'.");
                         }
                     }
                 }
@@ -2443,7 +2543,7 @@ namespace Raven.Server
                         {
                             if (tcpAuditLog != null)
                                 tcpAuditLog.Info(
-                                    $"Got connection from {tcpClient.Client.RemoteEndPoint} with certificate '{cert?.Subject} ({cert?.Thumbprint})'. Dropping connection because: {header.Info}");
+                                    $"Got connection from {tcpClient.Client.RemoteEndPoint} with certificate '{cert?.GetDisplayName()} ({cert?.Thumbprint})'. Dropping connection because: {header.Info}");
 
                             if (Logger.IsInfoEnabled)
                             {
@@ -2463,7 +2563,7 @@ namespace Raven.Server
                     {
                         var msg = $"Protocol '{header.OperationVersion}' for '{header.Operation}' was not found.";
                         if (tcpAuditLog != null)
-                            tcpAuditLog.Info($"Got connection from {tcpClient.Client.RemoteEndPoint} with certificate '{cert?.Subject} ({cert?.Thumbprint})'. {msg}");
+                            tcpAuditLog.Info($"Got connection from {tcpClient.Client.RemoteEndPoint} with certificate '{cert?.GetDisplayName()} ({cert?.Thumbprint})'. {msg}");
 
                         if (Logger.IsInfoEnabled)
                         {
@@ -2485,7 +2585,7 @@ namespace Raven.Server
                     await RespondToTcpConnection(stream, context, $"Not supporting version {header.OperationVersion} for {header.Operation}", TcpConnectionStatus.TcpVersionMismatch, supported);
                 }
 
-                bool authSuccessful = TryAuthorize(Configuration, tcp.Stream, header, tcpClient, out var err, out TcpConnectionStatus statusResult);
+                bool authSuccessful = TryAuthorize(Configuration, tcp.Stream, tcp.Certificate, header, tcpClient, out var err, out TcpConnectionStatus statusResult);
                 //At this stage the error is not relevant.
 
                 if (header.LicensedFeatures != null)
@@ -2504,7 +2604,7 @@ namespace Raven.Server
                 {
                     if (tcpAuditLog != null)
                         tcpAuditLog.Info(
-                            $"Got connection from {tcpClient.Client.RemoteEndPoint} with certificate '{cert?.Subject} ({cert?.Thumbprint})'. Rejecting connection because {err} for {header.Operation} on {header.DatabaseName}.");
+                            $"Got connection from {tcpClient.Client.RemoteEndPoint} with certificate '{cert?.GetDisplayName()} ({cert?.Thumbprint})'. Rejecting connection because {err} for {header.Operation} on {header.DatabaseName}.");
 
                     if (Logger.IsInfoEnabled)
                     {
@@ -2525,7 +2625,7 @@ namespace Raven.Server
 
             if (tcpAuditLog != null)
                 tcpAuditLog.Info(
-                    $"Got connection from {tcpClient.Client.RemoteEndPoint} with certificate '{cert?.Subject} ({cert?.Thumbprint})'. Accepted for {header.Operation} on {header.DatabaseName ?? "Server"}.");
+                    $"Got connection from {tcpClient.Client.RemoteEndPoint} with certificate '{cert?.GetDisplayName()} ({cert?.Thumbprint})'. Accepted for {header.Operation} on {header.DatabaseName ?? "Server"}.");
             return header;
         }
 
@@ -2677,6 +2777,8 @@ namespace Raven.Server
 
             HttpsConnectionMiddleware.EnsureCertificateIsAllowedForServerAuth(certificate);
 
+            SecretProtection.AddCertificateChainToTheUserCertificateAuthorityStoreAndCleanExpiredCerts(certificate, rawBytes, password);
+
             if (Interlocked.CompareExchange(ref Certificate, newCertHolder, certificateHolder) == certificateHolder)
             {
                 ServerCertificateChanged?.Invoke(this, EventArgs.Empty);
@@ -2787,6 +2889,7 @@ namespace Raven.Server
             switch (header.Operation)
             {
                 case TcpConnectionHeaderMessage.OperationTypes.Subscription:
+                    // tcp ownership - properly scoped by SubscriptionBinder method
                     CreateSubscriptionConnection(ServerStore, result, tcp, bufferToCopy);
                     break;
 
@@ -2807,9 +2910,9 @@ namespace Raven.Server
                     throw new InvalidOperationException("Unknown operation for TCP " + header.Operation);
             }
 
-            //since the responses to TCP connections mostly continue to run
-            //beyond this point, no sense to dispose the connection now, so set it to null.
-            //this way the responders are responsible to dispose the connection and the context
+            // Since the responses to TCP connections mostly continue to run beyond this point,
+            // there's no sense to dispose the connection now, so set it to null.
+            // This way the responders are responsible to dispose the connection and the context.
             // ReSharper disable once RedundantAssignment
             tcp = null;
             return false;
@@ -2842,7 +2945,7 @@ namespace Raven.Server
 
         internal async Task<(Stream Stream, X509Certificate2 Certificate)> AuthenticateAsServerIfSslNeeded(Stream stream)
         {
-            if (Certificate.Certificate != null)
+            if (Certificate.ServerCertificate != null)
             {
                 var sslStream = new SslStream(stream, false, (sender, certificate, chain, errors) =>
                         // it is fine that the client doesn't have a cert, we just care that they
@@ -2856,7 +2959,7 @@ namespace Raven.Server
 
                 await sslStream.AuthenticateAsServerAsync(new SslServerAuthenticationOptions
                 {
-                    ServerCertificateContext = Certificate.CertificateContext,
+                    ServerCertificateContext = Certificate.ServerCertificateContext,
                     ClientCertificateRequired = true,
                     CertificateRevocationCheckMode = X509RevocationMode.NoCheck,
                     EncryptionPolicy = EncryptionPolicy.RequireEncryption,
@@ -2864,13 +2967,35 @@ namespace Raven.Server
                     CipherSuitesPolicy = CipherSuitesPolicy
                 });
 
-                return (sslStream, HttpsConnectionMiddleware.ConvertToX509Certificate2(sslStream.RemoteCertificate));
+                var certificate = HttpsConnectionMiddleware.ConvertToX509Certificate2(sslStream.RemoteCertificate);
+                certificate = GetCertificateForAuthorization(certificate);
+
+                return (sslStream, certificate);
             }
 
             return (stream, null);
         }
 
-        private bool TryAuthorize(RavenConfiguration configuration, Stream stream, TcpConnectionHeaderMessage header, TcpClient tcpClient, out string msg, out TcpConnectionStatus statusResult)
+        internal static X509Certificate2 GetCertificateForAuthorization(X509Certificate2 certificate)
+        {
+            if (certificate == null || SecretProtection.HasCertificateServerAuthEnhancedKeyUsage(certificate))
+                return certificate;
+            
+            var extractedCertificate = CertificateUtils.ExtractServerCertificateFromExtension(certificate);
+
+            if (extractedCertificate != null && extractedCertificate.GetPublicKeyPinningHash() == certificate.GetPublicKeyPinningHash())
+                return extractedCertificate;
+
+            return certificate;
+        }
+
+        private bool TryAuthorize(RavenConfiguration configuration,
+            Stream stream,
+            X509Certificate2 certificate,
+            TcpConnectionHeaderMessage header,
+            TcpClient tcpClient,
+            out string msg,
+            out TcpConnectionStatus statusResult)
         {
             msg = null;
             if (header.ServerId != null && header.ServerId != ServerStore.ServerId.ToString())
@@ -2892,8 +3017,8 @@ namespace Raven.Server
                 return false;
             }
 
-            var certificate = (X509Certificate2)sslStream.RemoteCertificate;
             var auth = AuthenticateConnectionCertificate(certificate, tcpClient);
+            var info = header.AuthorizeInfo;
 
             switch (auth.Status)
             {
@@ -2907,9 +3032,32 @@ namespace Raven.Server
 
                 case AuthenticationStatus.ClusterAdmin:
                 case AuthenticationStatus.Operator:
+                    if (info?.AuthorizeAs is PullReplication or PushReplication)
+                    {
+                        using (ServerStore.Engine.ContextPool.AllocateOperationContext(out ClusterOperationContext ctx))
+                        using (ctx.OpenReadTransaction())
+                        {
+                            if (CheckPullReplicationMode(ctx, header, info, out msg) is false)
+                                return false;
+                        }
+                        // Create a ReplicationHubAccess that allows full access for admin
+                        header.ReplicationHubAccess = new DetailedReplicationHubAccess
+                        {
+                            Name = auth.Status.ToString(),
+                            Thumbprint = certificate.Thumbprint,
+                            Certificate = Convert.ToBase64String(certificate.Export(X509ContentType.Cert)),
+                            NotBefore = certificate.NotBefore,
+                            NotAfter = certificate.NotAfter,
+                            Subject = certificate.Subject,
+                            Issuer = certificate.Issuer,
+                            AllowedHubToSinkPaths = null, // null means all paths allowed
+                            AllowedSinkToHubPaths = null  // null means all paths allowed
+                        };
+                        return true;
+                    }
+
                     msg = "Admin can do it all";
                     return true;
-
                 case AuthenticationStatus.Allowed:
                     switch (header.Operation)
                     {
@@ -2926,7 +3074,15 @@ namespace Raven.Server
                                 msg = "Cannot allow access. Database name is empty.";
                                 return false;
                             }
-                            if (auth.CanAccess(header.DatabaseName, requireAdmin: false, requireWrite: header.Operation == TcpConnectionHeaderMessage.OperationTypes.Replication))
+
+                            bool isReplication = header.Operation == TcpConnectionHeaderMessage.OperationTypes.Replication;
+
+                            if (isReplication && info?.AuthorizeAs is PullReplication or PushReplication)
+                            {
+                                return CanProceedOnReplication(header, certificate, remoteAddress: tcpClient.Client.RemoteEndPoint?.ToString(), out msg);
+                            }
+
+                            if (auth.CanAccess(header.DatabaseName, requireAdmin: false, requireWrite: isReplication))
                                 return true;
                             msg = $"The certificate {certificate.FriendlyName} does not allow access to {header.DatabaseName}";
                             return false;
@@ -2941,50 +3097,76 @@ namespace Raven.Server
                     return false;
 
                 case AuthenticationStatus.UnfamiliarCertificate:
-                    var info = header.AuthorizeInfo;
-                    switch (info?.AuthorizeAs)
+                    if (info?.AuthorizeAs is PullReplication or PushReplication)
                     {
-                        case TcpConnectionHeaderMessage.AuthorizationInfo.AuthorizeMethod.PullReplication:
-                        case TcpConnectionHeaderMessage.AuthorizationInfo.AuthorizeMethod.PushReplication:
-                            using (ServerStore.Engine.ContextPool.AllocateOperationContext(out ClusterOperationContext ctx))
-                            using (ctx.OpenReadTransaction())
-                            {
-                                if (ServerStore.Cluster.TryReadPullReplicationDefinition(header.DatabaseName, info.AuthorizationFor, ctx, out var pullReplication))
-                                {
-                                    var expectedMode = info.AuthorizeAs switch
-                                    {
-                                        TcpConnectionHeaderMessage.AuthorizationInfo.AuthorizeMethod.PullReplication => PullReplicationMode.HubToSink,
-                                        TcpConnectionHeaderMessage.AuthorizationInfo.AuthorizeMethod.PushReplication => PullReplicationMode.SinkToHub,
-                                        _ => PullReplicationMode.None
-                                    };
-
-                                    if ((pullReplication.Mode & expectedMode) != expectedMode || expectedMode == PullReplicationMode.None)
-                                    {
-                                        msg = "The expected replication mode does not match the replication mode on the replication hub";
-                                        return false;
-                                    }
-
-                                    if (ServerStore.Cluster.IsReplicationCertificate(ctx, header.DatabaseName, info.AuthorizationFor, certificate, out header.ReplicationHubAccess))
-                                        return true;
-
-                                    if (ServerStore.Cluster.IsReplicationCertificateByPublicKeyPinningHash(ctx, header.DatabaseName, info.AuthorizationFor, certificate, configuration.Security, out header.ReplicationHubAccess))
-                                    {
-                                        RegisterNewReplicationCertificateWithSamePublicKeyPinningHash(tcpClient.Client.RemoteEndPoint.ToString(), header.DatabaseName, info.AuthorizationFor, header.ReplicationHubAccess, certificate);
-
-                                        return true;
-                                    }
-                                }
-
-                                msg = $"The certificate {certificate.FriendlyName} does not allow access to {header.DatabaseName} for {info.AuthorizationFor} ({info.AuthorizeAs})";
-                                return false;
-                            }
-                        default:
-                            throw new ArgumentOutOfRangeException("AuthorizeAs", "Unknown value for AuthorizeAs: " + info?.AuthorizeAs);
+                        return CanProceedOnReplication(header, certificate, remoteAddress: tcpClient.Client.RemoteEndPoint?.ToString(), out msg);
                     }
+
+                    throw new ArgumentOutOfRangeException(nameof(info.AuthorizeAs), "Unknown value for AuthorizeAs: " + info?.AuthorizeAs);
                 default:
                     msg = "Cannot allow access to a certificate with status: " + auth.Status;
                     return false;
             }
+        }
+
+        /// <summary>
+        /// Checks the <see cref="TcpConnectionHeaderMessage.AuthorizeInfo"/> and checks if it can proceed as replication.
+        /// </summary>
+        private bool CanProceedOnReplication(
+            TcpConnectionHeaderMessage header,
+            X509Certificate2 certificate,
+            string remoteAddress,
+            out string msg)
+        {
+            msg = null;
+            var info = header.AuthorizeInfo;
+
+            Debug.Assert(info?.AuthorizeAs is PullReplication or PushReplication, "It should be called only for replication.");
+            
+            using (ServerStore.Engine.ContextPool.AllocateOperationContext(out ClusterOperationContext ctx))
+            using (ctx.OpenReadTransaction())
+            {
+                if (CheckPullReplicationMode(ctx, header, info, out msg) is false) 
+                    return false;
+
+                // For non-admin certificates, check if the certificate is registered
+                if (ServerStore.Cluster.IsReplicationCertificate(ctx, header.DatabaseName, info.AuthorizationFor, certificate, out header.ReplicationHubAccess))
+                    return true;
+
+                if (ServerStore.Cluster.IsReplicationCertificateByPublicKeyPinningHash(ctx, header.DatabaseName, info.AuthorizationFor, certificate, ServerStore.Configuration.Security, out header.ReplicationHubAccess))
+                {
+                    RegisterNewReplicationCertificateWithSamePublicKeyPinningHash(remoteAddress, header.DatabaseName, info.AuthorizationFor, header.ReplicationHubAccess, certificate);
+                    return true;
+                }
+
+                msg = $"The certificate {certificate.FriendlyName} does not allow access to {header.DatabaseName} for {info.AuthorizationFor} ({info.AuthorizeAs})";
+                return false;
+            }
+        }
+
+        private bool CheckPullReplicationMode(ClusterOperationContext ctx, TcpConnectionHeaderMessage header, TcpConnectionHeaderMessage.AuthorizationInfo info, out string msg)
+        {
+            if (ServerStore.Cluster.TryReadPullReplicationDefinition(header.DatabaseName, info.AuthorizationFor, ctx, out var pullReplication) == false)
+            {
+                msg = $"The pull replication hub '{info.AuthorizationFor}' does not exist in database '{header.DatabaseName}'";
+                return false;
+            }
+
+            var expectedMode = info.AuthorizeAs switch
+            {
+                PullReplication => PullReplicationMode.HubToSink,
+                PushReplication => PullReplicationMode.SinkToHub,
+                _ => PullReplicationMode.None
+            };
+
+            if ((pullReplication.Mode & expectedMode) != expectedMode || expectedMode == PullReplicationMode.None)
+            {
+                msg = "The expected replication mode does not match the replication mode on the replication hub";
+                return false;
+            }
+
+            msg = null;
+            return true;
         }
 
         private void RegisterNewReplicationCertificateWithSamePublicKeyPinningHash(
@@ -3019,7 +3201,7 @@ namespace Raven.Server
 
             if (_authAuditLog.IsInfoEnabled)
                 _authAuditLog.Info(
-                    $"Connection from {remoteAddress} with new replication hub ({hub} on {database}) certificate '{certificate.Subject} ({certificate.Thumbprint})' which is not registered in the cluster. " +
+                    $"Connection from {remoteAddress} with new replication hub ({hub} on {database}) certificate '{certificate.GetDisplayName()} ({certificate.Thumbprint})' which is not registered in the cluster. " +
                     $"Allowing the connection based on the certificate's Public Key Pinning Hash which is trusted by the replication hub. Old certificate: {replicationHubAccess.Thumbprint} ");
         }
 
@@ -3092,7 +3274,7 @@ namespace Raven.Server
                 ea.Execute(() => AdminConsolePipe?.Dispose());
                 ea.Execute(() => LogStreamPipe?.Dispose());
                 ea.Execute(() => _redirectingWebHost?.Dispose());
-                ea.Execute(() => _webHost?.Dispose());
+                ea.Execute(() => DisposeWebHost());
                 ea.Execute(() => _tcpContextPool?.Dispose());
                 if (_tcpListenerStatus != null)
                 {
@@ -3129,6 +3311,36 @@ namespace Raven.Server
 
                 ea.ThrowIfNeeded();
             }
+        }
+
+        private void DisposeWebHost()
+        {
+            try
+            {
+                _webHost?.Dispose();
+            }
+            catch (Exception e) when (IsExpectedShutdownException(e))
+            {
+                // During shutdown, active HTTP connections may throw I/O exceptions
+                // (broken pipe, connection reset) as they are torn down. This is expected.
+                if (_tcpLogger.IsInfoEnabled)
+                    _tcpLogger.Info("Ignoring expected I/O error during web host shutdown", e);
+            }
+        }
+
+        private static bool IsExpectedShutdownException(Exception e)
+        {
+            if (e is IOException or SocketException)
+                return true;
+
+            if (e is AggregateException ae)
+            {
+                AggregateException flattened = ae.Flatten();
+                return flattened.InnerExceptions.Count > 0 &&
+                       flattened.InnerExceptions.All(ie => ie is IOException or SocketException);
+            }
+
+            return false;
         }
 
         private void CloseTcpListeners(List<TcpListener> listeners)
@@ -3215,31 +3427,61 @@ namespace Raven.Server
             }
         }
 
-        public bool CertificateHasWellKnownIssuer(X509Certificate2 cert, out string issuer)
+        public bool IsServerCertificate(X509Certificate2 certificate)
+        {
+            var serverCertificate = Certificate?.ServerCertificate;
+            
+            return serverCertificate != null && certificate.Equals(serverCertificate);
+        }
+
+        public bool CertificateHasWellKnownIssuer(X509Certificate2 cert, out string issuer, StringBuilder log = null)
         {
             issuer = null;
             if (WellKnownIssuers == null)
+            {
+                log?.AppendLine("No well known issuers configured");
                 return false;
+            }
 
             foreach (var knownIssuer in WellKnownIssuers)
             {
+                log?.AppendLine($"Checking if {knownIssuer.GetDisplayName()} ({knownIssuer.Thumbprint}) is a well known issuer for {cert.GetDisplayName()} ({cert.Thumbprint})");
                 using var chain = new X509Chain(false);
                 chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
                 chain.ChainPolicy.DisableCertificateDownloads = true;
                 chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
-                chain.ChainPolicy.CustomTrustStore.Add(knownIssuer);
+                var index = chain.ChainPolicy.CustomTrustStore.Add(knownIssuer);
 
+                log?.AppendLine($"Known issuer {knownIssuer.GetDisplayName()} ({knownIssuer.Thumbprint}) added to CustomTrustStore at index {index}");
+                
+                foreach (var certificate2 in chain.ChainPolicy.CustomTrustStore)
+                {
+                    log?.AppendLine($"CustomTrustStore certificate: {certificate2.GetDisplayName()} ({certificate2.Thumbprint})");
+                }
+                
                 if (chain.Build(cert))
                 {
                     issuer = knownIssuer.SubjectName.Name + " - " + knownIssuer.Thumbprint;
+                    log?.AppendLine($"Issuer is a well known issuer: {issuer} for {cert.GetDisplayName()} ({cert.Thumbprint})");
                     return true;
+                }
+
+                foreach (var chainStatus in chain.ChainStatus)
+                {
+                    log?.AppendLine($"Chain status: {chainStatus.Status} - {chainStatus.StatusInformation}");
+                }
+
+                foreach (var element in chain.ChainElements)
+                {
+                    log?.AppendLine($"Chain element: {element.Certificate.GetDisplayName()} ({element.Certificate.Thumbprint})");
                 }
             }
 
+            log?.AppendLine($"No well known issuer found for {cert.GetDisplayName()} ({cert.Thumbprint})");
             return false;
         }
 
-        private bool AreCertificateSansValid(X509Certificate2 cert)
+        private bool AreCertificateSansValid(X509Certificate2 cert, StringBuilder log = null)
         {
             var serverDomain = new Uri(ServerStore.GetNodeHttpServerUrl()).Host;
             var sans = CertificateUtils.GetCertificateAlternativeNames(cert).ToList();
@@ -3249,12 +3491,14 @@ namespace Raven.Server
                 {
                     _authAuditLog.Info("Certificate does not contain any SAN.");
                 }
+                log?.AppendLine("Certificate does not contain any SAN.");
 
                 return false;
             }
 
             foreach (var san in sans)
             {
+                log?.AppendLine($"Checking if {san} is a valid SAN for domain {serverDomain}");
                 if (san.StartsWith("*."))
                 {
                     var array = san.Split("*.");
@@ -3264,6 +3508,7 @@ namespace Raven.Server
                         {
                             _authAuditLog.Info($"Certificate {cert.Thumbprint} contains invalid SAN {san}");
                         }
+                        log?.AppendLine($"Certificate {cert.Thumbprint} contains invalid SAN {san}");
 
                         continue;
                     }
@@ -3272,16 +3517,21 @@ namespace Raven.Server
                         serverDomain.Length > array[1].Length &&
                         serverDomain[..(serverDomain.Length - array[1].Length - 1)].Contains('.') == false)
                     {
+                        log?.AppendLine($"Certificate {cert.GetDisplayName()} ({cert.Thumbprint}) contains valid SAN {san}");
                         return true;
                     }
                 }
                 else
                 {
                     if (string.Compare(serverDomain, san, StringComparison.OrdinalIgnoreCase) == 0)
+                    {
+                        log?.AppendLine($"Certificate {cert.GetDisplayName()} ({cert.Thumbprint}) contains valid SAN {san}");
                         return true;
+                    }
                 }
             }
 
+            log?.AppendLine($"Certificate {cert.GetDisplayName()} ({cert.Thumbprint}) does not contain a valid SAN for domain {serverDomain}");
             return false;
         }
 

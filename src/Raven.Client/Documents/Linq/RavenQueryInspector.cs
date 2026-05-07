@@ -1,10 +1,4 @@
-//-----------------------------------------------------------------------
-// <copyright file="RavenQueryInspector.cs" company="Hibernating Rhinos LTD">
-//     Copyright (c) Hibernating Rhinos LTD. All rights reserved.
-// </copyright>
-//-----------------------------------------------------------------------
-
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
@@ -207,7 +201,7 @@ namespace Raven.Client.Documents.Linq
             return new RavenQueryProviderProcessor<T>(
                 _provider.QueryGenerator,
                 _provider.CustomizeQuery,
-                null,
+                AfterQueryExecuted,
                 _highlightings,
                 _indexName,
                 _collectionName,

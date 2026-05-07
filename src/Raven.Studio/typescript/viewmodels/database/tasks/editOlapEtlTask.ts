@@ -34,6 +34,10 @@ import shardViewModelBase = require("viewmodels/shardViewModelBase");
 import licenseModel = require("models/auth/licenseModel");
 import EditOlapEtlInfoHub = require("viewmodels/database/tasks/EditOlapEtlInfoHub");
 import typeUtils = require("common/typeUtils");
+import accessManager = require("common/shell/accessManager");
+import store = require("components/store");
+import databaseSliceSelectors = require("components/common/shell/databaseSliceSelectors");
+import tasksCommonContent = require("models/database/tasks/tasksCommonContent");
 
 class partitionTable {
     key: string;
@@ -257,6 +261,8 @@ class editOlapEtlTask extends shardViewModelBase {
     
     fullErrorDetailsVisible = ko.observable<boolean>(false);
     shortErrorText: KnockoutObservable<string>;
+
+    taskNameDisabledReason: KnockoutComputed<string>;
     
     collections = collectionsTracker.default.collections;
     
@@ -270,6 +276,8 @@ class editOlapEtlTask extends shardViewModelBase {
 
     hasOlapEtl = licenseModel.getStatusValue("HasOlapEtl");
     infoHubView: ReactInKnockout<typeof EditOlapEtlInfoHub.EditOlapEtlInfoHub>;
+
+    overrideViaExternalScriptDisableReason: KnockoutComputed<string>;
     
     constructor(db: database) {
         super(db);
@@ -290,6 +298,18 @@ class editOlapEtlTask extends shardViewModelBase {
         this.infoHubView = ko.pureComputed(() => ({
             component: EditOlapEtlInfoHub.EditOlapEtlInfoHub
         }))
+
+        this.overrideViaExternalScriptDisableReason = ko.pureComputed(() => {
+            const isClusterAdminOrClusterNode = accessManager.default.isClusterAdminOrClusterNode();
+            const storeState = store.default.getState();
+            const isRestricted = databaseSliceSelectors.databaseSelectors.isRestrictExternalScriptUsageForNonClusterAdmin(storeState);
+
+            if (!isClusterAdminOrClusterNode && isRestricted) {
+                return tasksCommonContent.externalScriptNotAllowedForNonClusterAdmins;
+            }
+
+            return null;
+        });
     }
 
     activate(args: any) {
@@ -390,6 +410,14 @@ class editOlapEtlTask extends shardViewModelBase {
         
         this.showEditOlapTableArea = ko.pureComputed(() => !!this.editedOlapTableSandbox());
         this.showEditTransformationArea = ko.pureComputed(() => !!this.editedTransformationScriptSandbox());
+
+        this.taskNameDisabledReason = ko.pureComputed(() => {
+            if (!this.isAddingNewOlapEtlTask()) {
+                return tasksCommonContent.etlTaskNameLocked;
+            }
+
+            return null;
+        }); 
 
         this.newConnectionString(connectionStringOlapEtlModel.empty());
         this.newConnectionString().setNameUniquenessValidator(name => !this.olapEtlConnectionStringsNames().find(x => x.toLocaleLowerCase() === name.toLocaleLowerCase()));

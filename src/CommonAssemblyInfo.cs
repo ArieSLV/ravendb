@@ -3,11 +3,11 @@ using System.Diagnostics;
 using System.Reflection;
 using System.Resources;
 
-[assembly: AssemblyCopyright("© Hibernating Rhinos 2009 - 2025 All rights reserved.")]
+[assembly: AssemblyCopyright("© RavenDB 2009 - 2025 All rights reserved.")]
 
-[assembly: AssemblyVersion("6.2.10")]
-[assembly: AssemblyFileVersion("6.2.10.62")]
-[assembly: AssemblyInformationalVersion("6.2.10")]
+[assembly: AssemblyVersion("6.2.16")]
+[assembly: AssemblyFileVersion("6.2.16.62")]
+[assembly: AssemblyInformationalVersion("6.2.16")]
 
 #if DEBUG
 [assembly: AssemblyConfiguration("Debug")]

@@ -3,12 +3,10 @@ import router = require("plugins/router");
 import appUrl = require("common/appUrl");
 import generalUtils = require("common/generalUtils");
 import deleteDocuments = require("viewmodels/common/deleteDocuments");
-import deleteCollection = require("viewmodels/database/documents/deleteCollection");
 import messagePublisher = require("common/messagePublisher");
 import collectionsTracker = require("common/helpers/database/collectionsTracker");
 import changeVectorUtils = require("common/changeVectorUtils");
 import documentPropertyProvider = require("common/helpers/database/documentPropertyProvider");
-import notificationCenter = require("common/notifications/notificationCenter");
 import collection = require("models/database/documents/collection");
 import document = require("models/database/documents/document");
 import getDocumentsWithMetadataCommand = require("commands/database/documents/getDocumentsWithMetadataCommand");
@@ -57,16 +55,8 @@ class documents extends shardViewModelBase {
     
     $downloadForm: JQuery;
     
-    isDeleteDocumentsModalVisible = ko.observable<boolean>(false);
-    deleteDocumentsModalView: ReactInKnockout<typeof DeleteDocumentsModal.default> = ko.pureComputed(() => ({
-        component: DeleteDocumentsModal.default,
-        props: {
-            close: () => this.isDeleteDocumentsModalVisible(false),
-            gridController: this.gridController(),
-            onDeleteCompleted: () => this.onDeleteCompleted(),
-            currentCollection: this.currentCollection,
-        },
-    }));
+    deleteDocumentsModalView = ko.observable<ReactInKnockoutOptions<typeof DeleteDocumentsModal.default>>();
+    expectedCollectionRemoval = ko.observable<string>();
     
     itemsSoFar = ko.observable<number>(0);
     continuationToken: string;
@@ -177,8 +167,16 @@ class documents extends shardViewModelBase {
         }));
 
         this.registerDisposable(this.tracker.registerOnCollectionRemovedHandler(c => {
+            const isExpectedRemoval = this.isExpectedCollectionRemoval(c.name);
+
+            if (isExpectedRemoval) {
+                this.expectedCollectionRemoval(null);
+            }
+
             if (c === this.currentCollection()) {
-                messagePublisher.reportWarning(c.name + " was removed");
+                if (!isExpectedRemoval) {
+                    messagePublisher.reportWarning(c.name + " was removed");
+                }
                 this.currentCollection(this.tracker.getAllDocumentsCollection());
             } else if (this.currentCollection().isAllDocuments) {
                 this.dirtyCurrentCollection(true);
@@ -358,14 +356,48 @@ class documents extends shardViewModelBase {
                     }
                 });
         } else {
-            this.isDeleteDocumentsModalVisible(true);
+            const currentCollection = this.currentCollection();
+
+            this.deleteDocumentsModalView({
+                component: DeleteDocumentsModal.default,
+                props: {
+                    close: () => this.deleteDocumentsModalView(null),
+                    onDeleteCompleted: () => this.onDeleteCompleted(),
+                    onCollectionDeletionStarted: (collectionName: string) => this.expectedCollectionRemoval(collectionName),
+                    onCollectionDeletionFailed: (collectionName: string) => this.onCollectionDeletionFailed(collectionName),
+                    onEntireCollectionDeleted: (collectionName: string) => this.onEntireCollectionDeleted(collectionName),
+                    collectionName: currentCollection.name,
+                    collectionDocumentCount: currentCollection.documentCount(),
+                    isAllDocuments: currentCollection.isAllDocuments,
+                    excludedIds: selection.excluded.map(x => x.getId()),
+                    selectedCount: selection.count,
+                },
+            });
         }
     }
 
     private onDeleteCompleted() {
         this.spinners.delete(false);
         this.resetGrid(false);
-        this.refresh()
+    }
+
+    private isExpectedCollectionRemoval(collectionName: string): boolean {
+        return this.expectedCollectionRemoval() === collectionName;
+    }
+
+    private onCollectionDeletionFailed(collectionName: string) {
+        if (this.expectedCollectionRemoval() === collectionName) {
+            this.expectedCollectionRemoval(null);
+        }
+    }
+
+    private onEntireCollectionDeleted(collectionName: string) {
+        const selectedCollection = this.currentCollection();
+        const allDocsCollection = this.tracker.getAllDocumentsCollection();
+
+        if (selectedCollection?.name === collectionName && selectedCollection !== allDocsCollection) {
+            this.currentCollection(allDocsCollection);
+        }
     }
 
     copySelectedDocs() {

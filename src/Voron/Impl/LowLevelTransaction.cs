@@ -44,6 +44,7 @@ namespace Voron.Impl
         private readonly bool _disposeAllocator;
         internal long DecompressedBufferBytes;
         internal TestingStuff _forTestingPurposes;
+        private bool _updateLastWorkTime = true;
         
         public object ImmutableExternalState;
 
@@ -614,15 +615,6 @@ namespace Voron.Impl
             return p;
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public Page GetPageWithoutCache(long pageNumber)
-        {
-            if (_txState != TxState.None)
-                ThrowObjectDisposed();
-
-            return GetPageInternal(pageNumber);
-        }
-
         private Page GetPageInternal(long pageNumber)
         {
             // Check if we can hit the lowest level locality cache.
@@ -916,7 +908,11 @@ namespace Voron.Impl
 
             for (int i = lowerNumberOfPages; i < prevNumberOfPages; i++)
             {
-                FreePage(page.PageNumber + i);
+                FreePage(page.PageNumber + i
+#if DEBUG
+                    , isOverflowShrink: true
+#endif
+                );
             }
 
             // need to set the proper number of pages in the scratch page
@@ -1052,14 +1048,21 @@ namespace Voron.Impl
             UntrackDirtyPage(pageNumber);
         }
 
-        public void FreePage(long pageNumber)
+        public void FreePage(long pageNumber
+#if DEBUG
+            , bool isOverflowShrink = false
+#endif
+        )
         {
             if (_txState != TxState.None)
                 ThrowObjectDisposed();
 
             try
             {
-                TrackOverflowPageRemoval(pageNumber);
+#if DEBUG
+                if (isOverflowShrink == false)
+                    TrackOverflowPageRemoval(pageNumber);
+#endif
                 UntrackPage(pageNumber);
                 Debug.Assert(pageNumber >= 0);
 
@@ -1123,7 +1126,11 @@ namespace Voron.Impl
 
             if (WriteToJournalIsRequired())
             {
-                Environment.LastWorkTime = DateTime.UtcNow;
+                if (_updateLastWorkTime)
+                {
+                    Environment.LastWorkTime = DateTime.UtcNow;
+                }
+                
                 CommitStage2_WriteToJournal();
             }
             
@@ -1244,7 +1251,10 @@ namespace Voron.Impl
             }
 
             if (AsyncCommit.Result)
-                Environment.LastWorkTime = DateTime.UtcNow;
+            {
+                if (_updateLastWorkTime)
+                    Environment.LastWorkTime = DateTime.UtcNow;
+            }
 
             BeforeCommitFinalization?.Invoke(this);
             CommitStage3_DisposeTransactionResources();
@@ -1470,6 +1480,15 @@ namespace Voron.Impl
             // the event cannot be called outside this class while we need to call it in 
             // StorageEnvironment.TransactionAfterCommit
             AfterCommitWhenNewTransactionsPrevented?.Invoke(this);
+        }
+
+        /// <summary>
+        /// This prevents updating last work time even if the transaction is committed. Useful for updating internal data which is not
+        /// part of work ordered by a user.
+        /// </summary>
+        public void DisableLastWorkTimeUpdate()
+        {
+            _updateLastWorkTime = false;
         }
 
 #if DEBUG

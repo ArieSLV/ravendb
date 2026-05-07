@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <Description>Voron Recovery Tool</Description>
-    <Authors>Hibernating Rhinos</Authors>
+    <Authors>RavenDB</Authors>
     <TargetFramework>net8.0</TargetFramework>
-    <RuntimeFrameworkVersion>8.0.19</RuntimeFrameworkVersion>
+    <RuntimeFrameworkVersion>8.0.26</RuntimeFrameworkVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>Voron.Recovery</AssemblyName>
     <OutputType>Exe</OutputType>

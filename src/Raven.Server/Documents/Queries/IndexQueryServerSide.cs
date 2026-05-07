@@ -24,6 +24,7 @@ using Sparrow;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using Sparrow.Server;
+using Sparrow.Server.Json.Sync;
 using Voron;
 
 namespace Raven.Server.Documents.Queries
@@ -138,11 +139,11 @@ namespace Raven.Server.Documents.Queries
             return _asJson;
         }
 
-        public IndexQueryServerSide(string query, BlittableJsonReaderObject queryParameters = null)
+        public IndexQueryServerSide(string query, BlittableJsonReaderObject queryParameters = null, QueryType queryType = QueryType.Select)
         {
             Query = Uri.UnescapeDataString(query);
             QueryParameters = queryParameters;
-            Metadata = new QueryMetadata(Query, queryParameters, 0);
+            Metadata = new QueryMetadata(Query, queryParameters, 0, queryType: queryType);
         }
 
         public static IndexQueryServerSide Create(HttpContext httpContext,
@@ -231,12 +232,12 @@ namespace Raven.Server.Documents.Queries
             }
         }
 
-        public static async Task<IndexQueryServerSide> CreateAsync(HttpContext httpContext, long start, long pageSize, JsonOperationContext context, RequestTimeTracker tracker, bool addSpatialProperties = false, string clientQueryId = null, string overrideQuery = null)
+        public static IndexQueryServerSide Create(HttpContext httpContext, long start, long pageSize, JsonOperationContext context, RequestTimeTracker tracker, bool addSpatialProperties = false, string clientQueryId = null, string overrideQuery = null)
         {
             IndexQueryServerSide result = null;
             try
             {
-                var isQueryOverwritten = !string.IsNullOrEmpty(overrideQuery);
+                var isQueryOverwritten = string.IsNullOrEmpty(overrideQuery) == false;
                 if ((httpContext.Request.Query.TryGetValue("query", out var query) == false || query.Count == 0 || string.IsNullOrWhiteSpace(query[0])) && isQueryOverwritten == false)
                     throw new InvalidOperationException("Missing mandatory query string parameter 'query'.");
 
@@ -259,10 +260,7 @@ namespace Raven.Server.Documents.Queries
                             case "query":
                                 continue;
                             case "parameters":
-                                await using (var stream = new MemoryStream(Encoding.UTF8.GetBytes(item.Value[0])))
-                                {
-                                    result.QueryParameters = await context.ReadForMemoryAsync(stream, "query parameters");
-                                }
+                                result.QueryParameters = context.Sync.ReadForMemory(item.Value[0], "query parameters");
                                 continue;
                             case "waitForNonStaleResults":
                                 result.WaitForNonStaleResults = bool.Parse(item.Value[0]);

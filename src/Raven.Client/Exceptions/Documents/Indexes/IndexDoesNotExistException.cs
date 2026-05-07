@@ -1,10 +1,5 @@
-//-----------------------------------------------------------------------
-// <copyright file="IndexDoesNotExistException.cs" company="Hibernating Rhinos LTD">
-//     Copyright (c) Hibernating Rhinos LTD. All rights reserved.
-// </copyright>
-//-----------------------------------------------------------------------
-
-using System;
+﻿using System;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Raven.Client.Exceptions.Documents.Indexes
 {
@@ -37,11 +32,17 @@ namespace Raven.Client.Exceptions.Documents.Indexes
         {
         }
 
+#if NET7_0_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+        [DoesNotReturn]
+#endif
         public static IndexDoesNotExistException ThrowFor(string indexName)
         {
             throw new IndexDoesNotExistException($"There is no index with '{indexName}' name.");
         }
 
+#if NET7_0_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+        [DoesNotReturn]
+#endif
         public static IndexDoesNotExistException ThrowForAuto(string indexName)
         {
             throw new IndexDoesNotExistException($"There is no auto index with '{indexName}' name.");

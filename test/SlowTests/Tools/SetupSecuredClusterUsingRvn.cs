@@ -73,7 +73,7 @@ public class SetupSecuredClusterUsingRvn : ClusterTestBase
             {
                 Output.WriteLine(tuple.Exception.Message);
             }
-        }), cts.Token);
+        }, SetupMode.Secured), cts.Token);
 
 
         var settingsJsonObject = SetupManager.ExtractCertificatesAndSettingsJsonFromZip(zipBytes, "A",
@@ -274,7 +274,7 @@ public class SetupSecuredClusterUsingRvn : ClusterTestBase
             {
                 Output.WriteLine(tuple.Exception.Message);
             }
-        }), cts.Token);
+        }, SetupMode.Secured), cts.Token);
 
 
         var settingsJsonObject = SetupManager.ExtractCertificatesAndSettingsJsonFromZip(zipBytes, "A",
@@ -388,13 +388,14 @@ public class SetupSecuredClusterUsingRvn : ClusterTestBase
                 {
                     Output.WriteLine(tuple.Exception.Message);
                 }
-            })
+            }, SetupMode.LetsEncrypt)
         {
             Processed = 0,
             Total = 4
         },
             false,
             StagingAcmeClientUrl,
+            DefaultAcmeProfile,
             cts.Token);
 
         X509Certificate2 serverCert;
@@ -452,11 +453,12 @@ public class SetupSecuredClusterUsingRvn : ClusterTestBase
         });
 
         var dbName = GetDatabaseName();
+        var certForCommunication = CertificateUtils.CreateClientCertificateFromServerCertificate(serverCert, out _);
 
         using (var store = new DocumentStore
         {
             Urls = new[] { url1 },
-            Certificate = serverCert,
+            Certificate = certForCommunication,
             Conventions =
             {
                 DisposeCertificate = false
@@ -534,13 +536,14 @@ public class SetupSecuredClusterUsingRvn : ClusterTestBase
                 {
                     Output.WriteLine(tuple.Exception.Message);
                 }
-            })
+            }, SetupMode.LetsEncrypt)
         {
             Processed = 0,
             Total = 4
         },
             false,
             StagingAcmeClientUrl,
+            DefaultAcmeProfile,
             cts.Token);
 
         X509Certificate2 serverCert;
@@ -636,11 +639,12 @@ public class SetupSecuredClusterUsingRvn : ClusterTestBase
         });
 
         var dbName = GetDatabaseName();
+        var certForCommunication = CertificateUtils.CreateClientCertificateFromServerCertificate(serverCert, out _);
 
         using (var store = new DocumentStore
         {
             Urls = new[] { url1 },
-            Certificate = serverCert,
+            Certificate = certForCommunication,
             Conventions =
             {
                 DisposeCertificate = false
@@ -719,4 +723,5 @@ public class SetupSecuredClusterUsingRvn : ClusterTestBase
     }
 
     private const string StagingAcmeClientUrl = "https://acme-staging-v02.api.letsencrypt.org/directory";
+    private const string DefaultAcmeProfile = "";
 }

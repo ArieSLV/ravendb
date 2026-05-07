@@ -31,53 +31,77 @@ CALLSTACK:$(Get-PSCallStack | Out-String)
     }
 }
 
-function GetUbuntuImageTags($repo, $version, $arch) {
+function GetUbuntuImageTags($repo, $version, $arch, [bool]$useVersionTagsOnly = $false) {
     switch ($arch) {
         "x64" { 
-            return @(
-                "$($repo):ubuntu-latest-lts",
-                "$($repo):6.2-ubuntu-latest",
+            $versionTags = @(
                 "$($repo):$($version)-ubuntu.22.04-x64"
+            )
+            if ($useVersionTagsOnly) {
+                return $versionTags
+            }
+            return $versionTags + @(
+                #"$($repo):ubuntu-latest-lts",
+                "$($repo):6.2-ubuntu-latest"
             )
             break;
         }
         "arm32v7" {
-            return @(
-                "$($repo):ubuntu-arm32v7-latest-lts",
-                "$($repo):6.2-ubuntu-arm32v7-latest",
+            $versionTags = @(
                 "$($repo):$($version)-ubuntu.22.04-arm32v7"
+            )
+            if ($useVersionTagsOnly) {
+                return $versionTags
+            }
+            return $versionTags + @(
+                #"$($repo):ubuntu-arm32v7-latest-lts",
+                "$($repo):6.2-ubuntu-arm32v7-latest"
             )
             break;
         }
         "arm64v8" {
-            return @(
-                "$($repo):ubuntu-arm64v8-latest-lts",
-                "$($repo):6.2-ubuntu-arm64v8-latest",
+            $versionTags = @(
                 "$($repo):$($version)-ubuntu.22.04-arm64v8"
                 )
+            if ($useVersionTagsOnly) {
+                return $versionTags
+            }
+            return $versionTags + @(
+                #"$($repo):ubuntu-arm64v8-latest-lts",
+                "$($repo):6.2-ubuntu-arm64v8-latest"
+            )
                 break;
         }
         Default {
             throw "Arch not supported."
         }
     }
-        
 }
 
-function GetWindowsImageTags($repo, $version, $WinVer) {
+function GetWindowsImageTags($repo, $version, $WinVer, [bool]$useVersionTagsOnly = $false) {
     switch ($winver) {
         "1809" {
-            return @(
-                "$($repo):$($version)-windows-1809",
-                "$($repo):windows-1809-latest-lts",
+            $versionTags = @(
+                "$($repo):$($version)-windows-1809"
+            )
+            if ($useVersionTagsOnly) {
+                return $versionTags
+            }
+            return $versionTags + @(
+                #"$($repo):windows-1809-latest-lts",
                 "$($repo):6.2-windows-1809-latest"
             )
             break;
         }
         "ltsc2022" {
-             return @(
-                "$($repo):$($version)-windows-ltsc2022",
-                "$($repo):windows-ltsc2022-latest-lts",
+            $versionTags = @(
+                "$($repo):$($version)-windows-ltsc2022"
+            )
+            if ($useVersionTagsOnly) {
+                return $versionTags
+            }
+            return $versionTags + @(
+                #"$($repo):windows-ltsc2022-latest-lts",
                 "$($repo):6.2-windows-ltsc2022-latest"
             )
             break;
@@ -86,7 +110,6 @@ function GetWindowsImageTags($repo, $version, $WinVer) {
             throw "Windows Version not supported. There are 'ltsc2022' and '1809' avaliable."
         }        
     }
-
 }
 
 function GetManifestTags {
@@ -95,7 +118,7 @@ function GetManifestTags {
     )
 
     return @(
-        "${repo}:latest-lts",
+        #"${repo}:latest-lts",
         "${repo}:6.2-latest"
     )
 }
@@ -109,7 +132,6 @@ function GetImageTagsForManifest {
         "${repo}:6.2-ubuntu-latest",
         "${repo}:6.2-ubuntu-arm32v7-latest",
         "${repo}:6.2-ubuntu-arm64v8-latest",
-        "${repo}:6.2-windows-1809-latest",
         "${repo}:6.2-windows-ltsc2022-latest"
     )
 }

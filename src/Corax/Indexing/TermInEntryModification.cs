@@ -5,17 +5,25 @@ namespace Corax.Indexing;
 
 internal struct TermInEntryModification : IEquatable<TermInEntryModification>, IComparable<TermInEntryModification>
 {
-    public long EntryId;
+    // Document entry ID (index-layer identifier, not storage-layer ContainerEntryId)
+    public DocumentEntryId EntryId;
     public int TermsPerEntryIndex; 
     public short Frequency;
+    
+    /// <summary>
+    /// Determines if a term for an entryId had a numeric value during entry building.
+    /// This prevents only textual terms from being incorrectly marked as numeric in the IndexEntry.
+    /// </summary>
+    public InserterMode InserterMode;
 
     public override string ToString() => EntryId + ", " + Frequency;
 
-    public TermInEntryModification(long entryId, int termPerEntryIndex, short frequency)
+    public TermInEntryModification(DocumentEntryId entryId, int termPerEntryIndex, short frequency, InserterMode inserterMode)
     {
         EntryId = entryId;
         TermsPerEntryIndex = termPerEntryIndex;
         Frequency = frequency;
+        InserterMode = inserterMode;
     }
 
     public bool Equals(TermInEntryModification other)

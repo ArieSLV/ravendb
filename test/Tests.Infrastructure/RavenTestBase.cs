@@ -23,12 +23,12 @@ using Raven.Client.Exceptions.Database;
 using Raven.Client.ServerWide;
 using Raven.Client.ServerWide.Operations;
 using Raven.Client.ServerWide.Sharding;
-using Raven.Client.Util;
 using Raven.Server;
 using Raven.Server.Config;
 using Raven.Server.Documents;
 using Raven.Server.Documents.Handlers;
 using Raven.Server.Exceptions;
+using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.Utils;
 using Sparrow.Collections;
@@ -60,6 +60,7 @@ namespace FastTests
             Replication = new ReplicationTestBase2(this);
             Databases = new DatabasesTestBase(this);
             Etl = new EtlTestBase(this);
+            LicenseHelper = new LicenseTestBase(this);
         }
 
         public async ValueTask<DatabaseRecord> GetDatabaseRecordAsync(IDocumentStore store, string database = null)
@@ -156,6 +157,18 @@ namespace FastTests
 
         protected internal virtual DocumentStore GetDocumentStore(Options options = null, [CallerMemberName] string caller = null)
         {
+            if (options?.ClientCertificate != null && SecretProtection.HasCertificateClientAuthEnhancedKeyUsage(options.ClientCertificate) == false)
+            {
+                throw new InvalidOperationException($"The {nameof(options.ClientCertificate)} must have the Client Authentication Enhanced Key Usage." +
+                                                    " Are you supplying 'Server Certificate' instead of 'Server Certificate for Communication'?");
+            }
+            
+            if (options?.AdminCertificate != null && SecretProtection.HasCertificateClientAuthEnhancedKeyUsage(options.AdminCertificate) == false)
+            {
+                throw new InvalidOperationException($"The {nameof(options.AdminCertificate)} must have the Client Authentication Enhanced Key Usage." +
+                                                    " Are you supplying 'Server Certificate' instead of 'Server Certificate for Communication'?");
+            }
+            
             DocumentStore adminStore = null;
             try
             {
@@ -313,7 +326,7 @@ namespace FastTests
 
                     store.BeforeDispose += (sender, args) =>
                     {
-                        CheckForMissingAttachmentsAndThrowIfNeeded(store, Context, name, serverToUse, caller);
+                        CheckForMissingAttachmentsAndThrowIfNeeded(store, Context, name, serverToUse, caller, sharded);
 
                         var realException = Context.GetException();
                         try
@@ -396,8 +409,11 @@ namespace FastTests
             "Can_push_via_filtered_replication" //TODO: remove when RavenDB-24415 is fixed
         ];
 
-        private static void CheckForMissingAttachmentsAndThrowIfNeeded(DocumentStore store, Context context, string name, RavenServer serverToUse, string caller)
+        private static void CheckForMissingAttachmentsAndThrowIfNeeded(DocumentStore store, Context context, string name, RavenServer serverToUse, string caller, bool sharded)
         {
+            if (sharded)
+                return;
+
             if (IsRavenTestCategoryTest(context, RavenTestCategory.Attachments | RavenTestCategory.Replication) == false)
                 return;
 
@@ -566,7 +582,13 @@ namespace FastTests
 
         protected static async Task<T> WaitForGreaterThanAsync<T>(Func<Task<T>> act, T val, int timeout = 15000, int interval = 100) where T : IComparable =>
             await WaitForPredicateAsync(a => a.CompareTo(val) > 0, act, timeout, interval);
+        
+        protected static async Task<T> WaitForLessThanAsync<T>(Func<Task<T>> act, T val, int timeout = 15000, int interval = 100) where T : IComparable =>
+            await WaitForPredicateAsync(a => a.CompareTo(val) < 0, act, timeout, interval);
 
+        protected static async Task<T> WaitForNotEqualsAsync<T>(Func<Task<T>> act, T val, int timeout = 15000, int interval = 100) where T : IComparable =>
+            await WaitForPredicateAsync(a => a.CompareTo(val) != 0, act, timeout, interval);
+        
         protected static async Task AssertWaitForTrueAsync(Func<Task<bool>> act, int timeout = 15000, int interval = 100)
         {
             Assert.True(await WaitForValueAsync(act, true, timeout, interval));
@@ -587,7 +609,7 @@ namespace FastTests
         {
             await WaitAndAssertForValueAsync(async () =>
                 await act().ContinueWith(t =>
-                    t.Exception?.InnerException?.GetType()), typeof(T), timeout, interval);
+                    t.Exception?.Flatten().InnerException?.GetType()), typeof(T), timeout, interval);
         }
 
         protected static async Task<T> AssertWaitForNotNullAsync<T>(Func<Task<T>> act, int timeout = 15000, int interval = 100) where T : class
@@ -671,6 +693,20 @@ namespace FastTests
         {
             var actualValue = await WaitForGreaterThanAsync(act, expectedVal, timeout, interval);
             Assert.True(actualValue.CompareTo(expectedVal) > 0, $"expectedVal:{expectedVal}, actualValue: {actualValue}");
+            return actualValue;
+        }
+
+        protected static async Task<T> WaitAndAssertForLessThanAsync<T>(Func<Task<T>> act, T expectedVal, int timeout = 15000, int interval = 100) where T : IComparable
+        {
+            var actualValue = await WaitForLessThanAsync(act, expectedVal, timeout, interval);
+            Assert.True(actualValue.CompareTo(expectedVal) < 0, $"expectedVal:{expectedVal}, actualValue: {actualValue}");
+            return actualValue;
+        }
+        
+        protected static async Task<T> WaitAndAssertForNotEqualsAsync<T>(Func<Task<T>> act, T expectedVal, int timeout = 15000, int interval = 100) where T : IComparable
+        {
+            var actualValue = await WaitForNotEqualsAsync(act, expectedVal, timeout, interval);
+            Assert.True(actualValue.CompareTo(expectedVal) != 0, $"expectedVal:{expectedVal}, actualValue: {actualValue}");
             return actualValue;
         }
 

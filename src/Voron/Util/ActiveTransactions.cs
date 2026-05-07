@@ -72,7 +72,8 @@ namespace Voron.Util
         {
             Id = transaction.Id,
             Flags = transaction.Flags,
-            AsyncCommit = transaction.AsyncCommit != null
+            AsyncCommit = transaction.AsyncCommit != null,
+            CallerName = transaction.CallerName
         }).ToList();
 
         internal List<LowLevelTransaction> AllTransactionsInstances => _activeTxs.ToList();
@@ -244,7 +245,7 @@ namespace Voron.Util
             for (int i = 0; i < copy.Length; i++)
             {
                 var item = copy[i].Value;
-                if (item != null || item == InvalidLowLevelTransaction)
+                if (item != null && item != InvalidLowLevelTransaction)
                 {
                     if (val > item.Id)
                         val = item.Id;

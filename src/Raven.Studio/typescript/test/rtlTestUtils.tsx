@@ -22,8 +22,9 @@ import { Provider as ReduxProvider } from "react-redux";
 import { setEffectiveTestStore } from "components/storeCompat";
 import { DirtyFlagProvider } from "components/hooks/useDirtyFlag";
 import { ConfirmDialogProvider } from "components/common/ConfirmDialog";
-import userEvent from "@testing-library/user-event";
+import { userEvent } from "storybook/internal/test";
 import { DialogProvider } from "components/common/Dialog";
+import { SplitViewProvider } from "components/common/splitView/SplitView";
 
 let needsTestMock = true;
 
@@ -77,9 +78,14 @@ async function fillInput(element: HTMLElement, value: string) {
     });
 }
 
-const AllProviders = () => AllProvidersInner;
+const AllProviders = () => MockProviders;
 
-function AllProvidersInner({ children }: any) {
+interface MockProvidersProps {
+    children: React.ReactNode;
+    isSplitViewDisabled?: boolean;
+}
+
+export function MockProviders({ children, isSplitViewDisabled }: MockProvidersProps) {
     const [store] = useState(() => createStoreConfiguration());
 
     setEffectiveTestStore(store);
@@ -90,7 +96,13 @@ function AllProvidersInner({ children }: any) {
                 <ConfirmDialogProvider>
                     <DialogProvider>
                         <ServiceProvider services={mockServices.context}>
-                            <ChangesProvider changes={mockHooks.useChanges.mock}>{children}</ChangesProvider>
+                            <ChangesProvider changes={mockHooks.useChanges.mock}>
+                                {isSplitViewDisabled ? (
+                                    <>{children}</>
+                                ) : (
+                                    <SplitViewProvider>{children}</SplitViewProvider>
+                                )}
+                            </ChangesProvider>
                         </ServiceProvider>
                     </DialogProvider>
                 </ConfirmDialogProvider>
@@ -103,6 +115,15 @@ export function rtlRender(
     ui: React.ReactElement,
     options?: { disableWrappers?: boolean; initialUrl?: string } & Omit<RenderOptions, "queries">
 ) {
+    // If ui is a story then it already contains all providers
+    if (typeof ui.type === "function" && ui.type.name === "storyFn") {
+        if (options) {
+            options.disableWrappers = true;
+        } else {
+            options = { disableWrappers: true };
+        }
+    }
+
     return genericRtlRender(AllProviders, ui, options);
 }
 

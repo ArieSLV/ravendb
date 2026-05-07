@@ -21,6 +21,8 @@ namespace Corax.Querying.Matches.SortingMatches;
 public unsafe partial struct SortingMultiMatch<TInner> : IQueryMatch
     where TInner : IQueryMatch
 {
+    public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
+    
     private interface IEntryComparer : IComparer<int>, IComparer<UnmanagedSpan>
     {
         Slice GetSortFieldName(ref SortingMultiMatch<TInner> match);
@@ -227,7 +229,7 @@ public unsafe partial struct SortingMultiMatch<TInner> : IQueryMatch
             }
 
             _lookup.GetFor(batchResults, batchTermIds, long.MinValue);
-            Container.GetAll(llt, batchTermIds, batchTerms, long.MinValue, pageLocator);
+            Container.GetAll(llt, batchTermIds, new Span<UnmanagedSpan>(batchTerms, batchTermIds.Length), long.MinValue, pageLocator);
             match._token.ThrowIfCancellationRequested();
             bool isDescending = orderMetadata[0].Ascending == false;
 
@@ -558,7 +560,7 @@ public unsafe partial struct SortingMultiMatch<TInner> : IQueryMatch
             }
 
             _lookup.GetFor(batchResults, batchTermIds, long.MinValue);
-            Container.GetAll(llt, batchTermIds, batchTerms, long.MinValue, pageLocator);
+            Container.GetAll(llt, batchTermIds, new Span<UnmanagedSpan>(batchTerms, batchTermIds.Length), long.MinValue, pageLocator);
             var documents = MemoryMarshal.Cast<long, int>(batchTermIds)[..(batchTermIds.Length)];
             for (int i = 0; i < batchTermIds.Length; i++)
                 documents[i] = i;

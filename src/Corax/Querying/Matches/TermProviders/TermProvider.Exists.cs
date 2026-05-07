@@ -195,7 +195,7 @@ namespace Corax.Querying.Matches.TermProviders
                 if ((termCount[i] & (long)TermIdMask.EnsureIsSingleMask) != 0)
                 {
                     Debug.Assert((termCount[i] & (long)TermIdMask.PostingList) != 0 || (termCount[i] & (long)TermIdMask.SmallPostingList) != 0);
-                    containersIds[i] = EntryIdEncodings.GetContainerId(termCount[i]);
+                    containersIds[i] = (long)EntryIdEncodings.GetContainerId(termCount[i]);
                     continue;
                 }
                 
@@ -203,7 +203,7 @@ namespace Corax.Querying.Matches.TermProviders
             }
             
             
-            Voron.Data.Containers.Container.GetAll(_searcher._transaction.LowLevelTransaction, containersIds, containersPtr, -1, _searcher.Transaction.LowLevelTransaction.PageLocator);
+            Voron.Data.Containers.Container.GetAll(_searcher._transaction.LowLevelTransaction, containersIds, new Span<UnmanagedSpan>(containersPtr, NumberOfTerms), -1, _searcher.Transaction.LowLevelTransaction.PageLocator);
             
             for (int i = _nullExists ? 1 : 0; i < NumberOfTerms; ++i)
             {

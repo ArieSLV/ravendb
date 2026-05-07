@@ -68,6 +68,8 @@ public sealed class SpatialMatch<TBoosting> : IQueryMatch
         _fieldRootPage = _indexSearcher.FieldCache.GetLookupRootPage(field.FieldName);
     }
 
+    public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.Possible;
+    
     private bool GoNextMatch()
     {
         if (_termGenerator.MoveNext())
@@ -84,7 +86,7 @@ public sealed class SpatialMatch<TBoosting> : IQueryMatch
         return false;
     }
 
-    public long Count => long.MaxValue;
+    public long Count => _indexSearcher.NumberOfEntries;
 
     public SkipSortingResult AttemptToSkipSorting() => SkipSortingResult.WillSkipSorting;
     public QueryCountConfidence Confidence => QueryCountConfidence.Low;

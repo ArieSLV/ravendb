@@ -19,14 +19,14 @@ public partial class IndexWriter
     public sealed class IndexEntryBuilder :  IIndexEntryBuilder, IDisposable
     {
         private readonly IndexWriter _parent;
-        private long _entryId;
+        private DocumentEntryId _entryId;
         private int _termPerEntryIndex;
         public bool Active;
         private int _buildingList;
         private Slice _documentId;
         private bool _mapFinishedSuccessfully = false;
 
-        public long EntryId => _entryId;
+        public DocumentEntryId EntryId => _entryId;
 
         public IndexEntryBuilder(IndexWriter parent)
         {
@@ -38,7 +38,7 @@ public partial class IndexWriter
             _parent.BoostEntry(_entryId, boost);
         }
 
-        public void Init(long entryId, int termsPerEntryIndex, Slice documentId)
+        public void Init(DocumentEntryId entryId, int termsPerEntryIndex, Slice documentId)
         {
             Active = true;
             _mapFinishedSuccessfully = false;
@@ -86,7 +86,7 @@ public partial class IndexWriter
             }
 
             if (field.ShouldIndex)
-                ExactInsert(field, Constants.NullValueSlice);
+                ExactInsert(field, Constants.NullValueSlice, InserterMode.ExactInsert);
         }
 
         public void WriteNonExistingMarker(int fieldId, string path)
@@ -94,7 +94,7 @@ public partial class IndexWriter
             var field = GetField(fieldId, path);
 
             if (field.ShouldIndex)
-                ExactInsert(field, Constants.NonExistingValueSlice);
+                ExactInsert(field, Constants.NonExistingValueSlice, InserterMode.ExactInsert);
         }
 
         private IndexedField GetField(int fieldId, string path)
@@ -110,7 +110,7 @@ public partial class IndexWriter
             if (field.Analyzer != null)
                 AnalyzeInsert(field, value);
             else
-                ExactInsert(field, value);
+                ExactInsert(field, value, InserterMode.ExactInsert);
         }
 
         public ReadOnlySpan<byte> AnalyzeSingleTerm(int fieldId, ReadOnlySpan<byte> value)
@@ -140,26 +140,30 @@ public partial class IndexWriter
             {
                 ref var token = ref tokens[i];
 
-                if (token.Offset + token.Length > _parent._encodingBufferHandler.Length)
+                if (token.Offset + token.Length > _parent._analyzersContext.EncodingBufferHandler.Length)
                     _parent.ThrowInvalidTokenFoundOnBuffer(field, value, wordsBuffer, tokens, token);
 
-                var word = new Span<byte>(_parent._encodingBufferHandler, token.Offset, (int)token.Length);
-                ExactInsert(field, word);
+                var word = new Span<byte>(_parent._analyzersContext.EncodingBufferHandler, token.Offset, (int)token.Length);
+                ExactInsert(field, word, InserterMode.ExactInsert);
             }
+            
+            //Analyze pipeline removed all content from our input. It means the value actually does not exist.
+            if (tokens.Length == 0)
+                ExactInsert(field, Constants.NonExistingValueSlice, InserterMode.ExactInsert);
         }
 
         private void AnalyzeTerm(IndexedField field, ReadOnlySpan<byte> value, Analyzer analyzer, out Span<byte> wordsBuffer, out Span<Token> tokens)
         {
-            if (value.Length > _parent._encodingBufferHandler.Length)
+            if (value.Length > _parent._analyzersContext.EncodingBufferHandler.Length)
             {
                 analyzer.GetOutputBuffersSize(value.Length, out var outputSize, out var tokenSize);
-                if (outputSize > _parent._encodingBufferHandler.Length || tokenSize > _parent._tokensBufferHandler.Length)
-                    _parent.UnlikelyGrowAnalyzerBuffer(outputSize, tokenSize);
+                if (outputSize > _parent._analyzersContext.EncodingBufferHandler.Length || tokenSize > _parent._analyzersContext.TokensBufferHandler.Length)
+                    _parent._analyzersContext.UnlikelyGrowAnalyzerBuffer(outputSize, tokenSize);
             }
 
-            wordsBuffer = _parent._encodingBufferHandler;
-            tokens = _parent._tokensBufferHandler;
-            analyzer.Execute(value, ref wordsBuffer, ref tokens, ref _parent._utf8ConverterBufferHandler);
+            wordsBuffer = _parent._analyzersContext.EncodingBufferHandler;
+            tokens = _parent._analyzersContext.TokensBufferHandler;
+            analyzer.Execute(value, ref wordsBuffer, ref tokens, ref _parent._analyzersContext.Utf8ConverterBufferHandler);
 
             if (tokens.Length > 1)
             {
@@ -167,19 +171,22 @@ public partial class IndexWriter
             }
         }
 
-        ref EntriesModifications ExactInsert(IndexedField field, ReadOnlySpan<byte> value)
+        ref EntriesModifications ExactInsert(IndexedField field, ReadOnlySpan<byte> value, InserterMode inserterMode, bool forceExactInsert = false)
         {
-            Debug.Assert(field.FieldIndexingMode != FieldIndexingMode.No, "field.FieldIndexingMode != FieldIndexingMode.No");
-            
+            Debug.Assert(forceExactInsert || field.FieldIndexingMode != FieldIndexingMode.No, "field.FieldIndexingMode != FieldIndexingMode.No");
+
             ByteStringContext<ByteStringMemoryCache>.InternalScope? scope = CreateNormalizedTerm(_parent._entriesAllocator, value, out var slice);
 
-            // We are gonna try to get the reference if it exists, but we wont try to do the addition here, because to store in the
-            // dictionary we need to close the slice as we are disposing it afterwards. 
+            // RavenDB-25907: Sentinel value pattern for atomic Dictionary+Storage update.
+            // If any allocation throws, termLocation remains InvalidStorageIndex, allowing retry on next access.
             ref var termLocation = ref CollectionsMarshal.GetValueRefOrAddDefault(field.Textual, slice, out var exists);
-            if (exists == false)
+            if (exists == false || termLocation == Constants.IndexWriter.InvalidStorageIndex)
             {
-                termLocation = field.Storage.Count;
+                termLocation = Constants.IndexWriter.InvalidStorageIndex; // Mark as in-progress FIRST
+                var newIndex = field.Storage.Count;
                 field.Storage.AddByRef(new EntriesModifications(value.Length));
+                termLocation = newIndex; // Commit only after ALL allocations succeed
+
                 scope = null; // We don't want the fieldname (slice) to be returned.
             }
 
@@ -189,7 +196,7 @@ public partial class IndexWriter
             }
 
             ref var term = ref field.Storage.GetAsRef(termLocation);
-            term.Addition(_parent._entriesAllocator, _entryId, _termPerEntryIndex, freq: 1);
+            term.Addition(_parent._entriesAllocator, _entryId, _termPerEntryIndex, freq: 1, inserterMode);
 
             // Creates a mapping for PhraseQuery
             if (field.FieldSupportsPhraseQuery)
@@ -237,33 +244,37 @@ public partial class IndexWriter
 
         void NumericInsert(IndexedField field, long lVal, double dVal)
         {
-            // We make sure we get a reference because we want the struct to be modified directly from the dictionary.
+            // RavenDB-25907: Sentinel value pattern for atomic Dictionary+Storage update.
             ref var doublesTermsLocation = ref CollectionsMarshal.GetValueRefOrAddDefault(field.Doubles, dVal, out bool fieldDoublesExist);
-            if (fieldDoublesExist == false)
+            if (fieldDoublesExist == false || doublesTermsLocation == Constants.IndexWriter.InvalidStorageIndex)
             {
-                doublesTermsLocation = field.Storage.Count;
+                doublesTermsLocation = Constants.IndexWriter.InvalidStorageIndex;
+                var newIndex = field.Storage.Count;
                 field.Storage.AddByRef(new EntriesModifications(sizeof(double)));
+                doublesTermsLocation = newIndex;
             }
 
-            // We make sure we get a reference because we want the struct to be modified directly from the dictionary.
+            // RavenDB-25907: Sentinel value pattern for atomic Dictionary+Storage update.
             ref var longsTermsLocation = ref CollectionsMarshal.GetValueRefOrAddDefault(field.Longs, lVal, out bool fieldLongExist);
-            if (fieldLongExist == false)
+            if (fieldLongExist == false || longsTermsLocation == Constants.IndexWriter.InvalidStorageIndex)
             {
-                longsTermsLocation = field.Storage.Count;
+                longsTermsLocation = Constants.IndexWriter.InvalidStorageIndex;
+                var newIndex = field.Storage.Count;
                 field.Storage.AddByRef(new EntriesModifications(sizeof(long)));
+                longsTermsLocation = newIndex;
             }
 
             ref var doublesTerm = ref field.Storage.GetAsRef(doublesTermsLocation);
-            doublesTerm.Addition(_parent._entriesAllocator, _entryId, _termPerEntryIndex, freq: 1);
+            doublesTerm.Addition(_parent._entriesAllocator, _entryId, _termPerEntryIndex, freq: 1, InserterMode.Numerical);
 
             ref var longsTerm = ref field.Storage.GetAsRef(longsTermsLocation);
-            longsTerm.Addition(_parent._entriesAllocator, _entryId, _termPerEntryIndex, freq: 1);
+            longsTerm.Addition(_parent._entriesAllocator, _entryId, _termPerEntryIndex, freq: 1, InserterMode.Numerical);
         }
 
         private void RecordSpatialPointForEntry(IndexedField field, (double Lat, double Lng) coords)
         {
             field.Spatial ??= new();
-            ref var terms = ref CollectionsMarshal.GetValueRefOrAddDefault(field.Spatial, _entryId, out var exists);
+            ref var terms = ref CollectionsMarshal.GetValueRefOrAddDefault(field.Spatial, (long)_entryId, out var exists);
             if (exists == false)
             {
                 terms = new IndexedField.SpatialEntry {Locations = new List<(double, double)>(), TermsPerEntryIndex = _termPerEntryIndex};
@@ -277,6 +288,12 @@ public partial class IndexWriter
         }
 
         public void Write(int fieldId, ReadOnlySpan<byte> value) => Write(fieldId, null, value);
+        
+        public void WriteCompound(int fieldId, ReadOnlySpan<byte> value)
+        {
+            var field = GetField(fieldId, null);
+            ExactInsert(field, value, InserterMode.ExactInsert, forceExactInsert: true);
+        }
 
         public void Write(int fieldId, string path, ReadOnlySpan<byte> value)
         {
@@ -299,7 +316,7 @@ public partial class IndexWriter
                 }
 
                 if (field.ShouldIndex)
-                    ExactInsert(field, Constants.EmptyStringSlice);
+                    ExactInsert(field, Constants.EmptyStringSlice, InserterMode.ExactInsert);
             }
         }
 
@@ -329,7 +346,7 @@ public partial class IndexWriter
 
             if (field.ShouldIndex)
             {
-                ref var term = ref ExactInsert(field, value);
+                ref var term = ref ExactInsert(field, value, InserterMode.Numerical);
                 term.Long = longValue;
                 term.Double = dblValue;
                 NumericInsert(field, longValue, dblValue);
@@ -350,7 +367,7 @@ public partial class IndexWriter
             var len = Encoding.UTF8.GetBytes(entry.Geohash, buffer.ToSpan());
             for (int i = 1; i <= len; ++i)
             {
-                ExactInsert(field, buffer.ToReadOnlySpan()[..i]);
+                ExactInsert(field, buffer.ToReadOnlySpan()[..i], InserterMode.ExactInsert);
             }
         }
 
@@ -416,7 +433,7 @@ public partial class IndexWriter
             ref var entryTerms = ref _parent.GetEntryTerms(_termPerEntryIndex);
 
             _parent.InitializeFieldRootPage(field);
-            var recordedTerm = RecordedTerm.CreateForStored(entryTerms, type, field.FieldRootPage);
+            var recordedTerm = RecordedTerm.CreateForStored(entryTerms, type, new ContainerEntryId(field.FieldRootPage));
             
             if (entryTerms.TryAdd(recordedTerm) == false)
             {

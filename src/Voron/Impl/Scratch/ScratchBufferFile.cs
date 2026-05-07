@@ -1,10 +1,4 @@
-// -----------------------------------------------------------------------
-//  <copyright file="ScratchBufferFile.cs" company="Hibernating Rhinos LTD">
-//      Copyright (c) Hibernating Rhinos LTD. All rights reserved.
-//  </copyright>
-// -----------------------------------------------------------------------
-
-using Sparrow;
+﻿using Sparrow;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -173,7 +167,7 @@ namespace Voron.Impl.Scratch
             }
 
             LinkedList<PendingPage> list;
-            if (!_freePagesBySize.TryGetValue(size, out list) || list.Count <= 0)
+            if (_freePagesBySize.TryGetValue(size, out list) == false || list.Count <= 0)
                 return false;
 
             var val = list.Last.Value;

@@ -1,10 +1,4 @@
-﻿// -----------------------------------------------------------------------
-//  <copyright file="AdminDatabasesHandler.cs" company="Hibernating Rhinos LTD">
-//      Copyright (c) Hibernating Rhinos LTD. All rights reserved.
-//  </copyright>
-// -----------------------------------------------------------------------
-
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -668,7 +662,7 @@ namespace Raven.Server.Web.System
                                     {
                                         clientCertificate ??= GetCurrentCertificate();
 
-                                        Logger.Operations($"Attempt to delete '{databaseName}' database was prevented due to lock mode set to '{rawRecord.LockMode}'. IP: '{HttpContext.Connection.RemoteIpAddress}'. Certificate: {clientCertificate?.Subject} ({clientCertificate?.Thumbprint})");
+                                        Logger.Operations($"Attempt to delete '{databaseName}' database was prevented due to lock mode set to '{rawRecord.LockMode}'. IP: '{HttpContext.Connection.RemoteIpAddress}'. Certificate: {clientCertificate?.GetDisplayName()} ({clientCertificate?.Thumbprint})");
                                     }
 
                                     continue;
@@ -1209,6 +1203,12 @@ namespace Raven.Server.Web.System
                                                 indexCompactionResult.AddInfo(
                                                     $"Skipping data compaction of '{indexName}' index because data compaction of Corax indexes isn't supported.");
                                             }
+                                            catch (Exception e)
+                                            {
+                                                indexCompactionResult.Skipped = true;
+                                                indexCompactionResult.AddInfo(
+                                                    $"Skipping data compaction of '{indexName}' index because of encountered error: {e.Message}. Stacktrace: {e.StackTrace}");
+                                            }
                                             
                                             indexCompactionResult.Processed = true;
                                         }
@@ -1331,7 +1331,7 @@ namespace Raven.Server.Web.System
                 nodesUrls = ServerStore.GetClusterTopology(context).AllNodes.Values.ToArray();
             }
 
-            using (var requestExecutor = RequestExecutor.CreateForServer(nodesUrls, database, Server.Certificate.Certificate, DocumentConventions.Default))
+            using (var requestExecutor = RequestExecutor.CreateForServer(nodesUrls, database, Server.Certificate.ClientCertificate, DocumentConventions.Default))
             using (requestExecutor.ContextPool.AllocateOperationContext(out var context))
             {
                 var cmd = new ValidateUnusedIdsCommand(

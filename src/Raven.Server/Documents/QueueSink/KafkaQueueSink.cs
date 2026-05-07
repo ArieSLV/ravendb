@@ -1,9 +1,9 @@
 using System.Collections.Generic;
 using System.IO;
+using System.Security.Cryptography;
 using Confluent.Kafka;
-using Org.BouncyCastle.Utilities.IO.Pem;
 using Raven.Client.Documents.Operations.QueueSink;
-using PemWriter = Org.BouncyCastle.OpenSsl.PemWriter;
+using Raven.Server.Utils;
 
 namespace Raven.Server.Documents.QueueSink;
 
@@ -25,14 +25,14 @@ public sealed class KafkaQueueSink : QueueSinkProcess
             // we are using Earliest option because we want to be able to see messages which are present before consumer is connected
             AutoOffsetReset = AutoOffsetReset.Earliest
         };
-        
+
         var settings = Configuration.Connection.KafkaConnectionSettings;
         var certificateHolder = Database.ServerStore.Server.Certificate;
-        
-        if (settings.UseRavenCertificate && certificateHolder?.Certificate != null)
+
+        if (settings.UseRavenCertificate && certificateHolder?.ClientCertificate != null)
         {
-            consumerConfig.SslCertificatePem = ExportAsPem(new PemObject("CERTIFICATE", certificateHolder.Certificate.RawData));
-            consumerConfig.SslKeyPem = ExportAsPem(certificateHolder.PrivateKey.Key);
+            consumerConfig.SslCertificatePem = certificateHolder.ClientCertificate.ExportCertificatePem();
+            consumerConfig.SslKeyPem = (certificateHolder.PrivateKey as RSA).GetExportableRsaPrivateKey().ExportRSAPrivateKeyPem();
             consumerConfig.SecurityProtocol = SecurityProtocol.Ssl;
         }
 
@@ -62,17 +62,5 @@ public sealed class KafkaQueueSink : QueueSinkProcess
         consumer.Subscribe(Script.Queues);
 
         return new KafkaSinkConsumer(consumer);
-    }
-    
-    private static string ExportAsPem(object @object)
-    {
-        using (var sw = new StringWriter())
-        {
-            var pemWriter = new PemWriter(sw);
-            
-            pemWriter.WriteObject(@object);
-
-            return sw.ToString();
-        }
     }
 }

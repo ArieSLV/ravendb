@@ -535,7 +535,7 @@ $form-text-color: $text-muted-var !default;
 // scss-docs-end form-text-variables
 
 // scss-docs-start form-label-variables
-$form-label-margin-bottom: 0.5rem !default;
+$form-label-margin-bottom: $gutter-xxs !default;
 $form-label-font-size: null !default;
 $form-label-font-style: null !default;
 $form-label-font-weight: null !default;
@@ -558,9 +558,9 @@ $input-padding-y-lg: $input-btn-padding-y-lg !default;
 $input-padding-x-lg: $input-btn-padding-x-lg !default;
 $input-font-size-lg: $input-btn-font-size-lg !default;
 
-$input-bg: $well-bg-var !default;
+$input-bg: $input-bg-var !default;
 $input-disabled-color: null !default;
-$input-disabled-bg: transparent !default;
+$input-disabled-bg: $input-bg !default;
 $input-disabled-border-color: $border-color-disabled !default;
 
 $input-color: $text-color-var !default;
@@ -815,21 +815,22 @@ $zindexes: (
     "dropdown": 1000,
     "sticky": 1020,
     "scoped-modal": 1030,
-    "notification-center": 1035,
     "selection-actions": 1035,
     "menu-resize": 1035,
     "fixed": 1037,
     "offcanvas-backdrop": 1040,
     "topalert": 1083,
-    "modal-backdrop": 1050,
-    "offcanvas": 1055,
-    "popover": 1086,
-    "tooltip": 1086,
-    "modal": 1085,
     "toast": 1090,
     "menu-xs": 1090,
+    "notification-center-pinned": 1100,
+    "notification-center": 1102,
+    "modal-backdrop": 1103,
+    "modal": 1104,
+    "offcanvas": 1111,
     "loading-overlay": 2490,
     "processing-spinner": 2500,
+    "popover": 9999,
+    "tooltip": 9999,
     "ace-fullScreen": 9999,
     "disconnected": 99999,
     "toastr": 999999,
@@ -840,12 +841,14 @@ $zindex-sticky: map.get($zindexes, "sticky") !default;
 $zindex-fixed: map.get($zindexes, "fixed") !default;
 $zindex-selection-actions: map.get($zindexes, "selection-actions") !default;
 $zindex-offcanvas-backdrop: map.get($zindexes, "backdrop") !default;
-$zindex-modal-backdrop: map.get($zindexes, "modal-dropdown") !default;
+$zindex-modal-backdrop: map.get($zindexes, "modal-backdrop") !default;
 $zindex-offcanvas: map.get($zindexes, "offcanvas") !default;
 $zindex-modal: map.get($zindexes, "modal") !default;
 $zindex-popover: map.get($zindexes, "popover") !default;
 $zindex-tooltip: map.get($zindexes, "tooltip") !default;
 $zindex-toast: map.get($zindexes, "toast") !default;
+$zindex-notification-center: map.get($zindexes, "notification-center") !default;
+$zindex-notification-center-pinned: map.get($zindexes, "notification-center-pinned") !default;
 // scss-docs-end zindex-stack
 
 // scss-docs-start zindex-levels-map
@@ -1143,7 +1146,7 @@ $form-feedback-tooltip-border-radius: $tooltip-border-radius !default;
 
 // scss-docs-start popover-variables
 $popover-font-size: $font-size-sm !default;
-$popover-bg: $panel-bg-2-var !default;
+$popover-bg: $tooltip-bg-var !default;
 $popover-max-width: 400px !default;
 $popover-border-width: var(--#{$prefix}border-width) !default;
 $popover-border-color: $popover-bg !default;

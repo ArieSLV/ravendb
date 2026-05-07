@@ -107,6 +107,7 @@ const amazonS3Source = yup.object({
         is: "amazonS3",
         then: (schema) => schema.trim().strict().required(),
     }),
+    sessionToken: yup.string().trim().strict(),
     awsRegion: yup.string().when(["isUseCustomHost", "$sourceType"], {
         is: (isUseCustomHost: boolean, sourceType: RestoreSource) => !isUseCustomHost && sourceType === "amazonS3",
         then: (schema) => schema.trim().strict().required(),
@@ -156,6 +157,14 @@ const sourceStepSchema = yup.object({
     isDisableOngoingTasksAfterRestore: yup.boolean(),
     isSkipIndexes: yup.boolean(),
     isEncrypted: yup.boolean(),
+    isSetMaxReadOpsPerSecond: yup.boolean(),
+    maxReadOpsPerSecond: yup
+        .number()
+        .nullable()
+        .when("isSetMaxReadOpsPerSecond", {
+            is: true,
+            then: (schema) => schema.min(1).integer().required(),
+        }),
     sourceType: yup.string<RestoreSource>().nullable().required(),
     sourceData: yup.object({
         local: localSource,

@@ -131,7 +131,7 @@ namespace Raven.Server.Documents.PeriodicBackup.Restore
                 if (key.Length != 256 / 8)
                     throw new InvalidOperationException($"The size of the key must be 256 bits, but was {key.Length * 8} bits.");
 
-                if (AdminDatabasesHandler.NotUsingHttps(clusterTopology.GetUrlFromTag(ServerStore.NodeTag)))
+                if (ServerStore.Server.AllowEncryptedDatabasesOverHttp == false && AdminDatabasesHandler.NotUsingHttps(clusterTopology.GetUrlFromTag(ServerStore.NodeTag)))
                     throw new InvalidOperationException("Cannot restore an encrypted database to a node which doesn't support SSL!");
             }
 
@@ -189,6 +189,8 @@ namespace Raven.Server.Documents.PeriodicBackup.Restore
             CreateDocumentDatabase();
 
             var databaseRecord = RestoreSettings.DatabaseRecord;
+
+            DisableOngoingTasksIfNeeded(databaseRecord);
             databaseRecord.Topology = new DatabaseTopology();
 
             // restoring to the current node only
@@ -215,7 +217,6 @@ namespace Raven.Server.Documents.PeriodicBackup.Restore
         {
             Result.Files.CurrentFileName = null;
 
-            DisableOngoingTasksIfNeeded(RestoreSettings.DatabaseRecord);
             SmugglerBase.EnsureProcessed(Result, skipped: false, indexesSkipped: Result.Indexes.Skipped);
             Progress.Invoke(Result.Progress);
 
@@ -581,6 +582,8 @@ namespace Raven.Server.Documents.PeriodicBackup.Restore
                     databaseRecord.DataArchival = smugglerDatabaseRecord.DataArchival;
                     databaseRecord.QueueSinks = smugglerDatabaseRecord.QueueSinks;
                     databaseRecord.SupportedFeatures = smugglerDatabaseRecord.SupportedFeatures;
+
+                    DisableOngoingTasksIfNeeded(databaseRecord);
 
                     ServerStore.Engine.StateMachine.AssertAllLicenseLimitsOnRestore(ServerStore, databaseRecord);
                 };

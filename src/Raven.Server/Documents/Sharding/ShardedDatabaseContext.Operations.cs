@@ -12,6 +12,7 @@ using Raven.Server.NotificationCenter.Notifications;
 using Raven.Server.ServerWide;
 using Raven.Server.Utils;
 using Sparrow.Json;
+using Sparrow.Logging;
 using Sparrow.Platform;
 
 namespace Raven.Server.Documents.Sharding;
@@ -50,6 +51,8 @@ public partial class ShardedDatabaseContext
             base.RaiseNotifications(change, operation);
         }
 
+        protected override Logger GetLogger() => _context._logger;
+
         public override Task<IOperationResult> AddLocalOperation(
             long id,
             OperationType operationType,
@@ -57,9 +60,10 @@ public partial class ShardedDatabaseContext
             IOperationDetailedDescription detailedDescription,
             Func<Action<IOperationProgress>, Task<IOperationResult>> taskFactory,
             string resourceName = null,
+            bool persistProgressOnFaultedStatus = false,
             OperationCancelToken token = null)
         {
-            var operation = CreateOperationInstance(id, _context.DatabaseName, operationType, description, detailedDescription, token);
+            var operation = CreateOperationInstance(id, _context.DatabaseName, operationType, description, detailedDescription, persistProgressOnFaultedStatus, token);
 
             return AddOperationInternalAsync(operation, taskFactory);
         }
@@ -70,12 +74,13 @@ public partial class ShardedDatabaseContext
             string description,
             IOperationDetailedDescription detailedDescription,
             Func<JsonOperationContext, int, RavenCommand<TResult>> commandFactory,
+            bool persistProgressOnFaultedStatus = false,
             OperationCancelToken token = null)
             where TResult : OperationIdResult
             where TOrchestratorResult : IOperationResult, new()
             where TOperationProgress : IOperationProgress, new()
         {
-            var operation = CreateOperationInstance(id, _context.DatabaseName, operationType, description, detailedDescription, token);
+            var operation = CreateOperationInstance(id, _context.DatabaseName, operationType, description, detailedDescription, persistProgressOnFaultedStatus, token);
 
             return AddOperationInternalAsync(operation, 
                 onProgress => CreateTaskAsync<TResult, TOrchestratorResult, TOperationProgress>(

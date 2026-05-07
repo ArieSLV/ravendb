@@ -1,34 +1,22 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
 using System.Linq;
 using System.Net.Security;
+using System.Numerics;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading.Tasks;
-using Org.BouncyCastle.Asn1;
-using Org.BouncyCastle.Asn1.X509;
-using Org.BouncyCastle.Crypto;
-using Org.BouncyCastle.Crypto.Generators;
-using Org.BouncyCastle.Crypto.Operators;
-using Org.BouncyCastle.Crypto.Prng;
-using Org.BouncyCastle.Pkcs;
-using Org.BouncyCastle.Security;
-using Org.BouncyCastle.X509;
-using Org.BouncyCastle.X509.Extension;
 using Raven.Client;
 using Raven.Client.Documents.Operations;
 using Raven.Client.Util;
 using Raven.Server.Commercial;
 using Raven.Server.Commercial.SetupWizard;
 using Raven.Server.Config.Categories;
-using Sparrow;
+using Raven.Server.ServerWide;
 using Sparrow.Logging;
 using Sparrow.Platform;
-using BigInteger = Org.BouncyCastle.Math.BigInteger;
-using X509Certificate = Org.BouncyCastle.X509.X509Certificate;
 
 namespace Raven.Server.Utils
 {
@@ -38,14 +26,6 @@ namespace Raven.Server.Utils
 
         private static readonly Logger Logger = LoggingSource.Instance.GetLogger("Server", typeof(CertificateUtils).FullName);
 
-        private static string GetCertificateName(X509Certificate2 certificate)
-        {
-            if (certificate == null)
-                return string.Empty;
-
-            return string.IsNullOrEmpty(certificate.FriendlyName) == false ? certificate.FriendlyName : certificate.Subject;
-        }
-
         private static string GenerateCertificateChainDebugLog(X509Chain chain)
         {
             var stringBuilder = new StringBuilder();
@@ -53,7 +33,7 @@ namespace Raven.Server.Utils
             foreach (var element in chain.ChainElements)
             {
                 var certificate = element.Certificate;
-                stringBuilder.AppendLine($"{GetCertificateName(certificate)} - {certificate.GetPublicKeyPinningHash()}");
+                stringBuilder.AppendLine($"{certificate.GetDisplayName()} - {certificate.GetPublicKeyPinningHash()}");
             }
 
             return stringBuilder.ToString();
@@ -64,26 +44,34 @@ namespace Raven.Server.Utils
             X509Certificate2 issuerCertificate = null;
 
             var userChain = new X509Chain();
+            var knownCertChain = new X509Chain();
+
+            if (PlatformDetails.RunningOnMacOsx)
+            {
+                using (var store = new X509Store(StoreName.CertificateAuthority, StoreLocation.CurrentUser))
+                {
+                    store.Open(OpenFlags.ReadOnly);
+                    userChain.ChainPolicy.ExtraStore.AddRange(store.Certificates);
+                    knownCertChain.ChainPolicy.ExtraStore.AddRange(store.Certificates);
+                }
+            }
+
             // we are not disabling certificate downloads because this method is checking public key pinning hashes
             // in order to do that properly it needs to be able to verify the chain by download the certificates
             // userChain.ChainPolicy.DisableCertificateDownloads = true;
+            // knownCertChain.ChainPolicy.DisableCertificateDownloads = true;
 
-            var knownCertChain = new X509Chain();
-            // we are not disabling certificate downloads because this method is checking public key pinning hashes
-            // in order to do that properly it needs to be able to verify the chain by download the certificates
-            //knownCertChain.ChainPolicy.DisableCertificateDownloads = true;
-
-            explanations?.Add($"Try building client certificate chain - {GetCertificateName(userCertificate)}.");
+            explanations?.Add($"Try building client certificate chain - {userCertificate.GetDisplayName()}.");
             try
             {
                 userChain.Build(userCertificate);
             }
             catch (Exception e)
             {
-                var message = $"Cannot validate new client certificate '{GetCertificateName(userCertificate)} - ({userCertificate.Thumbprint})'," +
+                var message = $"Cannot validate new client certificate '{userCertificate.GetDisplayName()} - ({userCertificate.Thumbprint})'," +
                               $" failed to build the chain.";
                 explanations?.Add(message);
-                if (Logger.IsInfoEnabled) 
+                if (Logger.IsInfoEnabled)
                     Logger.Info(message, e);
 
                 return false;
@@ -99,31 +87,31 @@ namespace Raven.Server.Utils
             {
                 var message = $"Cannot extract pinning hash from the client certificate's issuer '{issuerCertificate?.FriendlyName} {issuerCertificate?.Thumbprint}'.";
                 explanations?.Add(message);
-                if (Logger.IsInfoEnabled) 
+                if (Logger.IsInfoEnabled)
                     Logger.Info(message, e);
 
                 return false;
             }
 
-            explanations?.Add($"Try building know certificate chain - {GetCertificateName(knownCertificate)}.");
+            explanations?.Add($"Try building know certificate chain - {knownCertificate.GetDisplayName()}.");
             try
             {
                 knownCertChain.Build(knownCertificate);
             }
             catch (Exception e)
             {
-                var message = $"Cannot validate new client certificate '{GetCertificateName(userCertificate)} {userCertificate.Thumbprint}'." +
+                var message = $"Cannot validate new client certificate '{userCertificate.GetDisplayName()} {userCertificate.Thumbprint}'." +
                               $" Found a known certificate '{knownCertificate.Thumbprint}' with the same hash but failed to build its chain.";
                 explanations?.Add(message);
-                if (Logger.IsInfoEnabled) 
+                if (Logger.IsInfoEnabled)
                     Logger.Info(message, e);
 
                 return false;
             }
 
             explanations?.Add("Comparing certificates (leafs):\n" +
-                              $"Client certificate - {GetCertificateName(userCertificate)} - {userCertificate.GetPublicKeyPinningHash()}\n" +
-                              $"Known certificate - {GetCertificateName(knownCertificate)} - {knownCertificate.GetPublicKeyPinningHash()}");
+                              $"Client certificate - {userCertificate.GetDisplayName()} - {userCertificate.GetPublicKeyPinningHash()}\n" +
+                              $"Known certificate - {knownCertificate.GetDisplayName()} - {knownCertificate.GetPublicKeyPinningHash()}");
             // client certificates (leafs) Public Key pinning hashes must match
             if (userCertificate.GetPublicKeyPinningHash() != knownCertificate.GetPublicKeyPinningHash())
             {
@@ -144,7 +132,7 @@ namespace Raven.Server.Utils
                 explanations.Add($"Client certificate chain info:\n{GenerateCertificateChainDebugLog(userChain)}");
                 explanations.Add($"Known certificate chain info:\n{GenerateCertificateChainDebugLog(knownCertChain)}");
             }
-            
+
             // compare issuers pinning hashes starting from top of the chain (CA) since it's least likely to change
             // chain may have additional elements due to cross-signing, that's why we compare every issuer with each other
             for (var i = knownCertChain.ChainElements.Count - 1; i > 0; i--)
@@ -166,51 +154,76 @@ namespace Raven.Server.Utils
 
         public sealed class CertificateHolder : IDisposable
         {
-            public readonly string CertificateForClients;
-            public readonly X509Certificate2 Certificate;
-            public readonly SslStreamCertificateContext CertificateContext;
-            public readonly AsymmetricKeyEntry PrivateKey;
+            public string ServerCertificateForClients { get; private set; }
+            public X509Certificate2 ServerCertificate { get; }
+            public X509Certificate2 ClientCertificate { get; } // this is cert with client EKU and server cert key pair
+            public SslStreamCertificateContext ServerCertificateContext { get; private set; }
+            public readonly AsymmetricAlgorithm PrivateKey;
 
             private CertificateHolder()
             {
             }
 
-            public CertificateHolder(X509Certificate2 certificate, AsymmetricKeyEntry privateKey)
-                : this(certificate, privateKey, certificateForClients: null)
+            public CertificateHolder(X509Certificate2 serverCertificate, AsymmetricAlgorithm privateKey)
             {
-            }
-
-            public CertificateHolder(X509Certificate2 certificate, AsymmetricKeyEntry privateKey, string certificateForClients)
-            {
-                Certificate = certificate ?? throw new ArgumentNullException(nameof(certificate));
-                CertificateContext = SslStreamCertificateContext.Create(Certificate, additionalCertificates: null);
+                ServerCertificate = serverCertificate ?? throw new ArgumentNullException(nameof(serverCertificate));
                 PrivateKey = privateKey ?? throw new ArgumentNullException(nameof(privateKey));
-                CertificateForClients = certificateForClients;
+                ServerCertificateContext = SslStreamCertificateContext.Create(ServerCertificate, additionalCertificates: null);
+                ServerCertificateForClients = Convert.ToBase64String(ServerCertificate.Export(X509ContentType.Cert));
+
+                if (SecretProtection.HasCertificateClientAuthEnhancedKeyUsage(ServerCertificate))
+                {
+                    ClientCertificate = serverCertificate;
+                }
+                else
+                {
+                    var clientCertificate = CreateClientCertificateFromServerCertificate(serverCertificate, out _);
+                    ClientCertificate = clientCertificate;
+                }
             }
 
             public void Dispose()
             {
-                Certificate?.Dispose();
+                ServerCertificate?.Dispose();
+                ClientCertificate?.Dispose();
             }
 
             public static CertificateHolder CreateEmpty() => new();
         }
-        public static byte[] CreateSelfSignedTestCertificate(string commonNameValue, string issuerName, StringBuilder log = null)
+
+        public static byte[] CreateSelfSignedTestCertificate(string commonNameValue, string issuerName, StringBuilder log = null, bool with2Eku = true)
         {
             // Note this is for tests only!
-            CreateCertificateAuthorityCertificate(commonNameValue + " CA", out var ca, out var caSubjectName, log);
-            CreateSelfSignedCertificateBasedOnPrivateKey(commonNameValue, caSubjectName, ca, false, false, DateTime.UtcNow.Date.AddMonths(3), out var certBytes, log: log);
+            var caCert = CreateCertificateAuthorityCertificate(
+                $"{commonNameValue} CA",
+                out var caSubjectName,
+                log);
+
+            CreateSelfSignedCertificateBasedOnPrivateKey(
+                commonNameValue: commonNameValue,
+                issuerCN: caSubjectName,
+                issuerKeyPair: (caCert.GetExportableRsaPrivateKey(), caCert.GetRSAPublicKey()),
+                isClientCertificate: false,
+                isCaCertificate: false,
+                notAfter: DateTime.UtcNow.Date.AddMonths(3),
+                certBytes: out var certBytes,
+                log: log,
+                sans: [commonNameValue, "localhost", $"*.{commonNameValue}"],
+                with2Eku: with2Eku);
+
             var selfSignedCertificateBasedOnPrivateKey = CertificateLoaderUtil.CreateCertificate(certBytes);
             selfSignedCertificateBasedOnPrivateKey.Verify();
+            GC.KeepAlive(selfSignedCertificateBasedOnPrivateKey); // https://github.com/dotnet/runtime/issues/122642#issuecomment-3720461147
 
             // We had a problem where we didn't cleanup the user store in Linux (~/.dotnet/corefx/cryptography/x509stores/ca)
             // and it exploded with thousands of certificates. This caused ssl handshakes to fail on that machine, because it would timeout when
             // trying to match one of these certs to validate the chain
             RemoveOldTestCertificatesFromOsStore(commonNameValue);
+
             return certBytes;
         }
 
-        private static void RemoveOldTestCertificatesFromOsStore(string commonNameValue)
+        internal static void RemoveOldTestCertificatesFromOsStore(string commonNameValue)
         {
             // We have the same logic in AddCertificateChainToTheUserCertificateAuthorityStoreAndCleanExpiredCerts when the server starts
             // and when we renew a certificate. There we delete certificates only if expired but here in the tests we delete them all and keep
@@ -247,14 +260,13 @@ namespace Raven.Server.Utils
             }
         }
 
-        public static X509Certificate2 CreateSelfSignedClientCertificate(string commonNameValue, CertificateHolder certificateHolder, out byte[] certBytes, DateTime notAfter)
+        public static X509Certificate2 CreateSelfSignedClientCertificate(string commonNameValue, X509Certificate2 issuerCertificate, AsymmetricAlgorithm issuerPrivateKey, out byte[] certBytes, DateTime notAfter)
         {
-            var serverCertBytes = certificateHolder.Certificate.Export(X509ContentType.Cert);
-            var readCertificate = new X509CertificateParser().ReadCertificate(serverCertBytes);
+            var serverCertBytes = issuerCertificate.Export(X509ContentType.Cert);
             CreateSelfSignedCertificateBasedOnPrivateKey(
                 commonNameValue,
-                readCertificate.SubjectDN,
-                (certificateHolder.PrivateKey.Key, readCertificate.GetPublicKey()),
+                issuerCertificate.SubjectName,
+                (issuerPrivateKey, issuerCertificate.GetRSAPublicKey()),
                 true,
                 false,
                 notAfter,
@@ -262,15 +274,19 @@ namespace Raven.Server.Utils
 
             ValidateNoPrivateKeyInServerCert(serverCertBytes);
 
-            Pkcs12Store store = new Pkcs12StoreBuilder().BuildWithoutOracleOids();
-            var serverCert = DotNetUtilities.FromX509Certificate(certificateHolder.Certificate);
+            // Create a collection to hold all the certificates.
+            var pfxCollection = new X509Certificate2Collection();
 
-            store.Load(new MemoryStream(certBytes), Array.Empty<char>());
-            store.SetCertificateEntry(serverCert.SubjectDN.ToString(), new X509CertificateEntry(serverCert));
+            // Import the existing PFX file (client certificate) into the collection
+            pfxCollection.Import(certBytes, null, CertificateLoaderUtil.FlagsForExport);
 
-            var memoryStream = new MemoryStream();
-            store.Save(memoryStream, Array.Empty<char>(), GetSeededSecureRandom());
-            certBytes = memoryStream.ToArray();
+            // Add the server certificate to the collection
+            pfxCollection.Add(CertificateLoaderUtil.CreateCertificate(serverCertBytes, flags: CertificateLoaderUtil.FlagsForExport));
+
+            // Export the entire collection as a new PFX file.
+            // The native .NET method handles the complex encoding and
+            // combines all certificates into a single PFX byte array.
+            certBytes = pfxCollection.Export(X509ContentType.Pfx, string.Empty);
 
             var cert = CertificateLoaderUtil.CreateCertificate(certBytes, flags: CertificateLoaderUtil.FlagsForPersist);
             return cert;
@@ -279,224 +295,341 @@ namespace Raven.Server.Utils
         private static void ValidateNoPrivateKeyInServerCert(byte[] serverCertBytes)
         {
             var collection = new X509Certificate2Collection();
-            // without the server private key here
-            CertificateLoaderUtil.Import(collection, serverCertBytes);
+
+            try
+            {
+                // without the server private key here
+                CertificateLoaderUtil.Import(collection, serverCertBytes);
+            }
+            catch (Exception e)
+            {
+                throw new CryptographicException("Failed to import server certificate", e);
+            }
 
             if (new X509Certificate2Collection(collection).OfType<X509Certificate2>().FirstOrDefault(x => x.HasPrivateKey) != null)
                 throw new InvalidOperationException("After export of CERT, still have private key from signer in certificate, should NEVER happen");
         }
 
-        public static X509Certificate2 CreateSelfSignedExpiredClientCertificate(string commonNameValue, CertificateHolder certificateHolder)
+        private static void ValidateNoPrivateKeyInServerCert(X509Certificate2 certificate)
         {
-            var readCertificate = new X509CertificateParser().ReadCertificate(certificateHolder.Certificate.Export(X509ContentType.Cert));
+            if (certificate.HasPrivateKey)
+                throw new InvalidOperationException("After export of CERT, still have private key from signer in certificate, should NEVER happen");
+        }
 
+        public static X509Certificate2 CreateSelfSignedExpiredClientCertificate(string commonNameValue, X509Certificate2 serverCertificate, AsymmetricAlgorithm privateKey)
+        {
             CreateSelfSignedCertificateBasedOnPrivateKey(
                 commonNameValue,
-                readCertificate.SubjectDN,
-                (certificateHolder.PrivateKey.Key, readCertificate.GetPublicKey()),
+                serverCertificate.SubjectName,
+                (privateKey, serverCertificate.GetRSAPublicKey()),
                 true,
                 false,
                 DateTime.UtcNow.Date.AddYears(-1),
-                out var certBytes);
+                out var certBytes,
+                notBefore: DateTime.UtcNow.Date.AddYears(-2));
 
             return CertificateLoaderUtil.CreateCertificate(certBytes);
         }
 
-        public static void CreateSelfSignedCertificateBasedOnPrivateKey(string commonNameValue,
-            X509Name issuer,
-            (AsymmetricKeyParameter PrivateKey, AsymmetricKeyParameter PublicKey) issuerKeyPair,
+        public static void CreateSelfSignedCertificateBasedOnPrivateKey(
+            string commonNameValue,
+            X500DistinguishedName issuerCN,
+            (AsymmetricAlgorithm PrivateKey, AsymmetricAlgorithm PublicKey) issuerKeyPair,
             bool isClientCertificate,
             bool isCaCertificate,
             DateTime notAfter,
             out byte[] certBytes,
-            AsymmetricCipherKeyPair subjectKeyPair = null,
-            StringBuilder log = null)
+            AsymmetricAlgorithm subjectPrivateKey = null,
+            StringBuilder log = null,
+            IEnumerable<string> sans = null,
+            bool with2Eku = false,
+            byte[] issuerCertBytes = null,
+            DateTime? notBefore = null)
         {
             log?.AppendLine("CreateSelfSignedCertificateBasedOnPrivateKey:");
 
-            // Generating Random Numbers
-            var random = GetSeededSecureRandom();
-            ISignatureFactory signatureFactory = new Asn1SignatureFactory("SHA512WITHRSA", issuerKeyPair.PrivateKey, random);
+            // Prepare Subject Key Pair
+            // currently we support only RSA keys
+            RSA privateKey = subjectPrivateKey as RSA ?? GetRsaKey();
+            log?.AppendLine("Subject key pair prepared.");
 
-            // The Certificate Generator
-            X509V3CertificateGenerator certificateGenerator = new X509V3CertificateGenerator();
-            var authorityKeyIdentifier = X509ExtensionUtilities.CreateAuthorityKeyIdentifier(issuerKeyPair.PublicKey);
-            certificateGenerator.AddExtension(X509Extensions.AuthorityKeyIdentifier.Id, false, authorityKeyIdentifier);
-            certificateGenerator.AddExtension(X509Extensions.KeyUsage.Id, true, new KeyUsage(KeyUsage.DigitalSignature | KeyUsage.KeyEncipherment));
-            if (isClientCertificate)
+            // Prepare Distinguished Names
+            var subjectName = new X500DistinguishedName(string.Empty);
+            if (string.IsNullOrEmpty(commonNameValue) == false)
             {
-                certificateGenerator.AddExtension(X509Extensions.ExtendedKeyUsage.Id, true, new ExtendedKeyUsage(KeyPurposeID.id_kp_clientAuth));
+                var commonNameBuilder = new X500DistinguishedNameBuilder();
+                commonNameBuilder.AddCommonName(commonNameValue);
+                subjectName = commonNameBuilder.Build();
+            }
+
+            log?.AppendLine($"subjectDN = {subjectName}");
+            log?.AppendLine($"issuerDN = {issuerCN}");
+
+            // Create the Certificate Request
+            var request = new CertificateRequest(subjectName, privateKey, HashAlgorithmName.SHA512, RSASignaturePadding.Pkcs1);
+            log?.AppendLine("CertificateRequest object created.");
+
+            // Add Extensions
+            X509KeyUsageFlags keyUsageFlags = X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment;
+            if (isCaCertificate)
+            {
+                keyUsageFlags |= X509KeyUsageFlags.KeyCertSign | X509KeyUsageFlags.CrlSign;
+            }
+
+            request.CertificateExtensions.Add(new X509KeyUsageExtension(keyUsageFlags, isCaCertificate));
+
+            if (with2Eku)
+            {
+                request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(
+                    new OidCollection { new Oid(Constants.Certificates.ClientAuthenticationOid), new Oid(Constants.Certificates.ServerAuthenticationOid) }, false));
             }
             else
             {
-                certificateGenerator.AddExtension(X509Extensions.ExtendedKeyUsage.Id, true,
-                    new ExtendedKeyUsage(KeyPurposeID.id_kp_serverAuth, KeyPurposeID.id_kp_clientAuth));
+                var purposeOid = isClientCertificate ? new Oid(Constants.Certificates.ClientAuthenticationOid) : new Oid(Constants.Certificates.ServerAuthenticationOid);
+                request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(new OidCollection { purposeOid }, false));
+            }
+
+            if (sans != null && sans.Any())
+            {
+                var builder = new SubjectAlternativeNameBuilder();
+                foreach (var san in sans)
+                {
+                    builder.AddDnsName(san);
+                }
+
+                request.CertificateExtensions.Add(builder.Build());
             }
 
             if (isCaCertificate)
             {
-                certificateGenerator.AddExtension(X509Extensions.BasicConstraints.Id, true, new BasicConstraints(0));
-                certificateGenerator.AddExtension(X509Extensions.KeyUsage.Id, false,
-                    new X509KeyUsage(X509KeyUsage.KeyCertSign | X509KeyUsage.CrlSign));
+                request.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, true, 0, true));
             }
 
-            // Serial Number
-            var serialNumberBytes = new byte[20];
-            random.NextBytes(serialNumberBytes);
-            var serialNumber = new BigInteger(serialNumberBytes).Abs();
-            certificateGenerator.SetSerialNumber(serialNumber);
-            log?.AppendLine($"serialNumber = {serialNumber}");
+            // Create the serial number.
+            byte[] serialNumberBytes = new byte[20];
+            using (var rng = RandomNumberGenerator.Create())
+            {
+                rng.GetBytes(serialNumberBytes);
+            }
 
-            // Issuer and Subject Name
+            serialNumberBytes[0] &= 0x7F; // Force positive number, preventing the '00' padding
 
-            X509Name subjectDN = new X509Name("CN=" + commonNameValue);
-            certificateGenerator.SetIssuerDN(issuer);
-            certificateGenerator.SetSubjectDN(subjectDN);
-            log?.AppendLine($"issuerDN = {issuer}");
-            log?.AppendLine($"subjectDN = {subjectDN}");
+            log?.AppendLine($"serialNumber bytes generated.");
 
-            // Valid For
-            DateTime notBefore = DateTime.UtcNow.Date.AddDays(-7);
+            if (issuerCertBytes is { Length: > 0 })
+            {
+                request.CertificateExtensions.Add(new X509Extension(new Oid(Constants.Certificates.ServerCertExtensionOid), issuerCertBytes, false));
+            }
 
-            certificateGenerator.SetNotBefore(notBefore);
-            certificateGenerator.SetNotAfter(notAfter);
-            log?.AppendLine($"notBefore = {notBefore}");
-            log?.AppendLine($"notAfter = {notAfter}");
+            // Create the signature generator.
+            // This is the correct way to pass the private key for signing in older .NET versions.
+            var signatureGenerator = X509SignatureGenerator.CreateForRSA((RSA)issuerKeyPair.PrivateKey, RSASignaturePadding.Pkcs1);
 
-            if (subjectKeyPair == null)
-                subjectKeyPair = GetRsaKey();
+            // Create and sign the certificate using the signature generator.
+            notBefore ??= DateTime.UtcNow.Date.AddDays(-7);
+            X509Certificate2 certificate = request.Create(
+                issuerCN,
+                signatureGenerator,
+                notBefore.Value,
+                notAfter.ToUniversalTime(),
+                serialNumberBytes);
 
-            certificateGenerator.SetPublicKey(subjectKeyPair.Public);
+            certificate = certificate.CopyWithPrivateKey(privateKey);
 
-            X509Certificate certificate = certificateGenerator.Generate(signatureFactory);
-            var store = new Pkcs12StoreBuilder().BuildWithoutOracleOids();
-            string friendlyName = certificate.SubjectDN.ToString();
-            var certificateEntry = new X509CertificateEntry(certificate);
-            var keyEntry = new AsymmetricKeyEntry(subjectKeyPair.Private);
+            log?.AppendLine($"Certificate created.");
+            log?.AppendLine($"serialNumber = {new BigInteger(serialNumberBytes)}");
+            log?.AppendLine($"notBefore = {certificate.NotBefore}");
+            log?.AppendLine($"notAfter = {certificate.NotAfter}");
 
-            log?.AppendLine($"certificateEntry.Certificate = {certificateEntry.Certificate}");
-
-            store.SetCertificateEntry(friendlyName, certificateEntry);
-            store.SetKeyEntry(friendlyName, keyEntry, new[] { certificateEntry });
-            var stream = new MemoryStream();
-            store.Save(stream, new char[0], random);
-
-            certBytes = stream.ToArray();
-
+            // Export the certificate to a PFX byte array.
+            certBytes = certificate.Export(X509ContentType.Pfx, string.Empty);
             log?.AppendLine($"certBytes.Length = {certBytes.Length}");
-            log?.AppendLine($"cert in base64 = {Convert.ToBase64String(certBytes)}");
         }
 
-        public static X509Certificate2 CreateCertificateAuthorityCertificate(string commonNameValue,
-            out (AsymmetricKeyParameter PrivateKey, AsymmetricKeyParameter PublicKey) ca,
-            out X509Name name, StringBuilder log = null)
+        public static X509Certificate2 CreateCertificateAuthorityCertificate(
+            string commonNameValue,
+            out X500DistinguishedName name,
+            StringBuilder log = null,
+            bool generateNewKeyPair = false)
         {
             log?.AppendLine("CreateCertificateAuthorityCertificate:");
-            var random = GetSeededSecureRandom();
 
-            // The Certificate Generator
-            X509V3CertificateGenerator certificateGenerator = new X509V3CertificateGenerator();
+            // Generate the RSA key pair for the CA.
+            (AsymmetricAlgorithm PrivateKey, AsymmetricAlgorithm PublicKey) keyPair = (RSA.Create(),
+                RSA.Create());
+            if (generateNewKeyPair)
+            {
+                var newRsaKeyPair = GenerateRsaKey();
+                ((RSA)keyPair.PrivateKey).ImportRSAPrivateKey(newRsaKeyPair.Private, out _);
+                ((RSA)keyPair.PublicKey).ImportRSAPublicKey(newRsaKeyPair.Public, out _);
+                log?.AppendLine("CA key pair generated.");
+            }
+            else
+            {
+                ((RSA)keyPair.PrivateKey).ImportRSAPrivateKey(caKeyPair.Value.Private, out _);
+                ((RSA)keyPair.PublicKey).ImportRSAPublicKey(caKeyPair.Value.Public, out _);
+                log?.AppendLine("Reusing cached CA key pair.");
+            }
 
-            // Serial Number
-            BigInteger serialNumber = new BigInteger(20 * BitsPerByte, random);
-            log?.AppendLine($"serialNumber = {serialNumber}");
-            certificateGenerator.SetSerialNumber(serialNumber);
+            log?.AppendLine("PrivateKey = " + ((RSA)keyPair.PrivateKey).ExportRSAPrivateKeyPem());
+            log?.AppendLine("PublicKey = " + ((RSA)keyPair.PrivateKey).ExportRSAPublicKeyPem());
 
-            // Issuer and Subject Name
-            X509Name subjectDN = new X509Name("CN=" + commonNameValue);
-            X509Name issuerDN = subjectDN;
-            certificateGenerator.SetIssuerDN(issuerDN);
-            certificateGenerator.SetSubjectDN(subjectDN);
-            log?.AppendLine($"issuerDN = {issuerDN}");
-            log?.AppendLine($"subjectDN = {subjectDN}");
+            // Define the subject name.
+            name = new X500DistinguishedName($"CN={commonNameValue}");
+            log?.AppendLine($"SubjectDN = {name}");
 
-            certificateGenerator.AddExtension(
-                X509Extensions.BasicConstraints.Id, true, new BasicConstraints(true));
-            certificateGenerator.AddExtension(X509Extensions.KeyUsage.Id, true,
-                new KeyUsage(KeyUsage.DigitalSignature | KeyUsage.CrlSign | KeyUsage.KeyCertSign));
-            certificateGenerator.AddExtension(X509Extensions.ExtendedKeyUsage.Id, true,
-                new ExtendedKeyUsage(KeyPurposeID.id_kp_serverAuth, KeyPurposeID.id_kp_clientAuth));
+            // Create a CertificateRequest object.
+            var request = new CertificateRequest(
+                name,
+                (RSA)keyPair.PrivateKey,
+                HashAlgorithmName.SHA512,
+                RSASignaturePadding.Pkcs1);
 
-            // Valid For
-            DateTime notBefore = DateTime.UtcNow.Date.AddDays(-7);
-            DateTime notAfter = notBefore.AddYears(2);
-            certificateGenerator.SetNotBefore(notBefore);
-            certificateGenerator.SetNotAfter(notAfter);
-            log?.AppendLine($"notBefore = {notBefore}");
-            log?.AppendLine($"notAfter = {notAfter}");
+            // Add the required extensions for a CA certificate.
+            // BasicConstraintsExtension is crucial for marking it as a CA.
+            request.CertificateExtensions.Add(
+                new X509BasicConstraintsExtension(true, true, 0, true));
+            log?.AppendLine("BasicConstraints extension added.");
 
-            var subjectKeyPair = new AsymmetricCipherKeyPair(
-                PublicKeyFactory.CreateKey(caKeyPair.Value.Public),
-                PrivateKeyFactory.CreateKey(caKeyPair.Value.Private)
-                );
+            // KeyUsageExtension specifies the purpose of the key.
+            request.CertificateExtensions.Add(
+                new X509KeyUsageExtension(
+                    X509KeyUsageFlags.KeyCertSign | X509KeyUsageFlags.CrlSign | X509KeyUsageFlags.DigitalSignature,
+                    true));
+            log?.AppendLine("KeyUsage extension added.");
 
-            certificateGenerator.SetPublicKey(subjectKeyPair.Public);
+            // Create the self-signed certificate.
+            // The CreateSelfSigned method automatically adds AuthorityKeyIdentifier and SubjectKeyIdentifier.
+            var notBefore = DateTimeOffset.UtcNow.Date.AddDays(-7);
+            var notAfter = notBefore.AddYears(2);
+            var cert = request.CreateSelfSigned(notBefore, notAfter);
+            log?.AppendLine($"Certificate created. NotBefore: {cert.NotBefore}, NotAfter: {cert.NotAfter}");
 
-            // Generating the Certificate
-            var issuerKeyPair = subjectKeyPair;
-            ISignatureFactory signatureFactory = new Asn1SignatureFactory("SHA512WITHRSA", issuerKeyPair.Private, random);
-
-            var authorityKeyIdentifier =
-                X509ExtensionUtilities.CreateAuthorityKeyIdentifier(
-                    issuerKeyPair.Public,
-                    new GeneralNames(new GeneralName(issuerDN)),
-                    serialNumber);
-            certificateGenerator.AddExtension(
-                X509Extensions.AuthorityKeyIdentifier.Id, false, authorityKeyIdentifier);
-
-            var subjectKeyIdentifier =
-                X509ExtensionUtilities.CreateSubjectKeyIdentifier(
-                    SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(subjectKeyPair.Public));
-            certificateGenerator.AddExtension(
-                X509Extensions.SubjectKeyIdentifier.Id, false, subjectKeyIdentifier);
-
-            // selfsign certificate
-            var certificate = certificateGenerator.Generate(signatureFactory);
-
-            ca = (issuerKeyPair.Private, issuerKeyPair.Public);
-            name = certificate.SubjectDN;
-
-            var store = new Pkcs12StoreBuilder().BuildWithoutOracleOids();
-            string friendlyName = certificate.SubjectDN.ToString();
-            var certificateEntry = new X509CertificateEntry(certificate);
-            var keyEntry = new AsymmetricKeyEntry(subjectKeyPair.Private);
-
-            log?.AppendLine($"certificateEntry.Certificate = {certificateEntry.Certificate}");
-
-            store.SetCertificateEntry(friendlyName, certificateEntry);
-            store.SetKeyEntry(friendlyName, keyEntry, new[] { certificateEntry });
-            var stream = new MemoryStream();
-            store.Save(stream, Array.Empty<char>(), random);
-
-            return new X509Certificate2(stream.ToArray());
+            return CertificateLoaderUtil.CreateCertificate(
+                cert.Export(X509ContentType.Pfx),
+                flags: CertificateLoaderUtil.FlagsForExport);
         }
+
+        public static X509Certificate2 CreateClientCertificateFromServerCertificate(X509Certificate2 serverCertificate, out byte[] clientCertBytes)
+        {
+            // Get the private and public keys from the server certificate.
+            var issuerPrivateKey = serverCertificate.GetRSAPrivateKey();
+            var issuerPublicKey = serverCertificate.GetRSAPublicKey();
+
+            // Call the native .NET method to create and sign the client certificate.
+            CreateSelfSignedCertificateBasedOnPrivateKey(
+                commonNameValue: "client-cert-for-cluster-communication",
+                issuerCN: serverCertificate.SubjectName,
+                issuerKeyPair: (issuerPrivateKey, issuerPublicKey),
+                isClientCertificate: true,
+                isCaCertificate: false,
+                notAfter: serverCertificate.NotAfter,
+                certBytes: out clientCertBytes,
+                subjectPrivateKey: issuerPrivateKey,
+                issuerCertBytes: serverCertificate.Export(X509ContentType.Cert));
+
+            // Return a new X509Certificate2 object from the generated PFX byte array.
+            var flags = X509KeyStorageFlags.PersistKeySet;
+            return new X509Certificate2(clientCertBytes, (string)null, flags);
+        }
+
+        public static X509Certificate2 ExtractServerCertificateFromExtension(X509Certificate2 clientCert)
+        {
+            X509Certificate2 serverCertificateFromExtension = null;
+            try
+            {
+                // Find the custom extension by its OID.
+                var extension = clientCert.Extensions
+                    .FirstOrDefault(ext => ext.Oid?.Value == Constants.Certificates.ServerCertExtensionOid);
+
+                if (extension == null)
+                    return null; // No server certificate found
+
+                // Try standard .NET method first
+                try
+                {
+                    // The RawData property of the extension contains the DER-encoded certificate bytes.
+                    // The native .NET X509Certificate2 constructor can directly create a certificate from these bytes.
+                    serverCertificateFromExtension = new X509Certificate2(extension.RawData);
+                }
+                catch (CryptographicException)
+                {
+                    // If that fails, try alternative approach for BouncyCastle certs
+
+                    // Get the raw data and try to find a certificate structure
+                    var rawData = extension.RawData;
+
+                    // Try to extract certificate from ASN.1 structure
+
+                    // Skip any header/metadata that might be present
+                    // Look for the start of a possible X.509 certificate (tag 0x30 for SEQUENCE)
+                    const int asn1SequenceTag = 0x30;
+                    for (int i = 0; i < rawData.Length - 4; i++)
+                    {
+                        if (rawData[i] != asn1SequenceTag)
+                            continue;
+
+                        try
+                        {
+                            // Try to create a certificate from this position
+                            var certBytes = new byte[rawData.Length - i];
+                            Array.Copy(rawData, i, certBytes, 0, certBytes.Length);
+                            serverCertificateFromExtension = new X509Certificate2(certBytes);
+                            break;
+                        }
+                        catch
+                        {
+                            // Keep searching
+                        }
+                    }
+
+                    if (serverCertificateFromExtension == null)
+                        throw;
+                }
+            }
+            catch (Exception ex)
+            {
+                if (Logger.IsOperationsEnabled)
+                    Logger.Operations("Failed to extract server certificate from client certificate extension" +
+                                      " using standard .NET method and BouncyCastle method.", ex);
+
+                return null;
+            }
+
+            ValidateNoPrivateKeyInServerCert(serverCertificateFromExtension);
+
+            return serverCertificateFromExtension;
+        }
+
 
         // generating this can take a while, so we cache that at the process level, to significantly speed up the tests
+
         private static Lazy<(byte[] Private, byte[] Public)>
-            caKeyPair = new Lazy<(byte[] Private, byte[] Public)>(GenerateKey);
+            caKeyPair = new Lazy<(byte[] Private, byte[] Public)>(GenerateRsaKey, isThreadSafe: true);
 
-        private static (byte[] Private, byte[] Public) GenerateKey()
+        private static (byte[] Private, byte[] Public) GenerateRsaKey()
         {
-            AsymmetricCipherKeyPair kp = GetRsaKey();
+            var kp = GetRsaKey();
 
-            var privateKeyInfo = PrivateKeyInfoFactory.CreatePrivateKeyInfo(kp.Private);
-            var publicKeyInfo = SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(kp.Public);
+            // Export the private RSA key
+            byte[] privateKey = kp.ExportRSAPrivateKey();
 
-            return (privateKeyInfo.ToAsn1Object().GetDerEncoded(), publicKeyInfo.ToAsn1Object().GetDerEncoded());
+            // Export the public RSA key
+            byte[] publicKey = kp.ExportRSAPublicKey();
+
+            return (privateKey, publicKey);
         }
 
-        private static AsymmetricCipherKeyPair GetRsaKey()
+        private static RSA GetRsaKey()
         {
-            var keyGenerationParameters = new KeyGenerationParameters(GetSeededSecureRandom(), 4096);
-            var keyPairGenerator = new RsaKeyPairGenerator();
-            keyPairGenerator.Init(keyGenerationParameters);
-            var kp = keyPairGenerator.GenerateKeyPair();
-            return kp;
+            return RSA.Create(4096);
         }
 
-        public static SecureRandom GetSeededSecureRandom()
+        public static RandomNumberGenerator GetSeededSecureRandom()
         {
-            return new SecureRandom(new CryptoApiRandomGenerator());
+            // In .NET, RandomNumberGenerator.Create() returns a cryptographically strong
+            // random number generator that is already seeded by the OS.
+            return RandomNumberGenerator.Create();
         }
 
         public static string GetServerUrlFromCertificate(X509Certificate2 cert, SetupInfo setupInfo, string nodeTag, int port, int tcpPort, out string publicTcpUrl, out string domain)
@@ -506,7 +639,7 @@ namespace Raven.Server.Utils
 
             var subjectAlternativeNames = GetCertificateAlternativeNames(cert).ToList();
             var subject = subjectAlternativeNames.FirstOrDefault();
-            
+
             // fallback to common name
             if (string.IsNullOrEmpty(subject))
                 subject = cert.GetNameInfo(X509NameType.SimpleName, false);
@@ -562,16 +695,18 @@ namespace Raven.Server.Utils
         public static IEnumerable<string> GetCertificateAlternativeNames(X509Certificate2 cert)
         {
             // If we have alternative names, find the appropriate url using the node tag
-            var sanNames = cert.Extensions["2.5.29.17"];
+            var sanExtension = (X509SubjectAlternativeNameExtension)cert.Extensions
+                .FirstOrDefault(ext => ext.Oid?.Value == "2.5.29.17");
 
-            if (sanNames == null)
-                yield break;
-
-            var generalNames = GeneralNames.GetInstance(Asn1Object.FromByteArray(sanNames.RawData));
-
-            foreach (var certHost in generalNames.GetNames())
+            if (sanExtension == null)
             {
-                yield return certHost.Name.ToString();
+                yield break;
+            }
+
+            // Enumerate through the DNS names within the extension.
+            foreach (var dnsName in sanExtension.EnumerateDnsNames())
+            {
+                yield return dnsName;
             }
         }
 
@@ -593,7 +728,7 @@ namespace Raven.Server.Utils
             }
         }
 
-        public static async Task<X509Certificate2> CompleteAuthorizationAndGetCertificate(CompleteAuthorizationAndGetCertificateParameters parameters)
+        public static async Task<X509Certificate2> CompleteAuthorizationAndGetCertificate(CompleteAuthorizationAndGetCertificateParameters parameters, string acmeProfile)
         {
             if (parameters.ChallengeResult.Challange == null && parameters.ChallengeResult.Cache != null)
             {
@@ -611,10 +746,10 @@ namespace Raven.Server.Utils
 
             parameters.OnValidationSuccessful();
 
-            (X509Certificate2 Cert, RSA PrivateKey) result;
+            (X509Certificate2 Cert, AsymmetricAlgorithm PrivateKey) result;
             try
             {
-                result = await parameters.Client.GetCertificate(parameters.ExistingPrivateKey, parameters.Token);
+                result = await parameters.Client.GetCertificate(parameters.ExistingPrivateKey, acmeProfile, parameters.Token);
             }
             catch (Exception e)
             {
@@ -631,178 +766,122 @@ namespace Raven.Server.Utils
             }
         }
 
-        private static X509Certificate2 BuildNewPfx(SetupInfo setupInfo, X509Certificate2 certificate, RSA privateKey)
+        public static X509Certificate2 BuildNewPfx(SetupInfo setupInfo, X509Certificate2 certificate, AsymmetricAlgorithm privateKey)
         {
-            var certWithKey = certificate.CopyWithPrivateKey(privateKey);
+            X509Certificate2 safeCertificate = certificate;
 
-            Pkcs12Store store = new Pkcs12StoreBuilder().BuildWithoutOracleOids();
-
-            var chain = new X509Chain();
-            chain.ChainPolicy.DisableCertificateDownloads = true;
-
-            chain.Build(certificate);
-
-            foreach (var item in chain.ChainElements)
+            if (PlatformDetails.RunningOnMacOsx)
             {
-                var x509Certificate = DotNetUtilities.FromX509Certificate(item.Certificate);
-
-                if (item.Certificate.Thumbprint == certificate.Thumbprint)
-                {
-                    var key = new AsymmetricKeyEntry(DotNetUtilities.GetKeyPair(certWithKey.GetRSAPrivateKey()).Private);
-                    store.SetKeyEntry(x509Certificate.SubjectDN.ToString(), key, new[] { new X509CertificateEntry(x509Certificate) });
-                    continue;
-                }
-
-                store.SetCertificateEntry(item.Certificate.Subject, new X509CertificateEntry(x509Certificate));
+                // Stripping the keychain context by exporting to raw public bytes (CER) and re-importing
+                // prevents the AppleCrypto crash during CopyWithPrivateKey.
+                byte[] rawPublicBytes = certificate.Export(X509ContentType.Cert);
+                safeCertificate = new X509Certificate2(rawPublicBytes);
             }
 
-            var memoryStream = new MemoryStream();
-            store.Save(memoryStream, Array.Empty<char>(), new SecureRandom(new CryptoApiRandomGenerator()));
-            var certBytes = memoryStream.ToArray();
+            // Combine the main certificate and the private key safely for both RSA and ECDSA.
+            X509Certificate2 certificateWithPrivateKey;
+            if (privateKey is RSA rsa)
+                certificateWithPrivateKey = safeCertificate.CopyWithPrivateKey(rsa);
+            else if (privateKey is ECDsa ecdsa)
+                certificateWithPrivateKey = safeCertificate.CopyWithPrivateKey(ecdsa);
+            else
+                throw new NotSupportedException($"Unsupported key type: {privateKey.GetType().Name}");
+            
+            if (PlatformDetails.RunningOnMacOsx)
+            {
+                safeCertificate.Dispose();
+            }
+            // Build the complete certificate chain.
+            using var chain = new X509Chain();
+            chain.ChainPolicy.DisableCertificateDownloads = true;
+            chain.Build(certificate);
 
-            Debug.Assert(certBytes != null);
-            setupInfo.Certificate = Convert.ToBase64String(certBytes);
+            // Create a collection to hold all certificates for the PFX.
+            var pfxCollection = new X509Certificate2Collection();
 
-            return CertificateLoaderUtil.CreateCertificate(certBytes, flags: CertificateLoaderUtil.FlagsForExport);
+            // Add the main certificate with its private key.
+            pfxCollection.Add(certificateWithPrivateKey);
+
+            // Add the rest of the chain.
+            for (int i = 1; i < chain.ChainElements.Count; i++)
+            {
+                var issuerCert = chain.ChainElements[i].Certificate;
+                pfxCollection.Add(issuerCert);
+            }
+
+            // Export the entire collection to a single PKCS#12 (PFX) byte array.
+            // This Export overload exists in older .NET versions.
+            byte[] pfxBytes = pfxCollection.Export(
+                X509ContentType.Pfx,
+                string.Empty);
+
+            // Store the Base64 representation.
+            setupInfo.Certificate = Convert.ToBase64String(pfxBytes);
+
+            // Return a new X509Certificate2 object from the exported PFX data.
+            var flags = X509KeyStorageFlags.Exportable | X509KeyStorageFlags.PersistKeySet;
+            return new X509Certificate2(pfxBytes, string.Empty, flags);
         }
 
         public static string GetBasicCertificateInfo(this X509Certificate2 certificate)
         {
-            return $"Thumbprint: {certificate.Thumbprint}, Subject: {certificate.Subject}";
-        }
-    }
-    public static class PublicKeyPinningHashHelpers
-    {
-        public static string GetPublicKeyPinningHash(this X509Certificate2 cert)
-        {
-            //Get the SubjectPublicKeyInfo member of the certificate
-            var subjectPublicKeyInfo = GetSubjectPublicKeyInfoRaw(cert);
-
-            //Take the SHA2-256 hash of the DER ASN.1 encoded value
-            byte[] digest;
-            using (var sha2 = SHA256.Create())
-            {
-                digest = sha2.ComputeHash(subjectPublicKeyInfo);
-            }
-
-            //Convert hash to base64
-            var hash = Convert.ToBase64String(digest);
-
-            return hash;
+            return $"Thumbprint: {certificate.Thumbprint}, Subject: {certificate.Subject}, Raven Display Name: {certificate.GetDisplayName()}";
         }
 
-        public static unsafe byte[] GetSubjectPublicKeyInfoRaw(X509Certificate2 cert)
+        public static string GetDisplayName(this X509Certificate2 certificate)
         {
-            /*
-             Certificate is, by definition:
+            if (certificate == null)
+                return "(null)";
 
-                Certificate  ::=  SEQUENCE  {
-                    tbsCertificate       TBSCertificate,
-                    signatureAlgorithm   AlgorithmIdentifier,
-                    signatureValue       BIT STRING
-                }
+            if (string.IsNullOrEmpty(certificate.Subject) == false)
+                return certificate.Subject;
 
-               TBSCertificate  ::=  SEQUENCE  {
-                    version         [0]  EXPLICIT Version DEFAULT v1,
-                    serialNumber         CertificateSerialNumber,
-                    signature            AlgorithmIdentifier,
-                    issuer               Name,
-                    validity             Validity,
-                    subject              Name,
-                    subjectPublicKeyInfo SubjectPublicKeyInfo,
-                    issuerUniqueID  [1]  IMPLICIT UniqueIdentifier OPTIONAL, -- If present, version MUST be v2 or v3
-                    subjectUniqueID [2]  IMPLICIT UniqueIdentifier OPTIONAL, -- If present, version MUST be v2 or v3
-                    extensions      [3]  EXPLICIT Extensions       OPTIONAL  -- If present, version MUST be v3
-                }
+            if (string.IsNullOrEmpty(certificate.FriendlyName) == false)
+                return certificate.FriendlyName;
 
-            So we walk the ASN.1 DER tree in order to drill down to the SubjectPublicKeyInfo item
-            */
+            var dnsNames = GetCertificateAlternativeNames(certificate).ToList();
+            if (dnsNames.Any())
+                return string.Join(',', dnsNames);
 
-            var rawCert = cert.GetRawCertData();
-            var bufferLength = rawCert.Length;
-
-            fixed (byte* certPtr = rawCert)
-            {
-                var ptr = AsnNext(certPtr, ref bufferLength, true, false);  // unwrap certificate sequence
-                ptr = AsnNext(ptr, ref bufferLength, false, false); // get tbsCertificate
-                ptr = AsnNext(ptr, ref bufferLength, true, false);  // unwrap tbsCertificate sequence
-                ptr = AsnNext(ptr, ref bufferLength, false, true);  // skip tbsCertificate.Version
-                ptr = AsnNext(ptr, ref bufferLength, false, true);  // skip tbsCertificate.SerialNumber
-                ptr = AsnNext(ptr, ref bufferLength, false, true);  // skip tbsCertificate.Signature
-                ptr = AsnNext(ptr, ref bufferLength, false, true);  // skip tbsCertificate.Issuer
-                ptr = AsnNext(ptr, ref bufferLength, false, true);  // skip tbsCertificate.Validity
-                ptr = AsnNext(ptr, ref bufferLength, false, true);  // skip tbsCertificate.Subject
-                ptr = AsnNext(ptr, ref bufferLength, false, false); // get tbsCertificate.SubjectPublicKeyInfo
-
-                var subjectPublicKeyInfo = new byte[bufferLength];
-                fixed (byte* newPtr = subjectPublicKeyInfo)
-                {
-                    Memory.Copy(newPtr, ptr, bufferLength);
-                }
-                return subjectPublicKeyInfo;
-            }
+            return string.Empty;
         }
 
-        private static unsafe byte* AsnNext(byte* buffer, ref int bufferLength, bool unwrap, bool getRemaining)
+        public static RSA GetExportableRsaPrivateKey(this X509Certificate2 cert)
         {
-            if (bufferLength < 2)
-            {
-                return buffer;
-            }
-
-            var index = 0;
-            //var entityType = buffer[index];
-            index++;
-
-            int length = buffer[index];
-            index++;
-
-            var lengthBytes = 1;
-            if (length >= 0x80)
-            {
-                lengthBytes = length & 0x0F; //low nibble is number of length bytes to follow
-                length = 0;
-
-                for (var i = 0; i < lengthBytes; i++)
-                {
-                    length = (length << 8) + (int)buffer[index + i];
-                }
-                lengthBytes++;
-            }
-
-            int skip;
-            int take;
-            if (unwrap)
-            {
-                skip = 1 + lengthBytes;
-                take = length;
-            }
-            else
-            {
-                skip = 0;
-                take = 1 + lengthBytes + length;
-            }
-
-            if (getRemaining == false)
-            {
-                buffer += skip;
-                bufferLength = take;
-            }
-            else
-            {
-                buffer += skip + take;
-                bufferLength -= (skip + take);
-            }
-
-            return buffer;
+            var rsa = cert.GetRSAPrivateKey();
+            return rsa?.GetExportableRsaPrivateKey();
         }
-    }
 
-    public static class CertificateExtensions
-    {
-        public static Pkcs12Store BuildWithoutOracleOids(this Pkcs12StoreBuilder builder)
+        public static RSA GetExportableRsaPrivateKey(this RSA privateKey)
         {
-            return builder.SetEnableOracleTrustedKeyUsage(false).Build();
+            if (privateKey == null)
+                return null;
+
+            const CngExportPolicies exportability = CngExportPolicies.AllowExport | CngExportPolicies.AllowPlaintextExport;
+
+            // Thankfully we don't have to deal with all this on Linux
+            if (!PlatformDetails.RunningOnWindows)
+                return privateKey;
+
+            // We always expect an RSACng on Windows these days, but that could change
+            if ((privateKey is RSACng rsaCng) == false)
+                return privateKey;
+
+            // Is the AllowPlaintextExport policy flag already set?
+            if ((rsaCng.Key.ExportPolicy & exportability) != CngExportPolicies.AllowExport)
+                return privateKey;
+
+            // Export the original RSA private key to an encrypted blob - note you will get "The requested operation
+            // is not supported" if trying to export without encryption, so we export with encryption!
+            var exported = privateKey.ExportEncryptedPkcs8PrivateKey(nameof(GetExportableRsaPrivateKey),
+                new PbeParameters(PbeEncryptionAlgorithm.Aes256Cbc, HashAlgorithmName.SHA256, 2048));
+
+            // Load the exported blob into a fresh RSA object, which will have the AllowPlaintextExport policy without
+            // having to do anything else
+            RSA copy = RSA.Create();
+            copy.ImportEncryptedPkcs8PrivateKey(nameof(GetExportableRsaPrivateKey), exported, out _);
+
+            return copy;
         }
     }
 }

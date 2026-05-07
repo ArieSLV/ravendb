@@ -5,6 +5,9 @@ import database = require("models/resources/database");
 import getOngoingTaskInfoCommand = require("commands/database/tasks/getOngoingTaskInfoCommand");
 import eventsCollector = require("common/eventsCollector");
 import getConnectionStringsCommand = require("commands/database/settings/getConnectionStringsCommand");
+import getDatabaseSettingsCommand = require("commands/database/settings/getDatabaseSettingsCommand");
+import models = require("models/database/settings/databaseSettingsModels");
+import configurationConstants = require("configuration");
 import saveEtlTaskCommand = require("commands/database/tasks/saveEtlTaskCommand");
 import generalUtils = require("common/generalUtils");
 import ongoingTaskRavenEtlEditModel = require("models/database/tasks/ongoingTaskRavenEtlEditModel");
@@ -26,6 +29,7 @@ import shardViewModelBase = require("viewmodels/shardViewModelBase");
 import licenseModel = require("models/auth/licenseModel");
 import EditRavenEtlInfoHub = require("viewmodels/database/tasks/EditRavenEtlInfoHub");
 import typeUtils = require("common/typeUtils");
+import tasksCommonContent = require("models/database/tasks/tasksCommonContent");
 
 type resultItem = {
     header: string;
@@ -192,6 +196,7 @@ class editRavenEtlTask extends shardViewModelBase {
     ravenEtlConnectionStringsDetails = ko.observableArray<Raven.Client.Documents.Operations.ETL.RavenConnectionString>([]);
 
     possibleMentors = ko.observableArray<string>([]);
+    loadRequestTimeoutPlaceholder = ko.observable<string>("Use database default timeout");
 
     testConnectionResult = ko.observable<Raven.Server.Web.System.NodeConnectionTestResult>();
     
@@ -202,6 +207,8 @@ class editRavenEtlTask extends shardViewModelBase {
     
     fullErrorDetailsVisible = ko.observable<boolean>(false);
     shortErrorText: KnockoutObservable<string>;
+
+    taskNameDisabledReason: KnockoutComputed<string>;
     
     createNewConnectionString = ko.observable<boolean>(false);
     newConnectionString = ko.observable<connectionStringRavenEtlModel>();
@@ -254,7 +261,7 @@ class editRavenEtlTask extends shardViewModelBase {
             deferred.resolve();
         }
 
-        return $.when<any>(this.getAllConnectionStrings(), deferred)
+        return $.when<any>(this.getAllConnectionStrings(), this.loadDatabaseSettings(), deferred)
             .done(() => {
                 this.initObservables();
             })
@@ -283,6 +290,26 @@ class editRavenEtlTask extends shardViewModelBase {
             });
     }
 
+    private loadDatabaseSettings() {
+        return new getDatabaseSettingsCommand(this.db)
+            .execute()
+            .done((result: Raven.Server.Config.SettingsResult) => {
+                const key = configurationConstants.etl.ravenLoadRequestTimeout;
+                const rawEntry = result.Settings.find(x => x.Metadata.Keys.includes(key));
+
+                if (!rawEntry) {
+                    return;
+                }
+
+                const entry = models.settingsEntry.getEntry(rawEntry);
+                const effectiveValue = entry.effectiveValue();
+
+                if (effectiveValue) {
+                    this.loadRequestTimeoutPlaceholder(`Use database default timeout (${effectiveValue}s)`);
+                }
+            });
+    }
+
     private initObservables() {
         const model = this.editedRavenEtl();
         
@@ -295,6 +322,14 @@ class editRavenEtlTask extends shardViewModelBase {
             }
             return generalUtils.trimMessage(result.Error);
         });
+        
+        this.taskNameDisabledReason = ko.pureComputed(() => {
+            if (!this.isAddingNewRavenEtlTask()) {
+                return tasksCommonContent.etlTaskNameLocked;
+            }
+
+            return null;
+        });   
         
         this.newConnectionString(connectionStringRavenEtlModel.empty());
         this.newConnectionString().setNameUniquenessValidator(name => !this.ravenEtlConnectionStringsDetails().find(x => x.Name.toLocaleLowerCase() === name.toLocaleLowerCase()));

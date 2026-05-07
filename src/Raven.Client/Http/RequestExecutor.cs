@@ -51,6 +51,7 @@ namespace Raven.Client.Http
         internal readonly TimeSpan GlobalHttpClientTimeout;
 
         internal static IRavenHttpClientFactory HttpClientFactory = DefaultRavenHttpClientFactory.Instance;
+        internal static Func<X509Certificate2, X509Certificate2> ExtractServerCertificateFromExtension = null;
 
         private static readonly GetStatisticsOperation BackwardCompatibilityFailureCheckOperation = new GetStatisticsOperation(debugTag: "failure=check");
         private static readonly DatabaseHealthCheckOperation FailureCheckOperation = new DatabaseHealthCheckOperation();
@@ -599,6 +600,9 @@ namespace Raven.Client.Http
             SessionInfo sessionInfo = null,
             CancellationToken token = default)
         {
+            if (InMemoryDocumentSessionOperations.DisableDisposeChecks == false && Disposed)
+                ThrowObjectDisposedException();
+
             var topologyUpdate = _firstTopologyUpdate;
 
             if (topologyUpdate != null && topologyUpdate.Status == TaskStatus.RanToCompletion)
@@ -1560,7 +1564,14 @@ namespace Raven.Client.Http
                     }
                     else if (Certificate.HasPrivateKey)
                     {
-                        builder.Append(Certificate.FriendlyName).Append(" does not have permission to access it or is unknown. ");
+                        var extractedCertificate = ExtractServerCertificateFromExtension?.Invoke(Certificate);
+                        builder.Append(Certificate.FriendlyName).Append(" (Thumbprint: ").Append(Certificate.Thumbprint).Append(")");
+                        if (extractedCertificate != null)
+                        {
+                            builder.Append(" with embedded Server Certificate ").Append(extractedCertificate.FriendlyName)
+                                .Append(" (Thumbprint: ").Append(extractedCertificate.Thumbprint).Append(")");
+                        }
+                        builder.Append(" does not have permission to access it or is unknown. ");
                     }
                     else
                     {
@@ -2049,6 +2060,11 @@ namespace Raven.Client.Http
         internal bool Disposed => _disposeOnceRunner.Disposed;
 
         public static bool HasServerCertificateCustomValidationCallback => _serverCertificateCustomValidationCallback?.Length > 0;
+
+        private static void ThrowObjectDisposedException()
+        {
+            throw new ObjectDisposedException(nameof(RequestExecutor), "The request executor has already been disposed and cannot be used");
+        }
 
         public virtual void Dispose()
         {

@@ -1,10 +1,4 @@
-// -----------------------------------------------------------------------
-//  <copyright file="OperationState.cs" company="Hibernating Rhinos LTD">
-//      Copyright (c) Hibernating Rhinos LTD. All rights reserved.
-//  </copyright>
-// -----------------------------------------------------------------------
-
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Sparrow.Json.Parsing;
 
@@ -17,15 +11,22 @@ namespace Raven.Client.Documents.Operations
         public IOperationProgress Progress { get; set; }
 
         public OperationStatus Status { get; set; }
+        
+        internal bool PersistProgressOnFaultedStatus { get; set; }
 
         public DynamicJsonValue ToJson()
         {
-            return new DynamicJsonValue(GetType())
+            var djv = new DynamicJsonValue(GetType())
             {
                 [nameof(Progress)] = Progress?.ToJson(),
                 [nameof(Result)] = Result?.ToJson(),
                 [nameof(Status)] = Status.ToString()
             };
+
+            if (PersistProgressOnFaultedStatus)
+                djv[nameof(PersistProgressOnFaultedStatus)] = PersistProgressOnFaultedStatus;
+
+            return djv;
         }
     }
 

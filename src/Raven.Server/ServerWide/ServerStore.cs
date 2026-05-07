@@ -33,6 +33,7 @@ using Raven.Client.Json.Serialization;
 using Raven.Client.ServerWide;
 using Raven.Client.ServerWide.Commands;
 using Raven.Client.ServerWide.Operations;
+using Raven.Client.ServerWide.Operations.Certificates;
 using Raven.Client.ServerWide.Operations.Configuration;
 using Raven.Client.ServerWide.Operations.Integrations.PostgreSQL;
 using Raven.Client.ServerWide.Operations.OngoingTasks;
@@ -109,6 +110,8 @@ namespace Raven.Server.ServerWide
         public const string LicenseStorageKey = "License/Key";
 
         public const string LicenseLimitsStorageKey = "License/Limits/Key";
+        
+        public const string SystemDirectoryName = "System";
 
         private readonly CancellationTokenSource _shutdownNotification = new CancellationTokenSource();
         private FileLocker _fileLocker;
@@ -136,6 +139,7 @@ namespace Raven.Server.ServerWide
         public readonly FeedbackSender FeedbackSender;
         public readonly StorageSpaceMonitor StorageSpaceMonitor;
         public readonly ServerLimitsMonitor ServerLimitsMonitor;
+        public readonly GcThreadContentionDetector GcThreadContentionDetector;
         public readonly SecretProtection Secrets;
         public readonly AsyncManualResetEvent InitializationCompleted;
         public readonly GlobalIndexingScratchSpaceMonitor GlobalIndexingScratchSpaceMonitor;
@@ -204,6 +208,8 @@ namespace Raven.Server.ServerWide
 
             ServerLimitsMonitor = new ServerLimitsMonitor(this, NotificationCenter, _notificationsStorage);
 
+            GcThreadContentionDetector = new GcThreadContentionDetector(this, NotificationCenter);
+
             DatabaseInfoCache = new DatabaseInfoCache(this);
 
             Secrets = new SecretProtection(configuration.Security);
@@ -260,7 +266,7 @@ namespace Raven.Server.ServerWide
             });
         }
 
-        private Lazy<ClusterRequestExecutor> CreateClusterRequestExecutor() => new(() => ClusterRequestExecutor.Create(new[] { GetNodeHttpServerUrl() }, Server.Certificate.Certificate, Server.Conventions), LazyThreadSafetyMode.ExecutionAndPublication);
+        private Lazy<ClusterRequestExecutor> CreateClusterRequestExecutor() => new(() => ClusterRequestExecutor.Create(new[] { GetNodeHttpServerUrl() }, Server.Certificate.ClientCertificate, Server.Conventions), LazyThreadSafetyMode.ExecutionAndPublication);
 
         internal readonly FifoSemaphore ServerWideConcurrentlyRunningIndexesLock;
 
@@ -370,9 +376,9 @@ namespace Raven.Server.ServerWide
                                 {
                                     var leaderWsUrl = new Uri($"{leaderUrl.Replace("http", "ws", StringComparison.OrdinalIgnoreCase)}/server/notification-center/watch");
 
-                                    if (Server.Certificate?.Certificate != null)
+                                    if (Server.Certificate?.ServerCertificate != null)
                                     {
-                                        ws.Options.ClientCertificates.Add(Server.Certificate.Certificate);
+                                        ws.Options.ClientCertificates.Add(Server.Certificate.ServerCertificate);
                                     }
 
                                     ws.ConnectAsync(leaderWsUrl, cts.Token).Wait(cts.Token);
@@ -631,7 +637,7 @@ namespace Raven.Server.ServerWide
             if (Logger.IsInfoEnabled)
                 Logger.Info("Starting to open server store for " + (Configuration.Core.RunInMemory ? "<memory>" : Configuration.Core.DataDirectory.FullPath));
 
-            var path = Configuration.Core.DataDirectory.Combine("System");
+            var path = Configuration.Core.DataDirectory.Combine(SystemDirectoryName);
 
             IoChanges = new IoChangesNotifications
             {
@@ -651,7 +657,7 @@ namespace Raven.Server.ServerWide
                 string tempPath = null;
 
                 if (Configuration.Storage.TempPath != null)
-                    tempPath = Configuration.Storage.TempPath.Combine("System").FullPath;
+                    tempPath = Configuration.Storage.TempPath.Combine(SystemDirectoryName).FullPath;
 
                 options = StorageEnvironmentOptions.ForPath(path.FullPath, tempPath, null, IoChanges, CatastrophicFailureNotification);
                 var secretKey = Path.Combine(path.FullPath, "secret.key.encrypted");
@@ -1015,7 +1021,7 @@ namespace Raven.Server.ServerWide
                 Configuration.Security.AuditLogCompress);
 
             var auditLog = LoggingSource.AuditLog.GetLogger("ServerStartup", "Audit");
-            auditLog.Operations($"Server started up, listening to {string.Join(", ", Configuration.Core.ServerUrls)} with certificate {_server.Certificate?.Certificate?.Subject} ({_server.Certificate?.Certificate?.Thumbprint}), public url: {Configuration.Core.PublicServerUrl}");
+            auditLog.Operations($"Server started up, listening to {string.Join(", ", Configuration.Core.ServerUrls)} with certificate {_server.Certificate?.ServerCertificate?.GetDisplayName()} ({_server.Certificate?.ServerCertificate?.Thumbprint}), public url: {Configuration.Core.PublicServerUrl}");
         }
 
         private void AssertCanWriteToAuditLogDirectory()
@@ -1498,7 +1504,7 @@ namespace Raven.Server.ServerWide
                         nodesInCluster = GetClusterTopology(context).AllNodes.Count;
                     }
 
-                    if (thumbprint == Server.Certificate?.Certificate?.Thumbprint)
+                    if (thumbprint == Server.Certificate?.ServerCertificate?.Thumbprint)
                     {
                         if (nodesInCluster > replaced)
                         {
@@ -1634,11 +1640,11 @@ namespace Raven.Server.ServerWide
 
                         if (nodesInCluster > confirmations && replaceImmediately == false)
                         {
-                            if (Server.Certificate?.Certificate?.NotAfter != null &&
-                                (Server.Certificate.Certificate.NotAfter - Server.Time.GetUtcNow().ToLocalTime()).Days > 3)
+                            if (Server.Certificate?.ServerCertificate?.NotAfter != null &&
+                                (Server.Certificate.ServerCertificate.NotAfter - Server.Time.GetUtcNow().ToLocalTime()).Days > 3)
                             {
                                 var msg = $"Not all nodes have confirmed the certificate replacement. Confirmation count: {confirmations}. " +
-                                          $"We still have {(Server.Certificate.Certificate.NotAfter - Server.Time.GetUtcNow().ToLocalTime()).Days} days until expiration. " +
+                                          $"We still have {(Server.Certificate.ServerCertificate.NotAfter - Server.Time.GetUtcNow().ToLocalTime()).Days} days until expiration. " +
                                           "The update will happen when all nodes confirm the replacement or we have less than 3 days left for expiration." +
                                           $"If you wish to force replacing the certificate just for the nodes that are up, please set '{nameof(CertificateReplacement.ReplaceImmediately)}' to true.";
 
@@ -1660,7 +1666,7 @@ namespace Raven.Server.ServerWide
                             throw new InvalidOperationException(
                                 $"Invalid 'server/cert' value, expected to get '{nameof(CertificateReplacement.Certificate)}' and '{nameof(CertificateReplacement.Thumbprint)}' properties");
 
-                        if (certThumbprint == Server.Certificate?.Certificate?.Thumbprint)
+                        if (certThumbprint == Server.Certificate?.ServerCertificate?.Thumbprint)
                             return;
 
                         if (cert.TryGet(nameof(CertificateReplacement.OldThumbprint), out oldThumbprint) == false)
@@ -1705,7 +1711,7 @@ namespace Raven.Server.ServerWide
                         catch (Exception e)
                         {
                             if (Logger.IsOperationsEnabled)
-                                Logger.Operations($"Unable to notify executable about the cluster certificate change '{Server.Certificate.Certificate.Thumbprint}'.", e);
+                                Logger.Operations($"Unable to notify executable about the cluster certificate change '{Server.Certificate.ServerCertificate.Thumbprint}'.", e);
                         }
                     }
                     else
@@ -2385,8 +2391,9 @@ namespace Raven.Server.ServerWide
                 switch (EtlConfiguration<ConnectionString>.GetEtlType(etlConfiguration))
                 {
                     case EtlType.Raven:
+                        var existingRvnConfiguration = rawRecord.RavenEtls.Single(x => x.TaskId == id);
                         var rvnEtl = JsonDeserializationCluster.RavenEtlConfiguration(etlConfiguration);
-                        rvnEtl.Validate(out var rvnEtlErr, validateName: false, validateConnection: false);
+                        rvnEtl.Validate(out var rvnEtlErr, validateName: false, validateConnection: false, existingRvnConfiguration);
                         if (ValidateConnectionString(rawRecord, rvnEtl.ConnectionStringName, rvnEtl.EtlType) == false)
                             rvnEtlErr.Add($"Could not find connection string named '{rvnEtl.ConnectionStringName}'. Please supply an existing connection string.");
 
@@ -2395,8 +2402,9 @@ namespace Raven.Server.ServerWide
                         command = new UpdateRavenEtlCommand(id, rvnEtl, databaseName, raftRequestId);
                         break;
                     case EtlType.Sql:
+                        var existingSqlConfiguration = rawRecord.SqlEtls.Single(x => x.TaskId == id);
                         var sqlEtl = JsonDeserializationCluster.SqlEtlConfiguration(etlConfiguration);
-                        sqlEtl.Validate(out var sqlEtlErr, validateName: false, validateConnection: false);
+                        sqlEtl.Validate(out var sqlEtlErr, validateName: false, validateConnection: false, existingSqlConfiguration);
                         if (ValidateConnectionString(rawRecord, sqlEtl.ConnectionStringName, sqlEtl.EtlType) == false)
                             sqlEtlErr.Add($"Could not find connection string named '{sqlEtl.ConnectionStringName}'. Please supply an existing connection string.");
 
@@ -2405,8 +2413,9 @@ namespace Raven.Server.ServerWide
                         command = new UpdateSqlEtlCommand(id, sqlEtl, databaseName, raftRequestId);
                         break;
                     case EtlType.Olap:
+                        var existingOlapConfiguration = rawRecord.OlapEtls.Single(x => x.TaskId == id);
                         var olapEtl = JsonDeserializationCluster.OlapEtlConfiguration(etlConfiguration);
-                        olapEtl.Validate(out var olapEtlErr, validateName: false, validateConnection: false);
+                        olapEtl.Validate(out var olapEtlErr, validateName: false, validateConnection: false, existingOlapConfiguration);
                         if (ValidateConnectionString(rawRecord, olapEtl.ConnectionStringName, olapEtl.EtlType) == false)
                             olapEtlErr.Add($"Could not find connection string named '{olapEtl.ConnectionStringName}'. Please supply an existing connection string.");
 
@@ -2415,8 +2424,9 @@ namespace Raven.Server.ServerWide
                         command = new UpdateOlapEtlCommand(id, olapEtl, databaseName, raftRequestId);
                         break;
                     case EtlType.ElasticSearch:
+                        var existingElasticSearchConfiguration = rawRecord.ElasticSearchEtls.Single(x => x.TaskId == id);
                         var elasticSearchEtl = JsonDeserializationCluster.ElasticSearchEtlConfiguration(etlConfiguration);
-                        elasticSearchEtl.Validate(out var elasticSearchEtlErr, validateName: false, validateConnection: false);
+                        elasticSearchEtl.Validate(out var elasticSearchEtlErr, validateName: false, validateConnection: false, existingElasticSearchConfiguration);
                         if (ValidateConnectionString(rawRecord, elasticSearchEtl.ConnectionStringName, elasticSearchEtl.EtlType) == false)
                             elasticSearchEtlErr.Add($"Could not find connection string named '{elasticSearchEtl.ConnectionStringName}'. Please supply an existing connection string.");
 
@@ -2425,8 +2435,9 @@ namespace Raven.Server.ServerWide
                         command = new UpdateElasticSearchEtlCommand(id, elasticSearchEtl, databaseName, raftRequestId);
                         break;
                     case EtlType.Queue:
+                        var existingQueueConfiguration = rawRecord.QueueEtls.Single(x => x.TaskId == id);
                         var queueEtl = JsonDeserializationCluster.QueueEtlConfiguration(etlConfiguration);
-                        queueEtl.Validate(out var queueEtlErr, validateName: false, validateConnection: false);
+                        queueEtl.Validate(out var queueEtlErr, validateName: false, validateConnection: false, existingQueueConfiguration);
                         if (ValidateConnectionString(rawRecord, queueEtl.ConnectionStringName, queueEtl.EtlType) == false)
                             queueEtlErr.Add($"Could not find connection string named '{queueEtl.ConnectionStringName}'. Please supply an existing connection string.");
 
@@ -2630,6 +2641,21 @@ namespace Raven.Server.ServerWide
                             }
                         }
 
+                        var queueSinks = rawRecord.QueueSinks;
+
+                        // Don't delete the connection string if used by tasks types: Queue Sink
+                        if (queueSinks != null)
+                        {
+                            foreach (var queueSinkTask in queueSinks)
+                            {
+                                if (queueSinkTask.ConnectionStringName == connectionStringName)
+                                {
+                                    throw new InvalidOperationException(
+                                        $"Can't delete connection string: {connectionStringName}. It is used by task: {queueSinkTask.Name}");
+                                }
+                            }
+                        }
+
                         command = new RemoveQueueConnectionStringCommand(connectionStringName, databaseName, raftRequestId);
                         break;
 
@@ -2709,6 +2735,7 @@ namespace Raven.Server.ServerWide
                     {
                         StorageSpaceMonitor,
                         ServerLimitsMonitor,
+                        GcThreadContentionDetector,
                         NotificationCenter,
                         LicenseManager,
                         DatabasesLandlord,
@@ -3119,7 +3146,8 @@ namespace Raven.Server.ServerWide
                 long? index = null;
                 using (ctx.OpenReadTransaction())
                 {
-                    foreach (var localCertKey in Cluster.GetCertificateThumbprintsFromLocalState(ctx))
+                    var localCertKeys = Cluster.GetCertificateThumbprintsFromLocalState(ctx).ToList();
+                    foreach (var localCertKey in localCertKeys)
                     {
                         // if there are trusted certificates in the local state, we will register them in the cluster now
                         using (var localCertificate = Cluster.GetLocalStateByThumbprint(ctx, localCertKey))
@@ -3217,7 +3245,7 @@ namespace Raven.Server.ServerWide
             {
                 NodeTag = NodeTag,
                 TopologyId = clusterTopology.TopologyId,
-                Certificate = Server.Certificate.CertificateForClients,
+                Certificate = Server.Certificate.ServerCertificateForClients,
                 NumberOfCores = ProcessorInfo.ProcessorCount,
                 InstalledMemoryInGb = memoryInformation.InstalledMemory.GetDoubleValue(SizeUnit.Gigabytes),
                 UsableMemoryInGb = memoryInformation.TotalPhysicalMemory.GetDoubleValue(SizeUnit.Gigabytes),
@@ -3346,7 +3374,7 @@ namespace Raven.Server.ServerWide
         {
             await Cluster.WaitForIndexNotification(index); // first let see if we commit this in the leader
 
-            using (var requester = ClusterRequestExecutor.CreateForShortTermUse(GetClusterTopology().GetUrlFromTag(node), Server.Certificate.Certificate, Server.Conventions))
+            using (var requester = ClusterRequestExecutor.CreateForShortTermUse(GetClusterTopology().GetUrlFromTag(node), Server.Certificate.ClientCertificate, Server.Conventions))
             using (var oct = new OperationCancelToken(cancelAfter: Configuration.Cluster.OperationTimeout.AsTimeSpan, token: ServerShutdown))
                 await requester.ExecuteAsync(new WaitForRaftIndexCommand(index), context, token: oct.Token);
         }
@@ -3358,7 +3386,7 @@ namespace Raven.Server.ServerWide
             if (members == null || members.Count == 0)
                 throw new InvalidOperationException("Cannot wait for execution when there are no nodes to execute on.");
 
-            using (var requestExecutor = ClusterRequestExecutor.Create(GetClusterTopology().Members.Values.ToArray(), Server.Certificate.Certificate, Server.Conventions))
+            using (var requestExecutor = ClusterRequestExecutor.Create(GetClusterTopology().Members.Values.ToArray(), Server.Certificate.ClientCertificate, Server.Conventions))
             using (var oct = new OperationCancelToken(cancelAfter: Configuration.Cluster.OperationTimeout.AsTimeSpan, token: ServerShutdown))
             {
                 List<Exception> exceptions = null;
@@ -3420,7 +3448,7 @@ namespace Raven.Server.ServerWide
 
         internal ClusterRequestExecutor CreateNewClusterRequestExecutor(string leaderUrl)
         {
-            var requestExecutor = ClusterRequestExecutor.CreateForSingleNode(leaderUrl, Server.Certificate.Certificate, Server.Conventions);
+            var requestExecutor = ClusterRequestExecutor.CreateForSingleNode(leaderUrl, Server.Certificate.ClientCertificate, Server.Conventions);
             requestExecutor.DefaultTimeout = Engine.OperationTimeout;
 
             return requestExecutor;
@@ -3565,7 +3593,7 @@ namespace Raven.Server.ServerWide
 
                 using (var cts = new CancellationTokenSource(Server.Configuration.Cluster.OperationTimeout.AsTimeSpan))
                 {
-                    connectionInfo = ReplicationUtils.GetDatabaseTcpInfoAsync(GetNodeHttpServerUrl(), url, database, "Test-Connection", Server.Certificate.Certificate,
+                    connectionInfo = ReplicationUtils.GetDatabaseTcpInfoAsync(GetNodeHttpServerUrl(), url, database, "Test-Connection", Server.Certificate.ClientCertificate,
                         cts.Token);
                 }
                 Task timeoutTask = await Task.WhenAny(timeout, connectionInfo);
@@ -3620,7 +3648,7 @@ namespace Raven.Server.ServerWide
             var res = new DynamicJsonValue
             {
                 [nameof(TcpConnectionInfo.Url)] = tcpServerUrl,
-                [nameof(TcpConnectionInfo.Certificate)] = _server.Certificate.CertificateForClients,
+                [nameof(TcpConnectionInfo.Certificate)] = _server.Certificate.ServerCertificateForClients,
                 [nameof(TcpConnectionInfo.NodeTag)] = NodeTag,
                 [nameof(TcpConnectionInfo.ServerId)] = ServerId.ToString()
             };
@@ -3681,7 +3709,7 @@ namespace Raven.Server.ServerWide
                     };
                     var journalIoStatsResult = Server.DiskStatsGetter.Get(driveInfo?.JournalPath.DriveName);
                     if (journalIoStatsResult != null)
-                        usage.IoStatsResult = FillIoStatsResult(ioStatsResult);
+                        journalUsage.IoStatsResult = FillIoStatsResult(journalIoStatsResult);
 
                     yield return journalUsage;
                 }
@@ -3707,7 +3735,7 @@ namespace Raven.Server.ServerWide
                         };
                         var tempBufferIoStatsResult = Server.DiskStatsGetter.Get(driveInfo?.TempPath.DriveName);
                         if (tempBufferIoStatsResult != null)
-                            tempBuffersUsage.IoStatsResult = FillIoStatsResult(ioStatsResult);
+                            tempBuffersUsage.IoStatsResult = FillIoStatsResult(tempBufferIoStatsResult);
 
                         yield return tempBuffersUsage;
                     }

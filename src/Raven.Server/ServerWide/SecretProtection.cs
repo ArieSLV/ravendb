@@ -4,20 +4,12 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
-using Org.BouncyCastle.Asn1;
-using Org.BouncyCastle.Asn1.Pkcs;
-using Org.BouncyCastle.Asn1.X509;
-using Org.BouncyCastle.Crypto;
-using Org.BouncyCastle.Pkcs;
-using Org.BouncyCastle.Security;
-using Org.BouncyCastle.Utilities;
-using Org.BouncyCastle.Utilities.Encoders;
-using Org.BouncyCastle.X509;
-using Org.BouncyCastle.X509.Extension;
+using Raven.Client;
 using Raven.Client.Util;
 using Raven.Server.Commercial;
 using Raven.Server.Config.Categories;
@@ -362,22 +354,45 @@ namespace Raven.Server.ServerWide
             }
         }
 
-        public static CertificateUtils.CertificateHolder ValidateCertificateAndCreateCertificateHolder(string source, X509Certificate2 loadedCertificate, byte[] rawBytes, string password, LicenseType licenseType, bool validateCertKeyUsages, SetupProgressAndResult progress = null)
+        public static CertificateUtils.CertificateHolder ValidateCertificateAndCreateCertificateHolder(string source,
+            X509Certificate2 serverCertificate,
+            byte[] rawBytes,
+            string password,
+            LicenseType licenseType,
+            bool validateCertKeyUsages,
+            SetupProgressAndResult progress = null)
         {
-            ValidateExpiration(source, loadedCertificate, licenseType, progress: progress);
+            AsymmetricAlgorithm privateKey = ValidateServerCertificate(source, serverCertificate, rawBytes, password, licenseType, validateCertKeyUsages, progress);
 
-            ValidatePrivateKey(source, password, rawBytes, out var privateKey, progress);
-
-            ValidateKeyUsages(source, loadedCertificate, validateCertKeyUsages, progress);
-
-            AddCertificateChainToTheUserCertificateAuthorityStoreAndCleanExpiredCerts(loadedCertificate, rawBytes, password, progress);
-
-            return new CertificateUtils.CertificateHolder(loadedCertificate, privateKey, Convert.ToBase64String(loadedCertificate.Export(X509ContentType.Cert)));
+            return new CertificateUtils.CertificateHolder(serverCertificate, privateKey);
         }
 
-        public static void ValidateKeyUsages(string source, X509Certificate2 loadedCertificate, bool validateKeyUsages, SetupProgressAndResult progress = null)
+        public static AsymmetricAlgorithm ValidateServerCertificate(string source,
+            X509Certificate2 loadedCertificate,
+            byte[] rawBytes,
+            string password,
+            LicenseType licenseType,
+            bool validateCertKeyUsages,
+            SetupProgressAndResult progress = null)
         {
-            var clientCert = false;
+            ValidateExpiration(source, loadedCertificate, licenseType, progress: progress);
+            
+            AsymmetricAlgorithm privateKey = null;
+            if (PlatformDetails.RunningOnMacOsx)
+            {
+                ValidatePrivateKeyOnMacOs(source, loadedCertificate, out privateKey);
+            }
+            else
+            {
+                ValidatePrivateKey(source, password, rawBytes, out privateKey, progress);
+            }
+            
+            ValidateServerKeyUsages(source, loadedCertificate, validateCertKeyUsages, progress);
+            return privateKey;
+        }
+
+        public static void ValidateServerKeyUsages(string source, X509Certificate2 loadedCertificate, bool validateKeyUsages, SetupProgressAndResult progress = null)
+        {
             var serverCert = false;
             var keyUsages = false;
 
@@ -385,7 +400,7 @@ namespace Raven.Server.ServerWide
             {
                 if (extension is X509KeyUsageExtension kue)
                 {
-                    if (kue.KeyUsages.HasFlag(X509KeyUsageFlags.DigitalSignature) && kue.KeyUsages.HasFlag(X509KeyUsageFlags.KeyEncipherment))
+                    if (kue.KeyUsages.HasFlag(X509KeyUsageFlags.DigitalSignature))
                         keyUsages = true;
                 }
 
@@ -395,10 +410,7 @@ namespace Raven.Server.ServerWide
                     {
                         switch (usage.Value)
                         {
-                            case "1.3.6.1.5.5.7.3.2":
-                                clientCert = true;
-                                break;
-                            case "1.3.6.1.5.5.7.3.1":
+                            case Constants.Certificates.ServerAuthenticationOid:
                                 serverCert = true;
                                 break;
                         }
@@ -406,7 +418,7 @@ namespace Raven.Server.ServerWide
                 }
             }
 
-            var shouldThrow = clientCert == false || serverCert == false;
+            var shouldThrow = serverCert == false;
             if (validateKeyUsages && keyUsages == false)
                 shouldThrow = true;
 
@@ -418,11 +430,9 @@ namespace Raven.Server.ServerWide
             if (validateKeyUsages && keyUsages == false)
             {
                 sb.AppendLine("- Key Usage: DigitalSignature");
-                sb.AppendLine("- Key Usage: KeyEncipherment");
             }
 
-            sb.AppendLine("- Enhanced Key Usage: Client Authentication (Oid 1.3.6.1.5.5.7.3.2)");
-            sb.AppendLine("- Enhanced Key Usage: Server Authentication (Oid 1.3.6.1.5.5.7.3.1)");
+            sb.AppendLine($"- Enhanced Key Usage: Server Authentication (Oid {Constants.Certificates.ServerAuthenticationOid})");
 
             var msg = sb.ToString();
 
@@ -430,13 +440,61 @@ namespace Raven.Server.ServerWide
                 Logger.Operations(msg);
             progress?.AddInfo(msg);
 
-            throw new EncryptionException(msg);
+            throw new CryptographicException(msg);
+        }
+
+        public static bool HasCertificateClientAuthEnhancedKeyUsage(X509Certificate2 certificate)
+        {
+            if (certificate == null)
+                return false;
+
+            foreach (var extension in certificate.Extensions)
+            {
+                if (extension is X509EnhancedKeyUsageExtension ekue) //Enhanced Key Usage extension
+                {
+                    foreach (var usage in ekue.EnhancedKeyUsages)
+                    {
+                        switch (usage.Value)
+                        {
+                            case Constants.Certificates.ClientAuthenticationOid:
+                                return true;
+                        }
+                    }
+                }
+            }
+
+            return false;
+        }
+        
+        public static bool HasCertificateServerAuthEnhancedKeyUsage(X509Certificate2 certificate)
+        {
+            if (certificate == null)
+                return false;
+            
+            foreach (var extension in certificate.Extensions)
+            {
+                if (extension is X509EnhancedKeyUsageExtension ekue) //Enhanced Key Usage extension
+                {
+                    foreach (var usage in ekue.EnhancedKeyUsages)
+                    {
+                        switch (usage.Value)
+                        {
+                            case Constants.Certificates.ServerAuthenticationOid:
+                                return true;
+                        }
+                    }
+                }
+            }
+
+            return false;
         }
 
 #if !RVN
 
-
-        public CertificateUtils.CertificateHolder LoadCertificateWithExecutable(string executable, string args, LicenseType licenseType, bool certificateValidationKeyUsages)
+        public (X509Certificate2 Certificate, AsymmetricAlgorithm PrivateKey) LoadCertificateWithExecutable(string executable,
+            string args,
+            LicenseType licenseType,
+            bool certificateValidationKeyUsages)
         {
             Process process;
 
@@ -498,7 +556,7 @@ namespace Raven.Server.ServerWide
             {
                 var errors = GetStdError();
                 Logger.Operations($"Executing {executable} {args} took {sw.ElapsedMilliseconds:#,#;;0} ms");
-                if (!string.IsNullOrWhiteSpace(errors))
+                if (string.IsNullOrWhiteSpace(errors) == false)
                     Logger.Operations($"Executing {executable} {args} finished with exit code: {process.ExitCode}. Errors: {errors}");
             }
 
@@ -509,21 +567,20 @@ namespace Raven.Server.ServerWide
 
             var rawData = ms.ToArray();
             X509Certificate2 loadedCertificate;
-            AsymmetricKeyEntry privateKey;
             try
             {
                 // may need to send this over the cluster, so use exportable here
                 loadedCertificate = CertificateLoaderUtil.CreateCertificate(rawData, (string)null, CertificateLoaderUtil.FlagsForExport);
                 ValidateExpiration(executable, loadedCertificate, licenseType, throwOnExpired: false);
-                ValidatePrivateKey(executable, null, rawData, out privateKey);
-                ValidateKeyUsages(executable, loadedCertificate, certificateValidationKeyUsages);
+                ValidatePrivateKey(executable, null, rawData, out var privateKey);
+                ValidateServerKeyUsages(executable, loadedCertificate, certificateValidationKeyUsages);
+                
+                return (loadedCertificate, privateKey);
             }
             catch (Exception e)
             {
                 throw new InvalidOperationException($"Got invalid certificate via {executable} {args}", e);
             }
-
-            return new CertificateUtils.CertificateHolder(loadedCertificate, privateKey, Convert.ToBase64String(loadedCertificate.Export(X509ContentType.Cert)));
         }
 
         public void NotifyExecutableOfCertificateChange(string executable, string args, string newCertificateBase64)
@@ -587,7 +644,7 @@ namespace Raven.Server.ServerWide
             {
                 var errors = GetStdError();
                 Logger.Operations($"Executing {executable} {args} took {sw.ElapsedMilliseconds:#,#;;0} ms");
-                if (!string.IsNullOrWhiteSpace(errors))
+                if (string.IsNullOrWhiteSpace(errors) == false)
                     Logger.Operations($"Executing {executable} {args} finished with exit code: {process.ExitCode}. Errors: {errors}");
             }
 
@@ -710,15 +767,20 @@ namespace Raven.Server.ServerWide
                 // and it exploded with thousands of certificates. This caused ssl handshakes to fail on that machine, because it would timeout when
                 // trying to match one of these certs to validate the chain.
 
-                if (loadedCertificate.SubjectName.Name == null)
-                    return;
-
+                IEnumerable<X509Certificate2> existingCerts;
+                if (string.IsNullOrEmpty(loadedCertificate.SubjectName.Name))
+                {
+                    existingCerts = userIntermediateStore.Certificates.Where(x => x.GetDisplayName() == loadedCertificate.GetDisplayName()).ToList();;
+                }
+                else
+                {
                 var cnValue = loadedCertificate.SubjectName.Name.StartsWith("CN=", StringComparison.OrdinalIgnoreCase)
                     ? loadedCertificate.SubjectName.Name.Substring(3)
                     : loadedCertificate.SubjectName.Name;
+                    existingCerts = userIntermediateStore.Certificates.Find(X509FindType.FindBySubjectName, cnValue, false);
+                }
 
                 var utcNow = DateTime.UtcNow;
-                var existingCerts = userIntermediateStore.Certificates.Find(X509FindType.FindBySubjectName, cnValue, false);
                 foreach (var c in existingCerts)
                 {
                     if (c.NotAfter.ToUniversalTime() > utcNow && c.NotBefore.ToUniversalTime() < utcNow)
@@ -751,7 +813,10 @@ namespace Raven.Server.ServerWide
             }
         }
 
-        public CertificateUtils.CertificateHolder LoadCertificateFromPath(string path, string password, LicenseType licenseType, bool certificateValidationKeyUsages)
+        public (X509Certificate2 Certificate, AsymmetricAlgorithm PrivateKey) LoadCertificateFromPath(string path,
+            string password,
+            LicenseType licenseType,
+            bool certificateValidationKeyUsages)
         {
             try
             {
@@ -763,11 +828,19 @@ namespace Raven.Server.ServerWide
 
                 ValidateExpiration(path, loadedCertificate, licenseType, throwOnExpired: false);
 
-                ValidatePrivateKey(path, password, rawData, out var privateKey);
+                AsymmetricAlgorithm privateKey = null;
+                if (PlatformDetails.RunningOnMacOsx)
+                {
+                    ValidatePrivateKeyOnMacOs(path, loadedCertificate, out privateKey);
+                }
+                else
+                {
+                    ValidatePrivateKey(path, password, rawData, out privateKey);
+                }
+                
+                ValidateServerKeyUsages(path, loadedCertificate, certificateValidationKeyUsages);
 
-                ValidateKeyUsages(path, loadedCertificate, certificateValidationKeyUsages);
-
-                return new CertificateUtils.CertificateHolder(loadedCertificate, privateKey, Convert.ToBase64String(loadedCertificate.Export(X509ContentType.Cert)));
+                return (loadedCertificate, privateKey);
             }
             catch (Exception e)
             {
@@ -779,63 +852,57 @@ namespace Raven.Server.ServerWide
         {
             ValidateExpiration("ValidateCertificateBeforeReplacement", certificate, licenseType, throwOnExpired: true);
 
-            ValidatePrivateKey("ValidateCertificateBeforeReplacement", password, certificate.Export(X509ContentType.Pkcs12), out _);
-            
-            ValidateKeyUsages("ValidateCertificateBeforeReplacement", certificate, certificateValidationKeyUsages);
+            if (PlatformDetails.RunningOnMacOsx)
+            {
+                // macOS AppleCrypto blocks exporting ephemeral private keys to PFX, 
+                // We validate the private key's presence directly in memory instead.
+                ValidatePrivateKeyOnMacOs("ValidateCertificateBeforeReplacement", certificate, out var pk);
+                pk?.Dispose();
+            }
+            else
+            {
+                // On Windows and Linux, proceed with the standard export-based validation
+                ValidatePrivateKey("ValidateCertificateBeforeReplacement", password, certificate.Export(X509ContentType.Pkcs12), out var pk);
+                pk?.Dispose();
+            }
+
+            ValidateServerKeyUsages("ValidateCertificateBeforeReplacement", certificate, certificateValidationKeyUsages);
+        }
+        
+        internal static void ValidatePrivateKeyOnMacOs(string source, X509Certificate2 certificate, out AsymmetricAlgorithm pk, SetupProgressAndResult progress = null)
+        {
+            // Attempt to get the private key directly from memory
+            pk = certificate.GetRSAPrivateKey() ?? (AsymmetricAlgorithm)certificate.GetECDsaPrivateKey();
+
+            // If the certificate is explicitly marked as not having a key, 
+            // or if the key extraction failed/returned null, throw the exact expected exception.
+            if (certificate.HasPrivateKey == false || pk == null)
+            {
+                ThrowCryptographicException(source, progress);
+            }
         }
 
-        internal static void ValidatePrivateKey(string source, string certificatePassword, byte[] rawData, out AsymmetricKeyEntry pk, SetupProgressAndResult progress = null)
+        internal static void ValidatePrivateKey(string source, string certificatePassword, byte[] rawData, out AsymmetricAlgorithm pk, SetupProgressAndResult progress = null)
         {
             pk = null;
-            foreach (string alias in GetAliases(certificatePassword, rawData, out var getKey))
-            {
-                pk = getKey(alias);
-                if (pk != null)
-                    break;
-            }
+            var certificate = CertificateLoaderUtil.CreateCertificate(rawData, certificatePassword, X509KeyStorageFlags.PersistKeySet);
+
+            // Get the private key.
+            pk = certificate.GetRSAPrivateKey();
 
             if (pk == null)
             {
-                var msg = "Unable to find the private key in the provided certificate from " + source;
-
-                if (Logger.IsOperationsEnabled)
-                    Logger.Operations(msg);
-                progress?.AddInfo(msg);
-
-                throw new EncryptionException(msg);
+                ThrowCryptographicException(source, progress);
             }
+        }
 
-            static IEnumerable GetAliases(string certificatePassword, byte[] rawData, out Func<string, AsymmetricKeyEntry> getKey)
-            {
-                try
-                {
-                    var store = new Pkcs12StoreBuilder().BuildWithoutOracleOids();
-                    store.Load(new MemoryStream(rawData), certificatePassword?.ToCharArray() ?? Array.Empty<char>());
-
-                    getKey = store.GetKey;
-                    return store.Aliases;
-                }
-                catch (Exception)
-                {
-                    try
-                    {
-                        // Using a partial copy of the Pkcs12Store class
-                        // Workaround for https://github.com/dotnet/corefx/issues/30946
-
-                        var store = new PkcsStoreWorkaroundFor30946();
-                        store.Load(new MemoryStream(rawData), certificatePassword?.ToCharArray() ?? Array.Empty<char>());
-
-                        getKey = store.GetKey;
-                        return store.Aliases;
-                    }
-                    catch
-                    {
-                        // ignore - we prefer the original exception
-                    }
-
-                    throw;
-                }
-            }
+        private static void ThrowCryptographicException(string source, SetupProgressAndResult progress = null)
+        {
+            string msg = "Unable to find the private key in the provided certificate from " + source;
+            if (Logger.IsOperationsEnabled)
+                Logger.Operations(msg);
+            progress?.AddInfo(msg);
+            throw new CryptographicException(msg);
         }
 
 
@@ -899,451 +966,6 @@ namespace Raven.Server.ServerWide
                 throw new CryptographicException($"Unable to open the master secret key at {_config.MasterKeyPath}, won't proceed because losing this key will lose access to all user encrypted information. Admin assistance required.", e);
             }
         }
-
-        private sealed class PkcsStoreWorkaroundFor30946
-        {
-            // Workaround for https://github.com/dotnet/corefx/issues/30946
-            // This class is a partial copy of BouncyCastle's Pkcs12Store which doesn't throw the exception: "attempt to add existing attribute with different value".
-
-            // Explanation: Certificates which were exported in Linux were changed to include a multiple bag attribute (localKeyId).
-            // When using BouncyCastle's Pkcs12Store to load the cert, we got an exception: "attempt to add existing attribute with different value",
-            // but we don't care about that. We just need to extract the private key when using Load().
-
-            private readonly IgnoresCaseHashtable keys = new IgnoresCaseHashtable();
-            private readonly IDictionary localIds = new Hashtable();
-            private readonly IgnoresCaseHashtable certs = new IgnoresCaseHashtable();
-            private readonly IDictionary chainCerts = new Hashtable();
-            private readonly IDictionary keyCerts = new Hashtable();
-            private AsymmetricKeyEntry unmarkedKeyEntry = null;
-
-            public void Load(Stream input, char[] password)
-            {
-                Asn1Sequence obj = (Asn1Sequence)Asn1Object.FromStream(input);
-                Pfx bag = Pfx.GetInstance(obj);
-                ContentInfo info = bag.AuthSafe;
-                bool wrongPkcs12Zero = false;
-
-                if (password != null && bag.MacData != null) // check the mac code
-                {
-                    MacData mData = bag.MacData;
-                    DigestInfo dInfo = mData.Mac;
-                    AlgorithmIdentifier algId = dInfo.DigestAlgorithm;
-                    byte[] salt = mData.GetSalt();
-                    int itCount = mData.IterationCount.IntValue;
-
-                    byte[] data = ((Asn1OctetString)info.Content).GetOctets();
-
-                    byte[] mac = CalculatePbeMac(algId.Algorithm, salt, itCount, password, false, data);
-                    byte[] dig = dInfo.Digest.GetOctets();
-
-                    if (!Arrays.FixedTimeEquals(mac, dig))
-                    {
-                        if (password.Length > 0)
-                            throw new IOException("PKCS12 key store MAC invalid - wrong password or corrupted file.");
-
-                        // Try with incorrect zero length password
-                        mac = CalculatePbeMac(algId.Algorithm, salt, itCount, password, true, data);
-
-                        if (!Arrays.FixedTimeEquals(mac, dig))
-                            throw new IOException("PKCS12 key store MAC invalid - wrong password or corrupted file.");
-
-                        wrongPkcs12Zero = true;
-                    }
-                }
-
-                keys.Clear();
-                localIds.Clear();
-                unmarkedKeyEntry = null;
-
-                IList certBags = new ArrayList();
-
-                if (info.ContentType.Equals(PkcsObjectIdentifiers.Data))
-                {
-                    byte[] octs = ((Asn1OctetString)info.Content).GetOctets();
-                    AuthenticatedSafe authSafe = AuthenticatedSafe.GetInstance(
-                        (Asn1Sequence)Asn1OctetString.FromByteArray(octs));
-                    ContentInfo[] cis = authSafe.GetContentInfo();
-
-                    foreach (ContentInfo ci in cis)
-                    {
-                        DerObjectIdentifier oid = ci.ContentType;
-
-                        byte[] octets = null;
-                        if (oid.Equals(PkcsObjectIdentifiers.Data))
-                        {
-                            octets = ((Asn1OctetString)ci.Content).GetOctets();
-                        }
-                        else if (oid.Equals(PkcsObjectIdentifiers.EncryptedData))
-                        {
-                            if (password != null)
-                            {
-                                EncryptedData d = EncryptedData.GetInstance(ci.Content);
-                                octets = CryptPbeData(false, d.EncryptionAlgorithm,
-                                    password, wrongPkcs12Zero, d.Content.GetOctets());
-                            }
-                        }
-
-                        if (octets != null)
-                        {
-                            Asn1Sequence seq = (Asn1Sequence)Asn1Object.FromByteArray(octets);
-
-                            foreach (Asn1Sequence subSeq in seq)
-                            {
-                                SafeBag b = SafeBag.GetInstance(subSeq);
-
-                                if (b.BagID.Equals(PkcsObjectIdentifiers.CertBag))
-                                {
-                                    certBags.Add(b);
-                                }
-                                else if (b.BagID.Equals(PkcsObjectIdentifiers.Pkcs8ShroudedKeyBag))
-                                {
-                                    LoadPkcs8ShroudedKeyBag(EncryptedPrivateKeyInfo.GetInstance(b.BagValue),
-                                        b.BagAttributes, password, wrongPkcs12Zero);
-                                }
-                                else if (b.BagID.Equals(PkcsObjectIdentifiers.KeyBag))
-                                {
-                                    LoadKeyBag(PrivateKeyInfo.GetInstance(b.BagValue), b.BagAttributes);
-                                }
-                                else
-                                {
-                                    // TODO Other bag types
-                                }
-                            }
-                        }
-                    }
-                }
-
-                foreach (SafeBag b in certBags)
-                {
-                    CertBag certBag = CertBag.GetInstance((Asn1Sequence)b.BagValue);
-                    byte[] octets = ((Asn1OctetString)certBag.CertValue).GetOctets();
-                    Org.BouncyCastle.X509.X509Certificate cert = new X509CertificateParser().ReadCertificate(octets);
-
-                    //
-                    // set the attributes
-                    //
-                    IDictionary<DerObjectIdentifier, Asn1Encodable> attributes = new Dictionary<DerObjectIdentifier, Asn1Encodable>();
-                    Asn1OctetString localId = null;
-                    string alias = null;
-
-                    if (b.BagAttributes != null)
-                    {
-                        foreach (Asn1Sequence sq in b.BagAttributes)
-                        {
-                            DerObjectIdentifier aOid = DerObjectIdentifier.GetInstance(sq[0]);
-                            Asn1Set attrSet = Asn1Set.GetInstance(sq[1]);
-
-                            if (attrSet.Count > 0)
-                            {
-                                // TODO We should be adding all attributes in the set
-                                Asn1Encodable attr = attrSet[0];
-
-                                // TODO We might want to "merge" attribute sets with
-                                // the same OID - currently, differing values give an error
-                                if (attributes.ContainsKey(aOid))
-                                {
-                                    // OK, but the value has to be the same
-                                    if (!attributes[aOid].Equals(attr))
-                                    {
-                                        //throw new IOException("attempt to add existing attribute with different value");
-                                    }
-                                }
-                                else
-                                {
-                                    attributes.Add(aOid, attr);
-                                }
-
-                                if (aOid.Equals(PkcsObjectIdentifiers.Pkcs9AtFriendlyName))
-                                {
-                                    alias = ((DerBmpString)attr).GetString();
-                                }
-                                else if (aOid.Equals(PkcsObjectIdentifiers.Pkcs9AtLocalKeyID))
-                                {
-                                    localId = (Asn1OctetString)attr;
-                                }
-                            }
-                        }
-                    }
-
-                    CertId certId = new CertId(cert.GetPublicKey());
-                    X509CertificateEntry certEntry = new X509CertificateEntry(cert, attributes);
-
-                    chainCerts[certId] = certEntry;
-
-                    if (unmarkedKeyEntry != null)
-                    {
-                        if (keyCerts.Count == 0)
-                        {
-                            string name = Hex.ToHexString(certId.Id);
-
-                            keyCerts[name] = certEntry;
-                            keys[name] = unmarkedKeyEntry;
-                        }
-                    }
-                    else
-                    {
-                        if (localId != null)
-                        {
-                            string name = Hex.ToHexString(localId.GetOctets());
-
-                            keyCerts[name] = certEntry;
-                        }
-
-                        if (alias != null)
-                        {
-                            // TODO There may have been more than one alias
-                            certs[alias] = certEntry;
-                        }
-                    }
-                }
-            }
-
-            public AsymmetricKeyEntry GetKey(
-                string alias)
-            {
-                if (alias == null)
-                    throw new ArgumentNullException("alias");
-
-                return (AsymmetricKeyEntry)keys[alias];
-            }
-
-            public IEnumerable Aliases
-            {
-                get { return GetAliasesTable().Keys; }
-            }
-
-            private IDictionary<string, string> GetAliasesTable()
-            {
-                IDictionary<string, string> tab = new Dictionary<string, string>();
-
-                foreach (string key in certs.Keys)
-                {
-                    tab[key] = "cert";
-                }
-
-                foreach (string a in keys.Keys)
-                {
-                    if (tab[a] == null)
-                    {
-                        tab[a] = "key";
-                    }
-                }
-
-                return tab;
-            }
-
-            internal static byte[] CalculatePbeMac(
-                DerObjectIdentifier oid,
-                byte[] salt,
-                int itCount,
-                char[] password,
-                bool wrongPkcs12Zero,
-                byte[] data)
-            {
-                Asn1Encodable asn1Params = PbeUtilities.GenerateAlgorithmParameters(
-                    oid, salt, itCount);
-                ICipherParameters cipherParams = PbeUtilities.GenerateCipherParameters(
-                    oid, password, wrongPkcs12Zero, asn1Params);
-
-                IMac mac = (IMac)PbeUtilities.CreateEngine(oid);
-                mac.Init(cipherParams);
-                return MacUtilities.DoFinal(mac, data);
-            }
-
-            private byte[] CryptPbeData(
-                bool forEncryption,
-                AlgorithmIdentifier algId,
-                char[] password,
-                bool wrongPkcs12Zero,
-                byte[] data)
-            {
-                IBufferedCipher cipher = PbeUtilities.CreateEngine(algId.Algorithm) as IBufferedCipher;
-
-                if (cipher == null)
-                    throw new Exception("Unknown encryption algorithm: " + algId.Algorithm);
-
-                Pkcs12PbeParams pbeParameters = Pkcs12PbeParams.GetInstance(algId.Parameters);
-                ICipherParameters cipherParams = PbeUtilities.GenerateCipherParameters(
-                    algId.Algorithm, password, wrongPkcs12Zero, pbeParameters);
-                cipher.Init(forEncryption, cipherParams);
-                return cipher.DoFinal(data);
-            }
-
-            private static SubjectKeyIdentifier CreateSubjectKeyID(
-                AsymmetricKeyParameter pubKey)
-            {
-                return X509ExtensionUtilities.CreateSubjectKeyIdentifier(
-                    SubjectPublicKeyInfoFactory.CreateSubjectPublicKeyInfo(pubKey));
-            }
-
-            private sealed class IgnoresCaseHashtable
-                : IEnumerable
-            {
-                private readonly IDictionary orig = new Hashtable();
-                private readonly IDictionary keys = new Hashtable();
-
-                public void Clear()
-                {
-                    orig.Clear();
-                    keys.Clear();
-                }
-
-                public IEnumerator GetEnumerator()
-                {
-                    return orig.GetEnumerator();
-                }
-
-                public ICollection Keys
-                {
-                    get { return orig.Keys; }
-                }
-
-                public object this[
-                    string alias]
-                {
-                    get
-                    {
-                        string upper = alias.ToUpper(CultureInfo.InvariantCulture);
-                        string k = (string)keys[upper];
-
-                        if (k == null)
-                            return null;
-
-                        return orig[k];
-                    }
-                    set
-                    {
-                        string upper = alias.ToUpper(CultureInfo.InvariantCulture);
-                        string k = (string)keys[upper];
-                        if (k != null)
-                        {
-                            orig.Remove(k);
-                        }
-
-                        keys[upper] = alias;
-                        orig[alias] = value;
-                    }
-                }
-            }
-
-            private void LoadPkcs8ShroudedKeyBag(EncryptedPrivateKeyInfo encPrivKeyInfo, Asn1Set bagAttributes,
-                char[] password, bool wrongPkcs12Zero)
-            {
-                if (password != null)
-                {
-                    PrivateKeyInfo privInfo = PrivateKeyInfoFactory.CreatePrivateKeyInfo(
-                        password, wrongPkcs12Zero, encPrivKeyInfo);
-
-                    LoadKeyBag(privInfo, bagAttributes);
-                }
-            }
-
-            private void LoadKeyBag(PrivateKeyInfo privKeyInfo, Asn1Set bagAttributes)
-            {
-                AsymmetricKeyParameter privKey = PrivateKeyFactory.CreateKey(privKeyInfo);
-
-                Dictionary<DerObjectIdentifier, Asn1Encodable> attributes = new();
-                AsymmetricKeyEntry keyEntry = new AsymmetricKeyEntry(privKey, attributes);
-
-                string alias = null;
-                Asn1OctetString localId = null;
-
-                if (bagAttributes != null)
-                {
-                    foreach (Asn1Sequence sq in bagAttributes)
-                    {
-                        DerObjectIdentifier aOid = DerObjectIdentifier.GetInstance(sq[0]);
-                        Asn1Set attrSet = Asn1Set.GetInstance(sq[1]);
-                        Asn1Encodable attr = null;
-
-                        if (attrSet.Count > 0)
-                        {
-                            // TODO We should be adding all attributes in the set
-                            attr = attrSet[0];
-
-                            // TODO We might want to "merge" attribute sets with
-                            // the same OID - currently, differing values give an error
-                            if (attributes.ContainsKey(aOid))
-                            {
-                                // OK, but the value has to be the same
-                                if (!attributes[aOid].Equals(attr))
-                                    throw new IOException("attempt to add existing attribute with different value");
-                            }
-                            else
-                            {
-                                attributes.Add(aOid, attr);
-                            }
-
-                            if (aOid.Equals(PkcsObjectIdentifiers.Pkcs9AtFriendlyName))
-                            {
-                                alias = ((DerBmpString)attr).GetString();
-                                // TODO Do these in a separate loop, just collect aliases here
-                                keys[alias] = keyEntry;
-                            }
-                            else if (aOid.Equals(PkcsObjectIdentifiers.Pkcs9AtLocalKeyID))
-                            {
-                                localId = (Asn1OctetString)attr;
-                            }
-                        }
-                    }
-                }
-
-                if (localId != null)
-                {
-                    string name = Hex.ToHexString(localId.GetOctets());
-
-                    if (alias == null)
-                    {
-                        keys[name] = keyEntry;
-                    }
-                    else
-                    {
-                        // TODO There may have been more than one alias
-                        localIds[alias] = name;
-                    }
-                }
-                else
-                {
-                    unmarkedKeyEntry = keyEntry;
-                }
-            }
-
-            private sealed class CertId
-            {
-                private readonly byte[] _id;
-
-                internal CertId(AsymmetricKeyParameter pubKey)
-                {
-                    _id = CreateSubjectKeyID(pubKey).GetKeyIdentifier();
-                }
-
-                internal byte[] Id
-                {
-                    get { return _id; }
-                }
-
-                public override int GetHashCode()
-                {
-#pragma warning disable RS1024 // Compare symbols correctly
-                    return Arrays.GetHashCode(_id);
-#pragma warning restore RS1024 // Compare symbols correctly
-                }
-
-                public override bool Equals(object obj)
-                {
-                    if (obj == this)
-                        return true;
-
-                    CertId other = obj as CertId;
-
-                    if (other == null)
-                        return false;
-
-                    return Arrays.AreEqual(_id, other._id);
-                }
-            }
-        }
-
     }
 }
 

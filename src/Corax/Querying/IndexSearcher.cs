@@ -33,6 +33,7 @@ namespace Corax.Querying;
 
 public sealed unsafe partial class IndexSearcher : IDisposable
 {
+    internal static readonly long BitmapMemoryRequiredThresholdInBytes = new Size(32, SizeUnit.Megabytes).GetValue(SizeUnit.Bytes);
     internal readonly Transaction _transaction;
     private Dictionary<string, Slice> _dynamicFieldNameMapping;
 
@@ -53,7 +54,42 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     public bool IsAccelerated => Vector256.IsHardwareAccelerated && !ForceNonAccelerated;
 
     public long NumberOfEntries => _numberOfEntries ??= _metadataTree?.ReadInt64(Constants.IndexWriter.NumberOfEntriesSlice) ?? 0;
+
+    private EntryIdPaginationSupportStatus? _entryIdPaginationSupportStatus;
+
+    private long? _lastEntryId;
+
     
+    public long LastEntryId
+    {
+        get
+        {
+            if (_lastEntryId is null)
+            {
+                _lastEntryId = _metadataTree?.ReadInt64(Constants.IndexWriter.LastEntryIdSlice) ?? 0;
+            }
+
+            return _lastEntryId.Value;
+        }
+    }
+
+    public EntryIdPaginationSupportStatus EntryIdPaginationSupportStatus
+    {
+        get
+        {
+            if (_entryIdPaginationSupportStatus is null)
+            {
+
+                var persistedConfiguration = _metadataTree?.ReadInt64(Constants.IndexWriter.PaginationBasedOnEntryIdSupportStatus);
+                _entryIdPaginationSupportStatus = persistedConfiguration.HasValue
+                    ? (EntryIdPaginationSupportStatus)persistedConfiguration.Value
+                    : EntryIdPaginationSupportStatus.Unknown;
+            }
+
+            return _entryIdPaginationSupportStatus.Value;
+        }
+    }
+
     public ByteStringContext Allocator => _transaction.Allocator;
 
     internal Transaction Transaction => _transaction;
@@ -123,11 +159,12 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     
     public EntryTermsReader GetEntryTermsReader(long id, ref Page p)
     {
-        if (_entryIdToLocation.TryGetValue(id, out var loc) == false)
+        if (_entryIdToLocation.TryGetValue(id, out var locLong) == false)
             throw new InvalidOperationException("Unable to find entry id: " + id);
 
+        ContainerEntryId loc = (ContainerEntryId)locLong;
         InitializeSpecialTermsMarkers();
-        
+
         var item = Container.MaybeGetFromSamePage(_transaction.LowLevelTransaction, ref p, loc);
         return new EntryTermsReader(_transaction.LowLevelTransaction, _nullTermsMarkers, _nonExistingTermsMarkers, item.Address, item.Length, _dictionaryId);
     }
@@ -155,7 +192,7 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     internal void ApplyAnalyzerMultiTerms(in FieldMetadata binding, ReadOnlySpan<byte> originalTerm, ref ContextBoundNativeList<Slice> terms)
     {
         Analyzer analyzer = binding.Analyzer;
-        if (binding.FieldId == Constants.IndexWriter.DynamicField && binding.Mode is not (FieldIndexingMode.Exact or FieldIndexingMode.No))
+        if (binding.FieldId == Constants.IndexWriter.DynamicField && binding.Mode is not (FieldIndexingMode.Exact or FieldIndexingMode.No) && analyzer is null)
         {
             analyzer = _fieldMapping.DefaultAnalyzer;
         }
@@ -554,6 +591,10 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     {
         return new IncludeNonExistingMatch<TInner>(this, inner, field, forward);
     }
+
+    public DeduplicationMatch<TInner> DeduplicationMatch<TInner>(in TInner inner, bool forceHashset = false) 
+        where TInner : IQueryMatch 
+        => new(this, inner, forceHashset);
     
     private void InitializeSpecialTermsMarkers()
     {
@@ -595,7 +636,7 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         }
     }
 
-    private long GetRootPageByFieldName(Slice fieldName)
+    internal long GetRootPageByFieldName(Slice fieldName)
     {
         var it = _fieldsTree.Iterate(false);
         var result = _fieldsTree.Read(fieldName);

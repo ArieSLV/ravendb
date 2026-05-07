@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
@@ -74,7 +75,7 @@ namespace Raven.Server.Documents.TcpHandlers
 
             var databaseContext = DatabaseContext;
             if (databaseContext != null)
-                sb.Append($" for database '{databaseContext.DatabaseName}'");
+                sb.Append($" for sharded database '{databaseContext.DatabaseName}'");
 
             return sb.ToString();
         }

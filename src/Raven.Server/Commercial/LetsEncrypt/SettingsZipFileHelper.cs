@@ -8,6 +8,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
+using Raven.Client.Documents.Indexes;
 using Raven.Client.Exceptions;
 using Raven.Client.Exceptions.Security;
 using Raven.Server.Config;
@@ -17,12 +18,12 @@ using Raven.Server.Utils.Cli;
 using Raven.Server.Utils.Features;
 using Sparrow;
 using Sparrow.Json;
-using Sparrow.Json.Parsing;
 using Sparrow.Platform;
 using Sparrow.Server.Platform.Posix;
 using Sparrow.Threading;
 using Sparrow.Utils;
 using Voron.Platform.Posix;
+using DynamicJsonValue = Sparrow.Json.Parsing.DynamicJsonValue;
 using StudioConfiguration = Raven.Client.Documents.Operations.Configuration.StudioConfiguration;
 
 namespace Raven.Server.Commercial.LetsEncrypt;
@@ -41,7 +42,6 @@ public static class SettingsZipFileHelper
             {
                 try
                 {
-
                     var entry = archive.CreateEntry($"admin.client.certificate.{parameters.CompleteClusterConfigurationResult.Domain}.pfx");
 
                     // Structure of external attributes field: https://unix.stackexchange.com/questions/14705/the-zip-formats-external-file-attribute/14727#14727
@@ -116,9 +116,9 @@ public static class SettingsZipFileHelper
                 settingsJson.Modifications[RavenConfiguration.GetKey(x => x.Core.SetupMode)] = parameters.SetupMode.ToString();
 
                 if (parameters.SetupInfo.EnableExperimentalFeatures)
-                {
-                    settingsJson.Modifications[RavenConfiguration.GetKey(x => x.Core.FeaturesAvailability)] = FeaturesAvailability.Experimental;
-                }
+                    AddExperimentalFeaturesToSettingsJson(settingsJson);
+                
+                ModifySettingsJson(parameters.SetupInfo, parameters.Progress.SetupActionSteps, ref settingsJson);
 
                 if (parameters.SetupInfo.Environment != StudioConfiguration.StudioEnvironment.None)
                 {
@@ -153,6 +153,10 @@ public static class SettingsZipFileHelper
                     currentNodeSettingsJson.Modifications ??= new DynamicJsonValue(currentNodeSettingsJson);
 
                     parameters.Progress?.AddInfo($"Creating settings file 'settings.json' for node {node.Key}.");
+                    
+                    if (parameters.SetupInfo.ZipOnly == false)
+                        parameters.Progress?.SetupActionSteps.StepsByConfigurationStepType[ConfigurationStepType.CreatingSettingsJson].SetState(State.InProgress);
+                    
                     parameters.OnProgress?.Invoke(parameters.Progress);
 
                     if (node.Value.Addresses.Count != 0)
@@ -188,9 +192,11 @@ public static class SettingsZipFileHelper
                         try
                         {
                             parameters.OnWriteSettingsJsonLocally?.Invoke(indentedJson);
+                            parameters.Progress?.SetupActionSteps.StepsByConfigurationStepType[ConfigurationStepType.CreatingSettingsJson].SetState(State.Completed);
                         }
                         catch (Exception e)
                         {
+                            parameters.Progress?.SetupActionSteps.SetError(ConfigurationStepType.CreatingSettingsJson, ErrorType.SettingsJsonError, e.Message);
                             throw new InvalidOperationException("Failed to write settings file 'settings.json' for the local sever.", e);
                         }
                     }
@@ -286,7 +292,6 @@ public static class SettingsZipFileHelper
     }
     internal static async Task<byte[]> GetSetupZipFileUnsecuredSetup(GetSetupZipFileParameters parameters)
     {
-
         parameters.Progress?.AddInfo("Writing settings files to zip archive.");
         parameters.OnProgress?.Invoke(parameters.Progress);
 
@@ -323,9 +328,9 @@ public static class SettingsZipFileHelper
                 };
 
                 if (parameters.UnsecuredSetupInfo.EnableExperimentalFeatures)
-                {
-                    settingsJson.Modifications[RavenConfiguration.GetKey(x => x.Core.FeaturesAvailability)] = FeaturesAvailability.Experimental;
-                }
+                    AddExperimentalFeaturesToSettingsJson(settingsJson);
+                
+                ModifySettingsJson(parameters.UnsecuredSetupInfo, parameters.Progress.SetupActionSteps, ref settingsJson);
 
                 if (parameters.UnsecuredSetupInfo.Environment != StudioConfiguration.StudioEnvironment.None && parameters.ZipOnly == false)
                 {
@@ -333,6 +338,8 @@ public static class SettingsZipFileHelper
                         await parameters.OnPutServerWideStudioConfigurationValues(parameters.UnsecuredSetupInfo.Environment);
                 }
 
+                parameters.Progress?.SetupActionSteps.StepsByConfigurationStepType[ConfigurationStepType.CreatingSettingsJson].SetState(State.InProgress);
+                
                 foreach (var node in parameters.UnsecuredSetupInfo.NodeSetupInfos)
                 {
                     var currentNodeSettingsJson = settingsJson.Clone(context);
@@ -361,6 +368,7 @@ public static class SettingsZipFileHelper
                         }
                         catch (Exception e)
                         {
+                            parameters.Progress?.SetupActionSteps.SetError(ConfigurationStepType.CreatingSettingsJson, ErrorType.SettingsJsonError, e.Message);
                             throw new InvalidOperationException("Failed to write settings file 'settings.json' for the local sever.", e);
                         }
                     }
@@ -384,6 +392,8 @@ public static class SettingsZipFileHelper
                         throw new InvalidOperationException($"Failed to write settings.json for node '{node.Key}' in zip archive.", e);
                     }
                 }
+                
+                parameters.Progress?.SetupActionSteps.StepsByConfigurationStepType[ConfigurationStepType.CreatingSettingsJson].SetState(State.Completed);
 
                 parameters.Progress?.AddInfo("Adding readme file to zip archive.");
                 parameters.OnProgress?.Invoke(parameters.Progress);
@@ -446,6 +456,45 @@ public static class SettingsZipFileHelper
         }
     }
 
+    private static void ModifySettingsJson(SetupInfoBase setupInfo, SetupActionSteps setupActionSteps, ref BlittableJsonReaderObject settingsJson)
+    {
+        try
+        {
+            if (setupInfo.DataDirectory != null)
+                settingsJson.Modifications[RavenConfiguration.GetKey(x => x.Core.DataDirectory)] = setupInfo.DataDirectory;
+#if !RVN
+            if (setupInfo.SetupCertificatePath != null)
+            {
+                settingsJson.Modifications[RavenConfiguration.GetKey(x => x.Security.CertificatePath)] = setupInfo.SetupCertificatePath;
+                settingsJson.Modifications[RavenConfiguration.GetKey(x => x.Core.SetupResultingServerCertificatePath)] = setupInfo.SetupCertificatePath;
+            }
+
+            if (setupInfo.LogsPath != null)
+                settingsJson.Modifications[RavenConfiguration.GetKey(x => x.Logs.Path)] = setupInfo.LogsPath;
+
+            if (setupInfo.AutoIndexingEngineType != null)
+            {
+                if (Enum.TryParse(typeof(SearchEngineType), setupInfo.AutoIndexingEngineType, ignoreCase: true, out _) == false)
+                    throw new ArgumentException($"Unknown type of {nameof(SearchEngineType)} - {setupInfo.AutoIndexingEngineType}");
+
+                settingsJson.Modifications[RavenConfiguration.GetKey(x => x.Indexing.AutoIndexingEngineType)] = setupInfo.AutoIndexingEngineType;
+            }
+
+            if (setupInfo.StaticIndexingEngineType != null)
+            {
+                if (Enum.TryParse(typeof(SearchEngineType), setupInfo.StaticIndexingEngineType, ignoreCase: true, out _) == false)
+                    throw new ArgumentException($"Unknown type of {nameof(SearchEngineType)} - {setupInfo.StaticIndexingEngineType}");
+
+                settingsJson.Modifications[RavenConfiguration.GetKey(x => x.Indexing.StaticIndexingEngineType)] = setupInfo.StaticIndexingEngineType;
+            }
+#endif
+        }
+        catch (Exception e)
+        {
+            setupActionSteps.SetError(ConfigurationStepType.ConfigurationSettings, ErrorType.ConfigurationSettingsError, e.Message);
+            throw;
+        }
+    }
 
     public static void WriteSettingsJsonLocally(string settingsPath, string json)
     {
@@ -523,9 +572,9 @@ public static class SettingsZipFileHelper
                         Environment.NewLine +
                         "When you enter the Setup Wizard on a new node, please choose 'Use Setup Package'." +
                         Environment.NewLine +
-                        "Do not try to start a new setup process again in this new node, it is not supported." +
+                        "Do not start a setup process on a node that has already been configured; this is not supported." +
                         Environment.NewLine +
-                        "You will be asked to upload the zip file which was just downloaded." +
+                        "You will be asked to upload the zip file that was just downloaded." +
                         Environment.NewLine +
                         "The new server node will join the already existing cluster." +
                         Environment.NewLine +
@@ -556,9 +605,9 @@ public static class SettingsZipFileHelper
                         Environment.NewLine +
                         "When you enter the Setup Wizard on a new node, please choose 'Use Setup Package'." +
                         Environment.NewLine +
-                        "Do not try to start a new setup process again in this new node, it is not supported." +
+                        "Do not start a setup process on a node that has already been configured; this is not supported." +
                         Environment.NewLine +
-                        "You will be asked to upload the zip file which was just downloaded." +
+                        "You will be asked to upload the zip file that was just downloaded." +
                         Environment.NewLine +
                         "The new server node will join the already existing cluster." +
                         Environment.NewLine +
@@ -614,9 +663,9 @@ public static class SettingsZipFileHelper
              Environment.NewLine +
              "When you enter the Setup Wizard on a new node, please choose 'Use Setup Package'." +
              Environment.NewLine +
-             "Do not try to start a new setup process again in this new node, it is not supported." +
+             "Do not start a setup process on a node that has already been configured; this is not supported." +
              Environment.NewLine +
-             "You will be asked to upload the zip file which was just downloaded." +
+             "You will be asked to upload the zip file that was just downloaded." +
              Environment.NewLine +
              "The new server node will join the already existing cluster." +
              Environment.NewLine +
@@ -697,4 +746,11 @@ public static class SettingsZipFileHelper
         return url;
     }
 
+    private static void AddExperimentalFeaturesToSettingsJson(BlittableJsonReaderObject settingsJson)
+    {
+        settingsJson.Modifications[RavenConfiguration.GetKey(x => x.Core.FeaturesAvailability)] = FeaturesAvailability.Experimental;
+#if !RVN
+        settingsJson.Modifications[RavenConfiguration.GetKey(x => x.Integrations.PostgreSql.Enabled)] = true;
+#endif
+    }
 }

@@ -22,6 +22,8 @@ const defaultValues: FormData = {
         isDisableOngoingTasksAfterRestore: false,
         isSkipIndexes: false,
         isEncrypted: false,
+        isSetMaxReadOpsPerSecond: false,
+        maxReadOpsPerSecond: null,
         sourceType: null,
         sourceData: {
             local: {
@@ -40,6 +42,7 @@ const defaultValues: FormData = {
                 customHost: "",
                 accessKey: "",
                 secretKey: "",
+                sessionToken: "",
                 awsRegion: "",
                 bucketName: "",
                 remoteFolderName: "",
@@ -231,7 +234,7 @@ function getSourceDto(
                     AwsSecretKey: data.secretKey,
                     AwsRegionName: data.awsRegion,
                     BucketName: data.bucketName,
-                    AwsSessionToken: "",
+                    AwsSessionToken: data.sessionToken,
                     RemoteFolderName: backupLocation,
                     Disabled: false,
                     GetBackupConfigurationScript: null,
@@ -289,6 +292,7 @@ function mapToDto({
         DisableOngoingTasks: sourceStep.isDisableOngoingTasksAfterRestore,
         SkipIndexes: sourceStep.isSkipIndexes,
         DataDirectory: dataDirectoryStep.isDefault ? null : dataDirectoryStep.directory,
+        MaxReadOpsPerSecond: sourceStep.isSetMaxReadOpsPerSecond ? sourceStep.maxReadOpsPerSecond : null,
     };
 }
 

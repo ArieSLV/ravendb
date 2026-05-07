@@ -120,7 +120,7 @@ namespace Raven.Server.Utils
                             threadName ??= ThreadHelper.GetThreadName(process.Id, thread.Id);
 
                             var threadState = GetThreadInfoOrDefault<ThreadState?>(() => thread.ThreadState);
-                            threadsInfo.List.Add(new ThreadInfo
+                            var ti = new ThreadInfo
                             {
                                 Id = thread.Id,
                                 CpuUsage = threadCpuUsage.Value,
@@ -139,7 +139,39 @@ namespace Raven.Server.Utils
                                 Priority = GetThreadInfoOrDefault<ThreadPriorityLevel?>(() => thread.PriorityLevel),
 #pragma warning restore CA1416 // Validate platform compatibility
                                 WaitReason = GetThreadInfoOrDefault(() => threadState == ThreadState.Wait ? thread.WaitReason : (ThreadWaitReason?)null)
-                            });
+                            };
+
+                            try
+                            {
+                                if (Sparrow.Platform.PlatformDetails.RunningOnLinux)
+                                {
+                                    var reader = ThreadIoStatsReader.Instance;
+                                    if (reader != null && reader.TryGet(thread.Id, out var io))
+                                    {
+                                        ti.IoStats = new IoStats
+                                        {
+                                            IoSyscallsPerSecLast = io.IoSyscallsPerSecLast,
+                                            ThroughputKbPerSecLast = io.KbPerSecLast,
+
+                                            ReadIoSyscallsPerSecLast = io.ReadIoSyscallsPerSecLast,
+                                            WriteIoSyscallsPerSecLast = io.WriteIoSyscallsPerSecLast,
+                                            ReadThroughputKbPerSecLast = io.ReadKbPerSecLast,
+                                            WriteThroughputKbPerSecLast = io.WriteKbPerSecLast,
+
+                                            Syscr = io.Syscr,
+                                            Syscw = io.Syscw,
+                                            ReadBytes = io.ReadBytes,
+                                            WriteBytes = io.WriteBytes
+                                        };
+                                    }
+                                }
+                            }
+                            catch
+                            {
+                                // ignore IO stats errors
+                            }
+
+                            threadsInfo.List.Add(ti);
                         }
                         catch (InvalidOperationException)
                         {

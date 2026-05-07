@@ -21,6 +21,7 @@ using Raven.Server.Documents.Refresh;
 using Raven.Server.Documents.Replication;
 using Raven.Server.Documents.Replication.ReplicationItems;
 using Raven.Server.Documents.Revisions;
+using Raven.Server.Documents.Schemas;
 using Raven.Server.Documents.Sharding;
 using Raven.Server.Documents.TimeSeries;
 using Raven.Server.ServerWide.Context;
@@ -756,8 +757,8 @@ namespace Raven.Server.Documents
             var needsWildcardMatch = string.IsNullOrEmpty(matches) == false || string.IsNullOrEmpty(exclude) == false;
 
             var startAfterSlice = Slices.Empty;
-            using (DocumentIdWorker.GetSliceFromId(context, idPrefix, out Slice prefixSlice))
-            using (isStartAfter ? (IDisposable)DocumentIdWorker.GetSliceFromId(context, startAfterId, out startAfterSlice) : null)
+            using (DocumentIdWorker.GetLoweredIdSliceFromId(context, idPrefix, out Slice prefixSlice))
+            using (isStartAfter ? (IDisposable)DocumentIdWorker.GetLoweredIdSliceFromId(context, startAfterId, out startAfterSlice) : null)
             {
                 foreach (var result in table.SeekByPrimaryKeyPrefix(prefixSlice, startAfterSlice, skip?.Value ?? 0))
                 {
@@ -1024,7 +1025,7 @@ namespace Raven.Server.Documents
             if (context.Transaction == null)
                 throw new ArgumentException("Context must be set with a valid transaction before calling Put", nameof(context));
 
-            using (DocumentIdWorker.GetSliceFromId(context, id, out Slice lowerId))
+            using (DocumentIdWorker.GetLoweredIdSliceFromId(context, id, out Slice lowerId))
             {
                 return GetDocumentOrTombstone(context, lowerId, fields, throwOnConflict);
             }
@@ -1084,27 +1085,28 @@ namespace Raven.Server.Documents
         }
         
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public Document Get(DocumentsOperationContext context, ReadOnlyMemory<char> id, DocumentFields fields = DocumentFields.All, bool throwOnConflict = true)
-        {
-            if (id.IsEmpty)
-                throw new ArgumentException("Argument is null", nameof(id));
-            if (context.Transaction == null)
-                throw new ArgumentException("Context must be set with a valid transaction before calling Get", nameof(context));
-
-            using (DocumentIdWorker.GetSliceFromId(context, id, out Slice lowerId))
-            {
-                return Get(context, lowerId, fields, throwOnConflict);
-            }
-        }
-
         public Document Get(DocumentsOperationContext context, string id, DocumentFields fields = DocumentFields.All, bool throwOnConflict = true)
         {
             if (string.IsNullOrWhiteSpace(id))
                 throw new ArgumentException("Argument is null or whitespace", nameof(id));
+            return Get(context, id.AsSpan(), fields, throwOnConflict);
+        }
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public Document Get(DocumentsOperationContext context, ReadOnlyMemory<char> id, DocumentFields fields = DocumentFields.All, bool throwOnConflict = true)
+        {
+            if (id.IsEmpty)
+                throw new ArgumentException("Argument is null", nameof(id));
+            return Get(context, id.Span, fields, throwOnConflict);
+        }
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private Document Get(DocumentsOperationContext context, ReadOnlySpan<char> id, DocumentFields fields = DocumentFields.All, bool throwOnConflict = true)
+        {
             if (context.Transaction == null)
                 throw new ArgumentException("Context must be set with a valid transaction before calling Get", nameof(context));
 
-            using (DocumentIdWorker.GetSliceFromId(context, id, out Slice lowerId))
+            using (DocumentIdWorker.GetLoweredIdSliceFromId(context, id, out Slice lowerId))
             {
                 return Get(context, lowerId, fields, throwOnConflict);
             }
@@ -1164,7 +1166,7 @@ namespace Raven.Server.Documents
 
         public (int ActualSize, int AllocatedSize, bool IsCompressed)? GetDocumentMetrics(DocumentsOperationContext context, string id)
         {
-            using (DocumentIdWorker.GetSliceFromId(context, id, out Slice lowerId))
+            using (DocumentIdWorker.GetLoweredIdSliceFromId(context, id, out Slice lowerId))
             {
                 var table = new Table(DocsSchema, context.Transaction.InnerTransaction);
 
@@ -1578,9 +1580,11 @@ namespace Raven.Server.Documents
 
         public static Document ParseRawDataSectionDocumentWithValidation(JsonOperationContext context, ref TableValueReader tvr, int expectedSize)
         {
-            tvr.Read((int)DocumentsTable.Data, out int size);
+            var datPtr = tvr.Read((int)DocumentsTable.Data, out int size);
             if (size > expectedSize || size <= 0)
                 throw new ArgumentException("Data size is invalid, possible corruption when parsing BlittableJsonReaderObject", nameof(size));
+            
+            BlittableJsonReaderObject.BlittableValidation(context, datPtr, size);
             
             var doc = new Document();
             return InitializeDocument(context, doc, ref tvr);
@@ -1620,7 +1624,7 @@ namespace Raven.Server.Documents
 
         public DeleteOperationResult? Delete(DocumentsOperationContext context, string id, DocumentFlags flags)
         {
-            using (DocumentIdWorker.GetSliceFromId(context, id, out Slice lowerId))
+            using (DocumentIdWorker.GetLoweredIdSliceFromId(context, id, out Slice lowerId))
             {
                 return Delete(context, lowerId, id, expectedChangeVector: null, newFlags: flags);
             }
@@ -1628,7 +1632,7 @@ namespace Raven.Server.Documents
 
         public DeleteOperationResult? Delete(DocumentsOperationContext context, string id, string expectedChangeVector, DocumentFlags newFlags = DocumentFlags.None)
         {
-            using (DocumentIdWorker.GetSliceFromId(context, id, out Slice lowerId))
+            using (DocumentIdWorker.GetLoweredIdSliceFromId(context, id, out Slice lowerId))
             using (var cv = context.GetLazyString(expectedChangeVector))
             {
                 return Delete(context, lowerId, id, expectedChangeVector: cv, newFlags: newFlags);
@@ -1932,7 +1936,7 @@ namespace Raven.Server.Documents
 
             var table = new Table(DocsSchema, context.Transaction.InnerTransaction);
 
-            using (DocumentIdWorker.GetSliceFromId(context, prefix, out Slice prefixSlice))
+            using (DocumentIdWorker.GetLoweredIdSliceFromId(context, prefix, out Slice prefixSlice))
             {
                 while (true)
                 {
@@ -2333,6 +2337,21 @@ namespace Raven.Server.Documents
             return fst.NumberOfEntries;
         }
 
+        public long GetNumberOfDocumentsFor(string collection, DocumentsOperationContext context)
+        {
+            var collectionName = GetCollection(collection, throwIfDoesNotExist: false);
+            if (collectionName == null)
+                return 0;
+
+            var collectionTable = context.Transaction.InnerTransaction.OpenTable(DocumentDatabase.GetDocsSchemaForCollection(collectionName),
+                collectionName.GetTableName(CollectionTableType.Documents));
+            if (collectionTable == null)
+                return 0;
+
+            var indexDef = DocsSchema.FixedSizeIndexes[CollectionEtagsSlice];
+            return collectionTable.GetNumberOfEntriesFor(indexDef);
+        }
+
         public sealed class CollectionStats
         {
             public string Name;
@@ -2423,36 +2442,6 @@ namespace Raven.Server.Documents
             return report;
         }
 
-        public CollectionStats GetCollection(string collection, DocumentsOperationContext context)
-        {
-            var collectionName = GetCollection(collection, throwIfDoesNotExist: false);
-            if (collectionName == null)
-            {
-                return new CollectionStats
-                {
-                    Name = collection,
-                    Count = 0
-                };
-            }
-
-            var collectionTable = context.Transaction.InnerTransaction.OpenTable(DocumentDatabase.GetDocsSchemaForCollection(collectionName),
-                collectionName.GetTableName(CollectionTableType.Documents));
-
-            if (collectionTable == null)
-            {
-                return new CollectionStats
-                {
-                    Name = collection,
-                    Count = 0
-                };
-            }
-
-            return new CollectionStats
-            {
-                Name = collectionName.Name,
-                Count = collectionTable.NumberOfEntries
-            };
-        }
 
         public long DeleteTombstonesBefore(DocumentsOperationContext context, string collection, long etag, long numberOfEntriesToDelete)
         {

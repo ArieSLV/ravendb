@@ -1,9 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <Description>Voron - Low level storage engine</Description>
-    <Authors>Hibernating Rhinos</Authors>
+    <Authors>RavenDB</Authors>
     <TargetFramework>net8.0</TargetFramework>
-    <RuntimeFrameworkVersion>8.0.19</RuntimeFrameworkVersion>
+    <RuntimeFrameworkVersion>8.0.26</RuntimeFrameworkVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>Voron</AssemblyName>
     <PackageId>Voron</PackageId>
@@ -35,4 +35,7 @@
     <DefineConstants>$(DefineConstants);VALIDATE;VALIDATE_PAGES</DefineConstants>
     <Optimize>true</Optimize>
   </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Raven.CodeAnalysis" PrivateAssets="All" />
+  </ItemGroup>
 </Project>

@@ -61,12 +61,13 @@ public static class CoraxQueryBuilder
         public readonly Lazy<List<string>> DynamicFields;
         public readonly ByteStringContext Allocator;
         public readonly bool HasBoost;
+        public readonly bool DeduplicationDisabled;
         public readonly IndexReadOperationBase IndexReadOperation;
         public StreamingOptimization StreamingDisabled;
 
         internal Parameters(IndexSearcher searcher, ByteStringContext allocator, TransactionOperationContext serverContext, DocumentsOperationContext documentsContext,
             IndexQueryServerSide query, Index index, BlittableJsonReaderObject queryParameters, QueryBuilderFactories factories, IndexFieldsMapping indexFieldsMapping,
-            FieldsToFetch fieldsToFetch, Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms, int take, IndexReadOperationBase indexReadOperation = null, List<string> buildSteps = null, CancellationToken token = default)
+            FieldsToFetch fieldsToFetch, Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms, int take, bool deduplicationDisabled, IndexReadOperationBase indexReadOperation = null, List<string> buildSteps = null, CancellationToken token = default)
         {
             IndexSearcher = searcher;
             ServerContext = serverContext;
@@ -94,6 +95,7 @@ public static class CoraxQueryBuilder
                         HasBoostingAsOrderingType(query.Metadata.OrderBy)); 
             Allocator = allocator;
             IndexReadOperation = indexReadOperation;
+            DeduplicationDisabled = deduplicationDisabled;
         }
 
         private static bool HasBoostingAsOrderingType(OrderByField[] orderBy)
@@ -168,7 +170,7 @@ public static class CoraxQueryBuilder
             return SkipOrderByClause;
         }
         
-        public bool TrySetAsStreamingField(Parameters builderParameters, in CoraxBooleanItem cbi)
+        public bool TrySetAsStreamingField(Parameters builderParameters, in CoraxBooleanItem cbi, IQueryMatch right)
         {
             if (OptimizationIsPossible == false)
                 return false;
@@ -181,7 +183,9 @@ public static class CoraxQueryBuilder
 
             if (cbi.Field.Equals(SortField.Field) == false)
             {
-                if ( builderParameters.Index.HasCompoundField(cbi.Field.FieldName, SortField.Field.FieldName, out var bindingId))
+                // Currently, CompoundField does not support two WHERE condition. Do not mark it as a compound field to avoid optimization that could
+                // be degradated to a worse query plan.
+                if (builderParameters.Index.HasCompoundField(cbi.Field.FieldName, SortField.Field.FieldName, out var bindingId) && right is null)
                 {
                     var indexFieldBinding = builderParameters.IndexFieldsMapping.GetByFieldId(bindingId);
                     CompoundField = FieldMetadata.Build(indexFieldBinding.FieldName, indexFieldBinding.FieldTermTotalSumField,
@@ -233,7 +237,7 @@ public static class CoraxQueryBuilder
                 source = cbq.Materialize();
                 break;
             case CoraxBooleanItem cbi:
-                streamingConfiguration.TrySetAsStreamingField(builderParameters,cbi);
+                streamingConfiguration.TrySetAsStreamingField(builderParameters, cbi, null);
                 if (streamingConfiguration.MatchedByCompoundField)
                     return cbi.OptimizeCompoundField(ref streamingConfiguration);
 
@@ -309,12 +313,34 @@ public static class CoraxQueryBuilder
                 // optimization, but we have to sort again anyway, this ensure that this happens
                 if (streamingOptimization.SkipOrderByClause == false || sortMetadata.Length > 1)
                     coraxQuery = OrderBy(builderParameters, coraxQuery, sortMetadata);
-            } 
+            }
 
             // The parser already throws parse exception if there is a syntax error.
             // We now return null in the case of a term query that has been fully analyzed, so we need to return a valid query.
-            return coraxQuery;
+            if (builderParameters.DeduplicationDisabled || coraxQuery.DuplicatesOccurrenceStatus == DuplicatesOccurrence.NotPossible)
+                return coraxQuery;
+
+            return DeduplicationMatch(builderParameters, coraxQuery);
         }
+    }
+
+    private static IQueryMatch DeduplicationMatch(Parameters parameters, IQueryMatch match)
+    {
+        var type = match.GetType();
+        if (type == typeof(MultiTermMatch))
+            return Build<MultiTermMatch>();
+        if (type == typeof(BinaryMatch))
+            return Build<BinaryMatch>();
+        if (type == typeof(AndNotMatch))
+            return Build<AndNotMatch>();
+        if (type == typeof(BoostingMatch))
+            return Build<BoostingMatch>();
+        if (type == typeof(MultiUnaryMatch))
+            return Build<MultiUnaryMatch>();
+        
+        return Build<IQueryMatch>();
+
+        IQueryMatch Build<TInner>() where TInner : IQueryMatch => parameters.IndexSearcher.DeduplicationMatch((TInner)match);
     }
 
     private static IQueryMatch ToCoraxQuery(Parameters builderParameters, QueryExpression expression, ref StreamingOptimization leftOnlyOptimization, bool exact = false, int? proximity = null)
@@ -422,7 +448,7 @@ public static class CoraxQueryBuilder
                             left = ToCoraxQuery(builderParameters, @where.Left, ref leftOnlyOptimization, exact);
                             right = ToCoraxQuery(builderParameters, @where.Right, ref builderParameters.StreamingDisabled, exact);
                             // in case of AND we can materialize only TermMatches, we push streamingOptimization there only for changing order for MultiTermMatch;
-                            if (left is CoraxBooleanItem cbi && leftOnlyOptimization.TrySetAsStreamingField(builderParameters, cbi))
+                            if (left is CoraxBooleanItem cbi && leftOnlyOptimization.TrySetAsStreamingField(builderParameters, cbi, right))
                                 left = cbi.Materialize(ref leftOnlyOptimization); 
                             
                             if (TryMergeTwoNodesForAnd(indexSearcher, builderParameters, ref left, ref right, out merged, ref builderParameters.StreamingDisabled))
@@ -849,7 +875,7 @@ public static class CoraxQueryBuilder
 
             if (builderParameters.HighlightingTerms != null)
             {
-                var highlightingTerm = new CoraxHighlightingTermIndex {FieldName = fieldName, Values = (valueFirst, valueSecond)};
+                var highlightingTerm = new CoraxHighlightingTermIndex { FieldName = fieldName, Values = new Tuple<string, string>(valueFirstAsString, valueSecondAsString) };
                 builderParameters.HighlightingTerms[fieldName] = highlightingTerm;
             }
 
@@ -1081,7 +1107,8 @@ public static class CoraxQueryBuilder
         }
 
         var fieldMetadata = QueryBuilderHelper.GetFieldMetadata(allocator, fieldName, index, indexFieldsMapping, fieldsToFetch, builderParameters.HasDynamics,
-            builderParameters.DynamicFields, handleSearch: true, hasBoost: builderParameters.HasBoost);
+            builderParameters.DynamicFields, handleSearch: true, hasBoost: builderParameters.HasBoost
+            , forceDefaultSearchAnalyzer: builderParameters.Index.Configuration.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery);
 
         // Wildcard queries:
         if (searchQueryOptions is IndexSearcher.SearchQueryOptions.PhraseQueryWithWildcardAdjustments && valueAsString.Length >= 1 && (valueAsString[0] == '*' || (valueAsString.Length >= 2 && valueAsString[^1] == '*')))
@@ -1361,7 +1388,10 @@ public static class CoraxQueryBuilder
         }
 
         int sortIndex = 0;
-        var sortArray = new OrderMetadata[8];
+        var sortArray = new OrderMetadata[16];
+
+        if (orderByFields.Length > sortArray.Length)
+            throw new InvalidOperationException($"Corax does not support ordering by more than {sortArray.Length} properties.");
 
         foreach (var field in orderByFields)
         {

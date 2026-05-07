@@ -250,12 +250,12 @@ namespace Corax.Querying.Matches.TermProviders
                 
                 if ((termId & (long)TermIdMask.PostingList) != 0)
                 {
-                    postingLists.Add(allocator, EntryIdEncodings.GetContainerId(termId));
+                    postingLists.Add(allocator, (long)EntryIdEncodings.GetContainerId(termId));
                     postingListsType.Add(allocator, TermIdMask.PostingList);
                 }
                 else if ((termId & (long)TermIdMask.SmallPostingList) != 0)
                 {
-                    postingLists.Add(allocator, EntryIdEncodings.GetContainerId(termId));
+                    postingLists.Add(allocator, (long)EntryIdEncodings.GetContainerId(termId));
                     postingListsType.Add(allocator, TermIdMask.SmallPostingList);
                 }
                 else
@@ -266,9 +266,10 @@ namespace Corax.Querying.Matches.TermProviders
             }
             
             using var _ = allocator.Allocate((sizeof(UnmanagedSpan)) * postingLists.Count, out ByteString containers);
+            var containersSpan = containers.ToSpan<UnmanagedSpan>();
+
+            Container.GetAll(_searcher._transaction.LowLevelTransaction, postingLists.ToSpan(), containersSpan, singleMarker, _searcher._transaction.LowLevelTransaction.PageLocator);
             var containersPtr = (UnmanagedSpan*)containers.Ptr;
-      
-            Container.GetAll(_searcher._transaction.LowLevelTransaction, postingLists.ToSpan(), containersPtr, singleMarker, _searcher._transaction.LowLevelTransaction.PageLocator);
 
             long totalCount = 0;
             for (int i = 0; i < postingLists.Count; ++i)

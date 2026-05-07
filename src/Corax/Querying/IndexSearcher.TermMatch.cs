@@ -261,7 +261,7 @@ public partial class IndexSearcher
             ref readonly var setState = ref MemoryMarshal.AsRef<PostingListState>(setStateSpan);
             return setState.NumberOfEntries;
         }
-        
+
         if ((containerId & (long)TermIdMask.SmallPostingList) != 0)
         {
             var smallSetId = EntryIdEncodings.GetContainerId(containerId);

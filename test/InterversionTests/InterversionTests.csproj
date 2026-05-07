@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
-    <RuntimeFrameworkVersion>8.0.19</RuntimeFrameworkVersion>
+    <RuntimeFrameworkVersion>8.0.26</RuntimeFrameworkVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>InterversionTests</AssemblyName>
     <PackageId>InterversionTests</PackageId>
@@ -17,6 +17,9 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="..\..\src\CommonAssemblyInfo.cs" Link="Properties\CommonAssemblyInfo.cs" />
+    <Compile Include="..\..\src\Usings.Server.cs">
+      <Link>Properties\Usings.Server.cs</Link>
+    </Compile>
   </ItemGroup>
   <ItemGroup>
     <Content Include="..\xunit.runner.json" Link="xunit.runner.json">

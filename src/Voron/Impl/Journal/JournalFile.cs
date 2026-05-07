@@ -1,10 +1,4 @@
-﻿// -----------------------------------------------------------------------
-//  <copyright file="LogFile.cs" company="Hibernating Rhinos LTD">
-//      Copyright (c) Hibernating Rhinos LTD. All rights reserved.
-//  </copyright>
-// -----------------------------------------------------------------------
-
-using Sparrow;
+﻿using Sparrow;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -361,7 +355,7 @@ namespace Voron.Impl.Journal
 
                 using (_parent._locker2.Lock())
                 {
-                    Debug.Assert(!_parent._unusedPages.Any(_parent._unusedPagesHashSetPool.Contains)); // We ensure there cannot be duplicates here (disjoint sets). 
+                    Debug.Assert(_parent._unusedPages.Any(_parent._unusedPagesHashSetPool.Contains) == false, "There cannot be duplicates here (disjoint sets)"); 
 
                     foreach (var item in _parent._unusedPagesHashSetPool)
                         _parent._unusedPages.Add(item);

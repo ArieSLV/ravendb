@@ -66,6 +66,11 @@
             "You can use the 'Test credentials' button to verify its existance.<br />" +
             "<a href='https://cloud.google.com/storage/docs/bucket-naming' target='_blank'>Bucket naming guidelines</a>";
     }
+
+    static readonly externalScriptNotAllowedForNonClusterAdmins =
+        "Setting up the configuration via an external script is not allowed for non cluster admins.";
+
+    static readonly etlTaskNameLocked = "ETL task name cannot be changed after creation. Delete and recreate the task to use a different name.";
 }
 
 export = tasksCommonContent;

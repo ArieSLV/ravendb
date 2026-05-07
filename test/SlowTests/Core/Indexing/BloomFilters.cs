@@ -1,10 +1,4 @@
-// -----------------------------------------------------------------------
-//  <copyright file="CustomAnalyzers.cs" company="Hibernating Rhinos LTD">
-//      Copyright (c) Hibernating Rhinos LTD. All rights reserved.
-//  </copyright>
-// -----------------------------------------------------------------------
-
-using System.Linq;
+﻿using System.Linq;
 using System.Threading.Tasks;
 using FastTests;
 using Raven.Client.Documents;
@@ -59,11 +53,9 @@ namespace SlowTests.Core.Indexing
                 {
                     using (context.OpenWriteTransaction())
                     {
-                        using (var collection = CollectionOfBloomFilters.Load(CollectionOfBloomFilters.Mode.X64, context))
-                        {
-                            Assert.Equal(1, collection.Count);
-                            Assert.Equal(0, collection.CurrentFilterCount);
-                        }
+                        var collection = CollectionOfBloomFilters.Load(CollectionOfBloomFilters.Mode.X64, context);
+                        Assert.Equal(1, collection.Count);
+                        Assert.Equal(0, collection.CurrentFilterCount);
                     }
                 }
 
@@ -86,11 +78,9 @@ namespace SlowTests.Core.Indexing
                 {
                     using (context.OpenWriteTransaction())
                     {
-                        using (var collection = CollectionOfBloomFilters.Load(CollectionOfBloomFilters.Mode.X64, context))
-                        {
-                            Assert.Equal(1, collection.Count);
-                            Assert.Equal(10, collection.CurrentFilterCount);
-                        }
+                        var collection = CollectionOfBloomFilters.Load(CollectionOfBloomFilters.Mode.X64, context);
+                        Assert.Equal(1, collection.Count);
+                        Assert.Equal(10, collection.CurrentFilterCount);
                     }
                 }
             }

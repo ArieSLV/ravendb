@@ -1,7 +1,7 @@
 import React from "react";
-import { rtlRender } from "test/rtlTestUtils";
+import { rtlRender, waitFor } from "test/rtlTestUtils";
 import * as stories from "./CreateSampleData.stories";
-import { composeStories } from "@storybook/react";
+import { composeStories } from "@storybook/react-webpack5";
 
 const { DatabaseWithDocuments, DatabaseWithoutDocuments } = composeStories(stories);
 
@@ -14,7 +14,10 @@ describe("CreateSampleData", () => {
 
         const createButtonBefore = await screen.findByRole("button", { name: createSampleDataText });
 
-        expect(createButtonBefore).toBeEnabled();
+        await waitFor(() => {
+            expect(createButtonBefore).toBeEnabled();
+        });
+
         expect(screen.queryByText(requiresAnEmptyDatabaseText)).not.toBeInTheDocument();
 
         await fireClick(createButtonBefore);
@@ -31,6 +34,7 @@ describe("CreateSampleData", () => {
         const createButton = await screen.findByRole("button", { name: createSampleDataText });
 
         expect(createButton).toBeDisabled();
-        expect(screen.queryByText(requiresAnEmptyDatabaseText)).toBeInTheDocument();
+
+        expect(await screen.findByText(requiresAnEmptyDatabaseText)).toBeInTheDocument();
     });
 });

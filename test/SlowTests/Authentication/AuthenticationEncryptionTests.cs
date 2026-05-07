@@ -21,7 +21,7 @@ using Xunit.Abstractions;
 
 namespace SlowTests.Authentication
 {
-    public class AuthenticationEncryptionTests : RavenTestBase
+    public class AuthenticationEncryptionTests : DisableParallelTestBase
     {
         public AuthenticationEncryptionTests(ITestOutputHelper output) : base(output)
         {
@@ -35,8 +35,8 @@ namespace SlowTests.Authentication
 
             using (var store = GetDocumentStore(new Options
             {
-                AdminCertificate = certificates.ServerCertificate.Value,
-                ClientCertificate = certificates.ServerCertificate.Value,
+                AdminCertificate = certificates.ServerCertificateForCommunication.Value,
+                ClientCertificate = certificates.ServerCertificateForCommunication.Value,
                 ModifyDatabaseName = s => dbName,
                 ModifyDatabaseRecord = record => {
                     record.Settings[RavenConfiguration.GetKey(x => x.Indexing.AutoIndexingEngineType)] = configuration.SearchEngine.ToString();

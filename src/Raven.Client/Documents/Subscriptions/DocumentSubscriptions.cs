@@ -1,10 +1,4 @@
-// -----------------------------------------------------------------------
-//  <copyright file="AsyncDocumentSubscriptions.cs" company="Hibernating Rhinos LTD">
-//      Copyright (c) Hibernating Rhinos LTD. All rights reserved.
-//  </copyright>
-// -----------------------------------------------------------------------
-
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
@@ -146,6 +140,7 @@ namespace Raven.Client.Documents.Subscriptions
                         JavascriptConversionExtensions.NullCoalescingSupport.Instance,
                         JavascriptConversionExtensions.NestedConditionalSupport.Instance,
                         JavascriptConversionExtensions.StringSupport.Instance,
+                        JavascriptConversionExtensions.RegexSupport.Instance,
                         new JavascriptConversionExtensions.IdentityPropertySupport(conventions)
                     ));
 

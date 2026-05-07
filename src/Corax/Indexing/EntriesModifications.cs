@@ -74,8 +74,7 @@ internal unsafe struct EntriesModifications
             }
         }
     }
-
-
+    
     public NativeList<TermInEntryModification> Additions;
     public NativeList<TermInEntryModification> Removals;
     public NativeList<TermInEntryModification> Updates;
@@ -136,21 +135,27 @@ internal unsafe struct EntriesModifications
         Updates = new();
     }
 
-    public void Addition([NotNull] ByteStringContext context, long entryId, int termsPerEntryIndex, short freq)
+    /// <summary>
+    /// Records document entry addition. Document-layer API.
+    /// </summary>
+    public void Addition([NotNull] ByteStringContext context, DocumentEntryId entryId, int termsPerEntryIndex, short freq, InserterMode termType)
     {
         if (Additions.HasCapacityFor(1) == false)
             Additions.Grow(context, 1);
-        AddToList(context, ref Additions, entryId, termsPerEntryIndex, freq);
+        AddToList(ref Additions, entryId, termsPerEntryIndex, freq, termType);
     }
 
-    public void Removal([NotNull] ByteStringContext context, long entryId, int termsPerEntryIndex, short freq)
+    /// <summary>
+    /// Records document entry removal. Document-layer API.
+    /// </summary>
+    public void Removal([NotNull] ByteStringContext context, DocumentEntryId entryId, int termsPerEntryIndex, short freq, InserterMode termType)
     {
         if (Removals.HasCapacityFor(1) == false)
             Removals.Grow(context, 1);
-        AddToList(context, ref Removals, entryId, termsPerEntryIndex, freq);
+        AddToList(ref Removals, entryId, termsPerEntryIndex, freq, termType);
     }
 
-    private void AddToList([NotNull] ByteStringContext context, ref NativeList<TermInEntryModification> list, long entryId, int termsPerEntryIndex, short freq)
+    private void AddToList(ref NativeList<TermInEntryModification> list, DocumentEntryId entryId, int termsPerEntryIndex, short freq, InserterMode inserterMode)
     {
         AssertPreparationIsNotFinished();
         NeedToUpdate = true;
@@ -168,6 +173,13 @@ internal unsafe struct EntriesModifications
                     cur.Frequency = short.MaxValue;
                 }
 
+                // Handles mixed list indexing, e.g., for "1" and ("1", 1L, 1D).
+                // The numeric version always takes precedence.
+                // If a value is indexed in its numeric form at any point, it must be marked as such,
+                // regardless of whether the textual version was indexed first.
+                // This is crucial for building the entry terms structure.
+                if (cur.InserterMode is not InserterMode.Numerical && inserterMode is InserterMode.Numerical)
+                    cur = cur with { InserterMode = InserterMode.Numerical };
                 return;
             }
 
@@ -178,7 +190,7 @@ internal unsafe struct EntriesModifications
         }
 
         ref var term = ref list.AddByRefUnsafe();
-        term = new TermInEntryModification(entryId, termsPerEntryIndex, freq);
+        term = new TermInEntryModification(entryId, termsPerEntryIndex, freq, inserterMode);
     }
 
     private void DeleteAllDuplicates([NotNull] ByteStringContext context)
@@ -262,6 +274,7 @@ internal unsafe struct EntriesModifications
         for (int i = 0; i < Additions.Count; i++)
         {
             ref var cur = ref Additions[i];
+            // Encoding boundary: document-layer ID -> storage-layer long
             additions[i] = EntryIdEncodings.Encode(cur.EntryId, cur.Frequency, TermIdMask.Single);
         }
 

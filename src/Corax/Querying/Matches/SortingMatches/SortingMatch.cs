@@ -28,7 +28,7 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
     where TInner : IQueryMatch
 {
     private readonly IndexSearcher _searcher;
-    private readonly TInner _inner;
+    private TInner _inner;
     private readonly OrderMetadata _orderMetadata;
     private readonly CancellationToken _cancellationToken;
     private readonly delegate*<ref SortingMatch<TInner>, Span<long>, int> _fillFunc;
@@ -45,7 +45,9 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
     private SortingDataTransfer _sortingDataTransfer;
     public long TotalResults;
     public SkipSortingResult AttemptToSkipSorting() => throw new NotSupportedException();
-
+    
+    public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
+    
     public SortingMatch(IndexSearcher searcher, in TInner inner, OrderMetadata orderMetadata, in CancellationToken cancellationToken, int take = -1)
     {
         _searcher = searcher;
@@ -185,6 +187,11 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
             }
 
             var allMatches = memoizer.FillAndRetrieve();
+            
+            memoizer.InnerRetriever(out IQueryMatch inner);
+            if (inner is TInner typedInner)
+                match._inner = typedInner;
+            
             match.TotalResults = allMatches.Length;
             
             if (match.TotalResults == 0)
@@ -204,6 +211,8 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
             {
                 SortUsingIndex<TEntryComparer, TDirection>(ref match, allMatches);
             }
+            
+            memoizer.Dispose();
         }
 
 
@@ -315,7 +324,7 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
                     switch (termType)
                     {
                         case TermIdMask.Single:
-                            long entryId = EntryIdEncodings.GetContainerId(postingListId);
+                            long entryId = (long)EntryIdEncodings.GetContainerId(postingListId);
                             if(entryId >= _min && entryId <= _max)
                                 sortedIds[currentIdx++] = entryId;
                             break;
@@ -364,7 +373,7 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
                 if (termType == TermIdMask.SmallPostingList)
                 {
                     var smallSetId = EntryIdEncodings.GetContainerId(_itBuffer[i]);
-                    _smallPostListIds.Add(smallSetId);
+                    _smallPostListIds.Add((long)smallSetId);
                 }
             }
 
@@ -372,12 +381,12 @@ public unsafe partial struct SortingMatch<TInner> : IQueryMatch
             if (_smallPostListIds.Count == 0)
                 return;
 
-            Container.GetAll(_llt, _smallPostListIds.ToSpan(), _containerItems, long.MinValue, _pageLocator);
+            Container.GetAll(_llt, _smallPostListIds.ToSpan(), new Span<UnmanagedSpan>(_containerItems, _smallPostListIds.Count), long.MinValue, _pageLocator);
         }
 
         private void ReadLargePostingList(Span<long> sortedIds, ref int currentIdx)
         {
-            if (_postListIt.Fill(sortedIds[currentIdx..], out var read) == false || EntryIdEncodings.DecodeAndDiscardFrequency(sortedIds[currentIdx + read - 1]) > _max)
+            if (_postListIt.Fill(sortedIds[currentIdx..], out var read) == false || (long)EntryIdEncodings.DecodeAndDiscardFrequency(sortedIds[currentIdx + read - 1]) > _max)
                 _postListIt = default;
 
             EntryIdEncodings.DecodeAndDiscardFrequency(sortedIds.Slice(currentIdx), read);

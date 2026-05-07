@@ -1,10 +1,4 @@
-﻿// -----------------------------------------------------------------------
-//  <copyright file="RavenDB_16590.cs" company="Hibernating Rhinos LTD">
-//      Copyright (c) Hibernating Rhinos LTD. All rights reserved.
-//  </copyright>
-// -----------------------------------------------------------------------
-
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Linq;
 using Raven.Server.Config;
 using Raven.Server.Config.Attributes;
@@ -90,6 +84,8 @@ namespace FastTests.Issues
                 "Indexing.Corax.MaxAllocationsAtDictionaryTrainingInMb",
                 "Indexing.Corax.Static.ComplexFieldIndexingBehavior",
                 "Indexing.Corax.UnmanagedAllocationsBatchSizeLimitInMb",
+                "Indexing.ElapsedSinceQueriedPersistIntervalInMin",
+                "Indexing.Querying.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery",
                 
                 //Obsolete studio keys:
                 "Indexing.Static.SearchEngineType",
@@ -109,4 +105,3 @@ namespace FastTests.Issues
         }
     }
 }
-

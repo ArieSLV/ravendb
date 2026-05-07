@@ -11,6 +11,7 @@ using Raven.Client.Documents.Operations;
 using Raven.Client.ServerWide;
 using Raven.Client.ServerWide.Operations;
 using Raven.Client.ServerWide.Sharding;
+using Raven.Client.Util;
 using Raven.Server;
 using Raven.Server.Documents;
 using Raven.Server.Documents.Replication;
@@ -24,6 +25,7 @@ using Sparrow.Server;
 using Sparrow.Threading;
 using Tests.Infrastructure;
 using Xunit;
+using Xunit.Sdk;
 
 namespace FastTests;
 
@@ -49,6 +51,25 @@ public partial class RavenTestBase
             Subscriptions = new ShardedSubscriptionTestBase(_parent);
             Replication = new ShardedReplicationTestBase(_parent);
             Etl = new ShardedEtlTestBase(_parent);
+        }
+
+        public void WaitForRaftIndexOnShards(IDocumentStore store, long raftCommandIndex)
+        {
+            var record = store.Maintenance.Server.Send(new GetDatabaseRecordOperation(store.Database));
+            if (record.IsSharded == false)
+                return;
+
+            var servers = _parent.GetServers();
+            foreach (var shardNumber in record.Sharding.Shards.Keys)
+            {
+                var shardName = ShardHelper.ToShardName(store.Database, shardNumber);
+                foreach (var server in servers)
+                {
+                    var database = AsyncHelpers.RunSync(() => server.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(shardName));
+                    if (database != null)
+                        AsyncHelpers.RunSync(() => database.RachisLogIndexNotifications.WaitForIndexNotification(raftCommandIndex, TimeSpan.FromSeconds(15)));
+                }
+            }
         }
 
         public DocumentStore GetDocumentStore(Options options = null, [CallerMemberName] string caller = null, Dictionary<int, DatabaseTopology> shards = null)
@@ -162,6 +183,40 @@ public partial class RavenTestBase
         {
             var record = await store.Maintenance.Server.SendAsync(new GetDatabaseRecordOperation(database ?? store.Database));
             return record.Sharding;
+        }
+
+        public async Task<ShardingConfiguration> AssertAllShardsHaveMembers(DocumentStore store, int timeout = 15_000, int interval = 100)
+        {
+            ShardingConfiguration lastSuccessfulSharding = null;
+            var shardingDebugInfo = string.Empty;
+            try
+            {
+                await WaitAndAssertForValueAsync(act: AllHaveMember, true, timeout, interval);
+            }
+            catch (EqualException)
+            {
+                Assert.Fail(shardingDebugInfo);
+            }
+            return lastSuccessfulSharding;
+
+            async Task<bool> AllHaveMember()
+            {
+                var sharding = await GetShardingConfigurationAsync(store);
+
+                foreach (var kvp in sharding.Shards)
+                {
+                    if (kvp.Value.Members.Count == 0)
+                    {
+                        shardingDebugInfo = $"Shard: {kvp.Key} has no members." +
+                                            Environment.NewLine +
+                                            string.Join("," + Environment.NewLine, sharding.Shards.Select(kvp1 => "Shard " + kvp1.Key + ": " + kvp1.Value));
+                        return false;
+                    }
+                }
+
+                lastSuccessfulSharding = sharding;
+                return true;
+            }
         }
 
         public string GetRandomIdForShard(ShardingConfiguration config, int shardNumber)
@@ -409,7 +464,9 @@ public partial class RavenTestBase
             Assert.True(server.ServerStore.DatabasesLandlord.ShardedDatabasesCache.TryGetValue(name, out var db));
             var database = await db;
             var handler = new ShardedOngoingTasksHandler();
-            var ctx = new RequestHandlerContext { RavenServer = server, DatabaseContext = database, HttpContext = new DefaultHttpContext() };
+            // The ctor does nothing. Totally safe to use initializer.
+            // ReSharper disable once UsingStatementResourceInitialization
+            using var ctx = new RequestHandlerContext { RavenServer = server, DatabaseContext = database, HttpContext = new DefaultHttpContext() };
             handler.InitForOfflineOperation(ctx);
             return new ShardedOngoingTasksHandlerProcessorForGetOngoingTasks(handler);
         }

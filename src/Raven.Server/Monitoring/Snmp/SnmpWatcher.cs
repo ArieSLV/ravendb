@@ -247,7 +247,12 @@ namespace Raven.Server.Monitoring.Snmp
 
             return engine;
 
-            static IPrivacyProvider CreatePrivacyProvider(string authenticationUser, SnmpAuthenticationProtocol authenticationProtocol, string authenticationPassword, SnmpPrivacyProtocol privacyProtocol, string privacyPassword)
+            static IPrivacyProvider CreatePrivacyProvider(
+                string authenticationUser,
+                SnmpAuthenticationProtocol authenticationProtocol,
+                string authenticationPassword,
+                SnmpPrivacyProtocol privacyProtocol,
+                string privacyPassword)
             {
                 try
                 {
@@ -260,11 +265,9 @@ namespace Raven.Server.Monitoring.Snmp
                         case SnmpAuthenticationProtocol.SHA1:
                             authenticationProvider = new SHA1AuthenticationProvider(new OctetString(authenticationPassword));
                             break;
-
                         case SnmpAuthenticationProtocol.MD5:
                             authenticationProvider = new MD5AuthenticationProvider(new OctetString(authenticationPassword));
                             break;
-
                         default:
                             throw new InvalidOperationException($"Unknown authentication protocol '{authenticationProtocol}'.");
                     }
@@ -273,19 +276,16 @@ namespace Raven.Server.Monitoring.Snmp
                     {
                         case SnmpPrivacyProtocol.None:
                             return new DefaultPrivacyProvider(authenticationProvider);
-
                         case SnmpPrivacyProtocol.DES:
                             if (privacyPassword == null)
                                 throw new ArgumentNullException(nameof(privacyPassword));
 
-                            return new BouncyCastleDESPrivacyProvider(new OctetString(privacyPassword), authenticationProvider);
-
+                            return new DotnetDESPrivacyProvider(new OctetString(privacyPassword), authenticationProvider);
                         case SnmpPrivacyProtocol.AES:
                             if (privacyPassword == null)
                                 throw new ArgumentNullException(nameof(privacyPassword));
 
-                            return new BouncyCastleAESPrivacyProvider(new OctetString(privacyPassword), authenticationProvider);
-
+                            return new DotnetAESPrivacyProvider(new OctetString(privacyPassword), authenticationProvider);
                         default:
                             throw new InvalidOperationException($"Unknown privacy protocol '{privacyProtocol}'.");
                     }
@@ -390,6 +390,9 @@ namespace Raven.Server.Monitoring.Snmp
             store.Add(new IoWait(server.MetricCacher, server.CpuUsageCalculator));
 
             store.Add(new ProcessOpenFileDescriptors());
+            store.Add(new MachineLoadAverage1M());
+            store.Add(new MachineLoadAverage5M());
+            store.Add(new MachineLoadAverage15M());
             
             store.Add(new CpuCreditsBase(server.CpuCreditsBalance));
             store.Add(new CpuCreditsMax(server.CpuCreditsBalance));
@@ -410,6 +413,7 @@ namespace Raven.Server.Monitoring.Snmp
             store.Add(new ServerEncryptionBuffersMemoryInUse());
             store.Add(new ServerEncryptionBuffersMemoryInPool());
             store.Add(new ServerAvailableMemoryForProcessing(server.MetricCacher));
+            store.Add(new ServerAvailableMemoryForProcessingPercentage(server.MetricCacher));
 
             ServerMemInfo.Register(store, server.MetricCacher);
 

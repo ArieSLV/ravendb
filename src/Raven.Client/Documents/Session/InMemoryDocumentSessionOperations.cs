@@ -1,10 +1,4 @@
-//-----------------------------------------------------------------------
-// <copyright file="InMemoryDocumentSessionOperations.cs" company="Hibernating Rhinos LTD">
-//     Copyright (c) Hibernating Rhinos LTD. All rights reserved.
-// </copyright>
-//-----------------------------------------------------------------------
-
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Dynamic;
 using System.IO;
@@ -46,6 +40,8 @@ namespace Raven.Client.Documents.Session
     /// </summary>
     public abstract partial class InMemoryDocumentSessionOperations : IDisposable
     {
+        internal static readonly bool DisableDisposeChecks = string.Equals(Environment.GetEnvironmentVariable("RAVEN_DISABLE_DISPOSE_CHECKS"), "true", StringComparison.OrdinalIgnoreCase);
+
         internal long _asyncTasksCounter;
         internal int _maxDocsCountOnCachedRenewSession = 16 * 1024;
         protected readonly RequestExecutor _requestExecutor;
@@ -1252,6 +1248,7 @@ more responsive application.
             {
                 foreach (var entity in DocumentsByEntity)
                 {
+                    UpdateMetadataModifications(entity.Value.MetadataInstance, entity.Value.Metadata);
                     using (var document = JsonConverter.ToBlittable(entity.Key, entity.Value))
                     {
                         if (EntityChanged(document, entity.Value, null))
@@ -1277,6 +1274,8 @@ more responsive application.
             DocumentInfo documentInfo;
             if (DocumentsByEntity.TryGetValue(entity, out documentInfo) == false)
                 return false;
+
+            UpdateMetadataModifications(documentInfo.MetadataInstance, documentInfo.Metadata);
             using (var document = JsonConverter.ToBlittable(entity, documentInfo))
                 return EntityChanged(document, documentInfo, null);
         }
@@ -1438,6 +1437,9 @@ more responsive application.
         {
             if (_isDisposed)
                 throw new ObjectDisposedException("session");
+
+            if (DisableDisposeChecks == false && _documentStore.WasDisposed)
+                throw new ObjectDisposedException("store", "The document store has already been disposed and cannot be used");
         }
 
         private void Dispose(bool isDisposing)
@@ -2360,7 +2362,7 @@ more responsive application.
                 if (prop.DeclaringType != type && prop.DeclaringType != null)
                     prop = prop.DeclaringType.GetProperty(prop.Name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic) ?? property;
 
-                if (!prop.CanWrite() || !prop.CanRead() || prop.GetIndexParameters().Length != 0)
+                if (prop.CanWrite() == false || prop.CanRead() == false || prop.GetIndexParameters().Length != 0)
                     continue;
                 prop.SetValue(ref entity, prop.GetValue(documentInfo.Entity));
             }
@@ -2687,7 +2689,7 @@ more responsive application.
 
         private bool _prepareEntitiesPuts;
 
-        public int Count => _documentsByEntity.Count + _onBeforeStoreDocumentsByEntity?.Count ?? 0;
+        public int Count => _documentsByEntity.Count + (_onBeforeStoreDocumentsByEntity?.Count ?? 0);
 
         public void Remove(object entity)
         {

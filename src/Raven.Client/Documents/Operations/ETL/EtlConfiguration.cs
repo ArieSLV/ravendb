@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -10,7 +10,7 @@ using Sparrow.Json.Parsing;
 
 namespace Raven.Client.Documents.Operations.ETL
 {
-    public abstract class EtlConfiguration<T> : IDynamicJsonValueConvertible, IDatabaseTask where T : ConnectionString
+    public abstract class EtlConfiguration<T> : IDynamicJson, IDatabaseTask where T : ConnectionString
     {
         private bool _initialized;
 
@@ -42,12 +42,15 @@ namespace Raven.Client.Documents.Operations.ETL
 
         public bool Disabled { get; set; }
 
-        public virtual bool Validate(out List<string> errors, bool validateName = true, bool validateConnection = true)
+        public virtual bool Validate(out List<string> errors, bool validateName = true, bool validateConnection = true, EtlConfiguration<T> existingConfiguration = null)
         {
             if (validateConnection && _initialized == false)
                 throw new InvalidOperationException("ETL configuration must be initialized");
 
             errors = new List<string>();
+            
+            if (existingConfiguration != null && existingConfiguration.Name != Name)
+                errors.Add($"Changing {nameof(Name)} of ETL is not supported.");
 
             if (validateName && string.IsNullOrEmpty(Name))
                 errors.Add($"{nameof(Name)} of ETL configuration cannot be empty");
@@ -123,7 +126,8 @@ namespace Raven.Client.Documents.Operations.ETL
                 [nameof(MentorNode)] = MentorNode,
                 [nameof(PinToMentorNode)] = PinToMentorNode,
                 [nameof(AllowEtlOnNonEncryptedChannel)] = AllowEtlOnNonEncryptedChannel,
-                [nameof(Transforms)] = new DynamicJsonArray(Transforms.Select(x => x.ToJson()))
+                [nameof(Transforms)] = new DynamicJsonArray(Transforms.Select(x => x.ToJson())),
+                [nameof(Disabled)] = Disabled
             };
 
             return result;
@@ -134,7 +138,7 @@ namespace Raven.Client.Documents.Operations.ETL
             return ToJson();
         }
 
-        internal EtlConfigurationCompareDifferences Compare(
+        internal virtual EtlConfigurationCompareDifferences Compare(
             EtlConfiguration<T> config,
             Dictionary<string, T> connectionStrings,
             List<(string TransformationName, EtlConfigurationCompareDifferences Difference)> transformationDiffs = null)

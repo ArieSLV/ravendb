@@ -1,12 +1,7 @@
-﻿// -----------------------------------------------------------------------
-//  <copyright file="HeaderAccessor.cs" company="Hibernating Rhinos LTD">
-//      Copyright (c) Hibernating Rhinos LTD. All rights reserved.
-//  </copyright>
-// -----------------------------------------------------------------------
-
-using Sparrow;
+﻿using Sparrow;
 using System;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Threading;
 using Sparrow.Server;
@@ -45,6 +40,7 @@ namespace Voron.Impl.FileHeaders
             _theHeader = (FileHeader*)_headerPtr;
         }
 
+        [SuppressMessage("BooleanMethodNegation", "RDB0010:Avoid negating boolean method conditions")]
         public bool Initialize()
         {
             _locker.EnterWriteLock();

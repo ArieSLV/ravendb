@@ -541,13 +541,13 @@ class editReplicationHubTask extends shardViewModelBase {
             const certificate = replicationAccessItem.certificate().certificate();
             configurationToExport.Certificate = certificate || null;
 
-            configurationToExport.HubToSinkPrefixes = replicationAccessItem.hubToSinkPrefixes().map(x => x.path());
+            configurationToExport.HubToSinkPrefixes = replicationAccessItem.getHubToSinkPrefixesToSave();
             
             if (this.editedReplicationAccessItem().samePrefixesForBothDirections()) {
                 configurationToExport.UseSamePrefixes = true;
             } else {
                 configurationToExport.UseSamePrefixes = false;
-                configurationToExport.SinkToHubPrefixes = replicationAccessItem.sinkToHubPrefixes().map(x => x.path());
+                configurationToExport.SinkToHubPrefixes = replicationAccessItem.getSinkToHubPrefixesToSave();
             }
         }
 
@@ -568,7 +568,7 @@ class editReplicationHubTask extends shardViewModelBase {
             const pfx = forge.util.binary.base64.decode(certificate.certificate());
             const fileName = "replicationCertificate" + certificate.thumbprint().substr(0, 8) + ".pfx";
             
-            fileDownloader.downloadAsTxt(pfx, fileName);
+            fileDownloader.downloadAsTxt(pfx as BlobPart, fileName);
             
             this.editedReplicationAccessItem().certificateWasDownloaded(true);
         }

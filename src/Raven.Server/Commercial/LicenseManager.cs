@@ -411,7 +411,7 @@ namespace Raven.Server.Commercial
 
         private async Task<Client.ServerWide.Commands.NodeInfo> GetNodeInfo(string nodeUrl, TransactionOperationContext ctx)
         {
-            using (var requestExecutor = ClusterRequestExecutor.CreateForShortTermUse(nodeUrl, _serverStore.Server.Certificate.Certificate, DocumentConventions.DefaultForServer))
+            using (var requestExecutor = ClusterRequestExecutor.CreateForShortTermUse(nodeUrl, _serverStore.Server.Certificate.ClientCertificate, DocumentConventions.DefaultForServer))
             {
                 var infoCmd = new GetNodeInfoCommand(TimeSpan.FromSeconds(15));
 
@@ -448,7 +448,7 @@ namespace Raven.Server.Commercial
                 {
                     // license expired, we'll try to update it
                     var updatedLicense = await GetUpdatedLicenseForActivation(license);
-                    if (updatedLicense.license == null)
+                    if (updatedLicense.License == null)
                     {
                         var errorMessage =
                             $"License already expired on: {licenseStatus.FormattedExpiration} and we failed to get an updated one from {ApiHttpClient.ApiRavenDbNet}.";
@@ -460,7 +460,7 @@ namespace Raven.Server.Commercial
                         throw new LicenseExpiredException(errorMessage);
                     }
 
-                    await ActivateAsync(updatedLicense.license, raftRequestId, skipGettingUpdatedLicense: true, updatedLicense.FromApi);
+                    await ActivateAsync(updatedLicense.License, raftRequestId, skipGettingUpdatedLicense: true, updatedLicense.FromApi);
                     return;
                 }
                 catch (LicenseExpiredException)
@@ -487,14 +487,14 @@ namespace Raven.Server.Commercial
                 try
                 {
                     var updatedLicense = await GetUpdatedLicenseForActivation(license);
-                    if (updatedLicense.license == null)
+                    if (updatedLicense.License == null)
                     {
                         throw new LicenseLimitException($"Your license ('{licenseStatus.Id}') version '{licenseStatus.Version}' doesn't allow you to upgrade to server version '{RavenVersionAttribute.Instance.FullVersion}'. " +
                                                         $"We failed to get an updated one from {ApiHttpClient.ApiRavenDbNet}. " +
                                                         $"Please proceed to the https://ravendb.net/l/8O2YU1 website to perform the license upgrade first.");
                     }
 
-                    await ActivateAsync(updatedLicense.license, raftRequestId, skipGettingUpdatedLicense: true, updatedLicense.FromApi);
+                    await ActivateAsync(updatedLicense.License, raftRequestId, skipGettingUpdatedLicense: true, updatedLicense.FromApi);
                     return;
                 }
                 catch (Exception e)
@@ -551,7 +551,7 @@ namespace Raven.Server.Commercial
             };
 
             var response = await ApiHttpClient.PostAsync("/api/v2/license/update-lets-encrypt-license",
-                    new StringContent(JsonConvert.SerializeObject(updateInfo), Encoding.UTF8, "application/json"), _serverStore.ServerShutdown)
+                    new StringContent(JsonConvert.SerializeObject(updateInfo), Encoding.UTF8, "application/json"), token: _serverStore.ServerShutdown)
                 .ConfigureAwait(false);
 
             if (response.IsSuccessStatusCode == false)
@@ -645,7 +645,7 @@ namespace Raven.Server.Commercial
             var leaseLicenseInfo = GetLeaseLicenseInfo(currentLicense, contextPool);
 
             var response = await ApiHttpClient.PostAsync("/api/v2/license/lease",
-                    new StringContent(JsonConvert.SerializeObject(leaseLicenseInfo), Encoding.UTF8, "application/json"), token)
+                    new StringContent(JsonConvert.SerializeObject(leaseLicenseInfo), Encoding.UTF8, "application/json"), token: token)
                 .ConfigureAwait(false);
 
             return response;
@@ -726,7 +726,7 @@ namespace Raven.Server.Commercial
             }
         }
 
-        private async Task<(License license, bool FromApi)> GetUpdatedLicenseForActivation(License currentLicense)
+        private async Task<(License License, bool FromApi)> GetUpdatedLicenseForActivation(License currentLicense)
         {
             try
             {
@@ -821,7 +821,7 @@ namespace Raven.Server.Commercial
             if (license == null)
                 return null;
 
-            if (license.Id != currentLicense.Id)
+            if (currentLicense != null && license.Id != currentLicense.Id)
                 throw new InvalidOperationException("Updating a license from string or path by using a different license id isn't supported");
 
             var licenseStatus = GetLicenseStatus(license);
@@ -830,7 +830,7 @@ namespace Raven.Server.Commercial
             if (licenseStatus.Expired)
                 return null;
 
-            if (licenseStatus.Expiration < GetLicenseStatus(currentLicense).Expiration)
+            if (currentLicense != null && licenseStatus.Expiration < GetLicenseStatus(currentLicense).Expiration)
                 return null;
 
             if (license.Equals(currentLicense))
@@ -880,26 +880,36 @@ namespace Raven.Server.Commercial
 
         public async Task<LicenseLeaseResult> LeaseLicense(string raftRequestId, bool throwOnError)
         {
-            var leaseStatus = new LicenseLeaseResult() { Status = LeaseStatus.NotModified };
+            var leaseStatus = new LicenseLeaseResult { Status = LeaseStatus.NotModified };
+
+            if (_serverStore.Engine.CurrentState == RachisState.Passive)
+                return leaseStatus;
+
             if (await _leaseLicenseSemaphore.WaitAsync(0) == false)
                 return leaseStatus;
 
             try
             {
                 var loadedLicense = _serverStore.LoadLicense();
-                if (loadedLicense == null)
+                if (loadedLicense == null && (_serverStore.Configuration.Licensing.DisableAutoUpdate || _serverStore.Configuration.Licensing.DisableAutoUpdateFromApi == false))
+                {
+                    // the cluster was bootstrapped, and we don't have an activated license.
+                    // we skip trying to get a new license in case of:
+                    // - the license auto update is disabled.
+                    // - the auto update from api.ravendb.net is enabled - in that case we cannot auto update anyway because we don't have the previous license.
                     return leaseStatus;
+                }
 
                 var updatedLicense = await GetUpdatedLicenseForActivation(loadedLicense);
-                if (updatedLicense.license == null)
+                if (updatedLicense.License == null)
                     return leaseStatus;
 
-                var licenseStatus = GetLicenseStatus(updatedLicense.license);
+                var licenseStatus = GetLicenseStatus(updatedLicense.License);
 
                 try
                 {
                     // we'll activate the license from the license server
-                    await _serverStore.PutLicenseAsync(updatedLicense.license, raftRequestId, updatedLicense.FromApi).ConfigureAwait(false);
+                    await _serverStore.PutLicenseAsync(updatedLicense.License, raftRequestId, updatedLicense.FromApi).ConfigureAwait(false);
                 }
                 catch
                 {
@@ -1090,11 +1100,11 @@ namespace Raven.Server.Commercial
             DateTime certificateNotBefore = new();
             DateTime certificateNotAfter = new();
             X509Certificate2 certificate = null;
-            if (_serverStore.Server.Certificate.Certificate != null)
+            if (_serverStore.Server.Certificate.ServerCertificate != null)
             {
-                certificateNotBefore = _serverStore.Server.Certificate.Certificate.NotBefore.ToUniversalTime();
-                certificateNotAfter = _serverStore.Server.Certificate.Certificate.NotAfter.ToUniversalTime();
-                certificate = _serverStore.Server.Certificate.Certificate;
+                certificateNotBefore  = _serverStore.Server.Certificate.ServerCertificate.NotBefore.ToUniversalTime(); 
+                certificateNotAfter  = _serverStore.Server.Certificate.ServerCertificate.NotAfter.ToUniversalTime(); 
+                certificate = _serverStore.Server.Certificate.ServerCertificate;
             }
 
             var clusterSize = GetClusterSize();
@@ -1382,7 +1392,7 @@ namespace Raven.Server.Commercial
 
             foreach (var kvp in indexes)
             {
-                if (HasAdditionalAssembliesFromNuGet(kvp.Value))
+                if (HasAdditionalAssembliesFromNuGet(kvp.Value) && kvp.Value.State != IndexState.Disabled)
                     return true;
             }
 
@@ -1695,27 +1705,30 @@ namespace Raven.Server.Commercial
             throw GenerateLicenseLimit(LimitType.ReadOnlyCertificates, details);
         }
 
-        public bool CanUseOpenTelemetryMonitoring(bool withNotification, bool startUp)
+        public bool CanUseOpenTelemetryMonitoring(bool withNotification, bool metersRegistered)
         {
             if (IsValid(out _) == false)
                 return false;
 
-            if (LicenseStatus.HasMonitoringEndpoints)
+            switch (MetersRegistered: metersRegistered, LicenceHasMonitoringEndpoints: LicenseStatus.HasMonitoringEndpoints)
             {
-                if (startUp)
+                case (MetersRegistered: true, LicenceHasMonitoringEndpoints: true):
+                {
+                    DismissLicenseLimit(LimitType.MonitoringEndpoints);
                     return true;
-                const string details = "Your license allows you to run OpenTelemetry meters, but OpenTelemetry is initialized at process startup. To enable the OpenTelemetry feature, you must restart the process.";
-                throw GenerateLicenseLimit(LimitType.MonitoringEndpoints, details, addNotification: true);
-            }
-
-            {
-                const string details = "Your current license doesn't include the OpenTelemetry feature.";
-                var exception = GenerateLicenseLimit(LimitType.MonitoringEndpoints, details, addNotification: withNotification);
-
-                if (startUp)
+                }
+                case (MetersRegistered: false, LicenceHasMonitoringEndpoints: true):
+                {
+                    const string details = "Your license allows you to run OpenTelemetry meters, but OpenTelemetry is initialized at process startup. To enable the OpenTelemetry feature, you must restart the process.";
+                    GenerateLicenseLimit(LimitType.MonitoringEndpoints, details, addNotification: true);
                     return false;
-                
-                throw exception;
+                }
+                case (MetersRegistered: _, LicenceHasMonitoringEndpoints: false):
+                {
+                    const string details = "Your current license doesn't include the OpenTelemetry feature.";
+                    GenerateLicenseLimit(LimitType.MonitoringEndpoints, details, addNotification: withNotification);
+                    return false;
+                }
             }
         }
 
@@ -1953,7 +1966,7 @@ namespace Raven.Server.Commercial
                 using (var cts = new CancellationTokenSource(timeoutInSec * 1000))
                 {
                     var response = await ApiHttpClient.PostAsync("/api/v2/license/support",
-                            new StringContent(JsonConvert.SerializeObject(leaseLicenseInfo), Encoding.UTF8, "application/json"), cts.Token)
+                            new StringContent(JsonConvert.SerializeObject(leaseLicenseInfo), Encoding.UTF8, "application/json"), token: cts.Token)
                         .ConfigureAwait(false);
 
                     if (response.IsSuccessStatusCode == false)

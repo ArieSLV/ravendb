@@ -171,6 +171,9 @@ namespace TypingsGenerator
                 .WithTypeMapping(new TsInterface(new TsName("Array")), typeof(IReadOnlyList<>))
                 .WithTypeMapping(new TsInterface(new TsName("Array")), typeof(IReadOnlyCollection<>))
                 .WithTypeMapping(new TsInterface(new TsName("Array")), typeof(SortedSet<>))
+                .WithTypeMapping(new TsInterface(new TsName("Record<Raven.Server.Commercial.ConfigurationStepType, Raven.Server.Commercial.SetupActionInfo>")),
+                    typeof(IDictionary<ConfigurationStepType, SetupActionInfo>))
+                .WithTypeMapping(new TsInterface(new TsName("Array")), typeof(ISet<>))
                 .WithTypeMapping(new TsInterface(new TsName("dictionary<Raven.Client.Documents.Queries.Timings.QueryTimings>")),
                     typeof(IDictionary<string, QueryTimings>))
                 .WithTypeMapping(new TsInterface(new TsName("dictionary<Raven.Server.NotificationCenter.Notifications.Details.HugeDocumentInfo>")),
@@ -284,6 +287,7 @@ namespace TypingsGenerator
             scripter.AddType(typeof(QueueSinkErrorsDetails));
             scripter.AddType(typeof(CpuCreditsExhaustionWarning));
             scripter.AddType(typeof(ConflictPerformanceDetails));
+            scripter.AddType(typeof(AdoptOrphanedRevisionsResult));
 
             // subscriptions
             scripter.AddType(typeof(SubscriptionStatsCollector));
@@ -633,6 +637,8 @@ namespace TypingsGenerator
             scripter.AddType(typeof(SetupMode));
             scripter.AddType(typeof(ConfigurationNodeInfo));
             scripter.AddType(typeof(SetupParameters));
+            scripter.AddType(typeof(ConfigurationStepType));
+            scripter.AddType(typeof(SetupActionInfo));
 
             // compare exchange
             scripter.AddType(typeof(CompareExchangeHandlerProcessorForGetCompareExchangeValues.CompareExchangeListItem));

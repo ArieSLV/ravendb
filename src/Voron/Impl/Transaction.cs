@@ -58,6 +58,19 @@ namespace Voron.Impl
         private LowLevelTransaction _lowLevelTransaction;
         private Dictionary<Tuple<Tree, Slice>, Tree> _multiValueTrees;
         private Dictionary<long, ByteString> _cachedDecompressedBuffersByStorageId;
+        
+        private StreamBufferAllocator.Buffer _streamBuffer;
+
+        public StreamBufferAllocator.Buffer StreamBuffer
+        {
+            get
+            {
+                if (_streamBuffer != null)
+                    return _streamBuffer;
+
+                return _streamBuffer = StreamBufferAllocator.Instance.Rent();
+            }
+        }
 
         public Transaction(LowLevelTransaction lowLevelTransaction)
         {
@@ -154,7 +167,7 @@ namespace Voron.Impl
             _lowLevelTransaction.EndAsyncCommit();
         }
 
-        public long OpenContainer(string name)
+        public ContainerId OpenContainer(string name)
         {
             using (Slice.From(Allocator, name, ByteStringType.Immutable, out Slice nameSlice))
             {
@@ -174,12 +187,12 @@ namespace Voron.Impl
             return LowLevelTransaction.RootObjects.LookupFor<TKey>(name);
         }
 
-        public long OpenContainer(Slice name)
+        public ContainerId OpenContainer(Slice name)
         {
             var exists = LowLevelTransaction.RootObjects.DirectRead(name);
             if (exists != null)
             {
-                return ((ContainerRootHeader*)exists)->ContainerId;
+                return new ContainerId(((ContainerRootHeader*)exists)->ContainerId);
             }
             var id = Container.Create(LowLevelTransaction);
 
@@ -187,10 +200,10 @@ namespace Voron.Impl
                 *((ContainerRootHeader*)ptr) = new ContainerRootHeader
                 {
                     RootObjectType = RootObjectType.Container,
-                    ContainerId = id
+                    ContainerId = (long)id
                 };
-            
-            
+
+
             return id;
         }
 
@@ -356,9 +369,10 @@ namespace Voron.Impl
         internal bool TryRemoveMultiValueTree(Tree parentTree, Slice key)
         {
             var keyToRemove = Tuple.Create(parentTree, key);
-            if (_multiValueTrees == null || !_multiValueTrees.ContainsKey(keyToRemove))
+            
+            if (_multiValueTrees == null)
                 return false;
-
+            
             return _multiValueTrees.Remove(keyToRemove);
         }
 
@@ -525,8 +539,16 @@ namespace Voron.Impl
             return tree;
         }
         
+        public void DisposeStreamBuffer()
+        {
+            _streamBuffer?.Dispose();
+            _streamBuffer = null;
+        }
+
         public void Dispose()
         {
+            DisposeStreamBuffer();
+
             _lowLevelTransaction?.Dispose();
             _lowLevelTransaction = null;
         }
@@ -690,6 +712,13 @@ namespace Voron.Impl
             if (tableTree.Read(TableSchema.InactiveSectionSlice) != null)
                 DeleteFixedTree(table.InactiveSections, isInRoot: false);
 
+            // pre allocated pages
+
+            table.TablePageAllocator.FreePreAllocatedFreePages();
+
+            DeleteFixedTree(table.TablePageAllocator.GetAllocationStorageFst(), isInRoot: false);
+            DeleteFixedTree(table.TablePageAllocator.GetAllocationStorageSizeFst(), isInRoot: false);
+
             DeleteTree(name);
 
             using (Slice.From(Allocator, name, ByteStringType.Immutable, out var nameSlice))
@@ -715,13 +744,13 @@ namespace Voron.Impl
             LowLevelTransaction.RootObjects.Forget(name);
         }
 
-        public Container.TransactionState GetContainerState(long containerId)
+        public Container.TransactionState GetContainerState(ContainerId containerId)
         {
             _containers ??= new Dictionary<long, Container.TransactionState>();
-            if (_containers.TryGetValue(containerId, out var state))
+            if (_containers.TryGetValue((long)containerId, out var state))
                 return state;
             state = new Container.TransactionState(containerId);
-            _containers[containerId] = state;
+            _containers[(long)containerId] = state;
             return state;
         }
 

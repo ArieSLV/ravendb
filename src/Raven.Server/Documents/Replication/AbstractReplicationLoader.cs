@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
@@ -30,7 +31,7 @@ using Sparrow.Server.Json.Sync;
 
 namespace Raven.Server.Documents.Replication
 {
-    public abstract class AbstractReplicationLoader<TContextPool, TOperationContext> : IDisposable 
+    public abstract class AbstractReplicationLoader<TContextPool, TOperationContext> : IDisposable
         where TContextPool : JsonContextPoolBase<TOperationContext>
         where TOperationContext : JsonOperationContext
     {
@@ -63,7 +64,7 @@ namespace Raven.Server.Documents.Replication
             _server = serverStore;
             _logger = LoggingSource.Instance.GetLogger(GetType().FullName, databaseName);
         }
-        
+
         internal TestingStuff ForTestingPurposes;
 
         internal TestingStuff ForTestingPurposesOnly()
@@ -80,6 +81,7 @@ namespace Raven.Server.Documents.Replication
             public Action<Exception> OnIncomingReplicationHandlerFailure;
             public Action OnIncomingReplicationHandlerStart;
             public Action BeforeDisposingIncomingReplicationHandlers;
+            public Func<Stream, Stream> WrapIncomingReplicationStream;
         }
 
         public int GetNextReplicationStatsId() => Interlocked.Increment(ref _replicationStatsId);
@@ -125,6 +127,7 @@ namespace Raven.Server.Documents.Replication
 
                 return false;
             }
+
             return true;
         }
 
@@ -232,7 +235,7 @@ namespace Raven.Server.Documents.Replication
                 case InternalReplication _:
                 case ExternalReplication _:
                     authorizationInfo = null;
-                    return _server.Server.Certificate.Certificate;
+                    return _server.Server.Certificate.ClientCertificate;
 
                 case PullReplicationAsSink sink:
                     authorizationInfo = new TcpConnectionHeaderMessage.AuthorizationInfo
@@ -248,7 +251,7 @@ namespace Raven.Server.Documents.Replication
                     };
 
                     if (sink.CertificateWithPrivateKey == null)
-                        return _server.Server.Certificate.Certificate;
+                        return _server.Server.Certificate.ClientCertificate;
 
                     var certBytes = Convert.FromBase64String(sink.CertificateWithPrivateKey);
 

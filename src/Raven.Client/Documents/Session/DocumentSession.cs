@@ -1,10 +1,4 @@
-//-----------------------------------------------------------------------
-// <copyright file="DocumentSession.cs" company="Hibernating Rhinos LTD">
-//     Copyright (c) Hibernating Rhinos LTD. All rights reserved.
-// </copyright>
-//-----------------------------------------------------------------------
-
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -92,6 +86,7 @@ namespace Raven.Client.Documents.Session
         /// </summary>
         public void SaveChanges()
         {
+            AssertNotDisposed();
             var saveChangesOperation = new BatchOperation(this);
 
             using (var command = saveChangesOperation.CreateRequest())

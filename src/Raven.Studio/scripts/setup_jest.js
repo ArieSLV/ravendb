@@ -3,6 +3,7 @@ const knockout = require("knockout");
 require("knockout-postbox");
 const jquery = require("jquery");
 const ROP = require("@juggle/resize-observer")
+const { hooksForAutoMock } = require("../typescript/components/hooks/hooksForAutoMock");
 
 global._ = lodash;
 global.ko = knockout;
@@ -13,9 +14,7 @@ require("bootstrap/dist/js/bootstrap");
 
 require("../typescript/test/mocks");
 
-const customHooks = require("../typescript/components/hooks/hooksForAutoMock.json").hooks;
-
-customHooks.forEach(hook => {
+hooksForAutoMock.forEach(hook => {
     jest.mock("hooks/" + hook);
 });
 
@@ -57,19 +56,30 @@ global.define = function() {};
 
 Object.defineProperty(HTMLElement.prototype, "scrollWidth", {
     configurable: true,
-    value: 500,
+    value: 800,
 });
-
-Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
-    configurable: true,
-    value: 500,
-});
-
 Object.defineProperty(HTMLElement.prototype, "offsetWidth", {
     configurable: true,
-    value: 500,
+    value: 800,
+});
+Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+    configurable: true,
+    value: 1000,
+});
+Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+    configurable: true,
+    value: 1000,
 });
 
 if (!window.ResizeObserver) {
   window.ResizeObserver = ROP.ResizeObserver;
 }
+
+window.HTMLElement.prototype.getBoundingClientRect = () => ({
+    width: 500,
+    height: 500,
+    bottom: 0,
+    left: 0,
+    right: 0,
+    top: 0,
+});

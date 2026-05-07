@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
-    <RuntimeFrameworkVersion>8.0.19</RuntimeFrameworkVersion>
+    <RuntimeFrameworkVersion>8.0.26</RuntimeFrameworkVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>StressTests</AssemblyName>
     <PackageId>StressTests</PackageId>
@@ -17,9 +17,13 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="..\..\src\CommonAssemblyInfo.cs" Link="Properties\CommonAssemblyInfo.cs" />
+    <Compile Include="..\..\src\Usings.Server.cs">
+      <Link>Properties\Usings.Server.cs</Link>
+    </Compile>
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Corax\Bugs\Terms.log.gz" />
+    <EmbeddedResource Include="Data\RavenDB_22498\AutoIndexes.SlowTests.json.gz" />
     <EmbeddedResource Include="Voron\Data\*.txt" />
     <Content Include="..\xunit.runner.json" Link="xunit.runner.json">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
