@@ -1164,7 +1164,7 @@ namespace Raven.Server.Documents.Replication
             return stateBlittable != null ? JsonDeserializationCluster.ExternalReplicationState(stateBlittable) : new ExternalReplicationState();
         }
 
-        private void CollectIncomingReplicationChanges([NotNull]ReplicationChanges changes)
+        private void CollectIncomingReplicationChanges([NotNull] ReplicationChanges changes)
         {
             var pullReplicationSupportedFeaturesChanged = changes.PullReplicationCompositeChangeVectorsSupported.HasValue;
             foreach ((string sourceDatabaseId, IAbstractIncomingReplicationHandler incomingReplicationHandler) in _incoming)
