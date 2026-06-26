@@ -19,6 +19,7 @@ using Raven.Client.ServerWide.Operations;
 using Raven.Client.ServerWide.Operations.Certificates;
 using Raven.Server.Config;
 using Raven.Server.Documents.Replication.Incoming;
+using Raven.Server.Documents.Replication.Outgoing;
 using Raven.Server.Utils;
 using Raven.Tests.Core.Utils.Entities;
 using Sparrow.Json;
@@ -468,6 +469,162 @@ namespace SlowTests.Server.Replication
 
                 Assert.False(WaitForValue(() => HasIncomingHubToSinkPullHandler(sinkDatabase, sinkTask.TaskId), false, timeout),
                     "Disabling the HubToSink pull replication task on the sink should dispose the active incoming pull handler.");
+            }
+        }
+
+        [RavenTheory(RavenTestCategory.Replication | RavenTestCategory.Certificates)]
+        [RavenData(DatabaseMode = RavenDatabaseMode.Single, Data = [PullReplicationMode.SinkToHub])]
+        [RavenData(DatabaseMode = RavenDatabaseMode.Single, Data = [PullReplicationMode.HubToSink])]
+        public async Task UpdatingDualModePullReplicationShouldDropOnlyRemovedLane(Options options, PullReplicationMode remainingMode)
+        {
+            DoNotReuseServer();
+
+            var definitionName = $"pull-replication {GetDatabaseName()}";
+            var connectionStringName = $"ConnectionString-{definitionName}";
+            var sinkTaskName = $"Sink task {definitionName}";
+            const int timeout = 15_000;
+
+            var customSettings = new Dictionary<string, string>();
+            var certificates = Certificates.SetupServerAuthentication(customSettings: customSettings);
+            var serverCertificate = certificates.ServerCertificateForCommunication.Value;
+            var pullReplicationCertificate = certificates.ClientCertificate1.Value;
+            var pullReplicationCertificateWithPrivateKey = Convert.ToBase64String(pullReplicationCertificate.Export(X509ContentType.Pfx));
+
+            using (var server = GetNewServer(new ServerCreationOptions { CustomSettings = customSettings }))
+            using (var sink = GetDocumentStore(new Options(options)
+            {
+                Server = server,
+                ModifyDatabaseName = s => $"Sink_{s}",
+                ClientCertificate = serverCertificate,
+                AdminCertificate = serverCertificate
+            }))
+            using (var hub = GetDocumentStore(new Options(options)
+            {
+                Server = server,
+                ModifyDatabaseName = s => $"Hub_{s}",
+                ClientCertificate = serverCertificate,
+                AdminCertificate = serverCertificate
+            }))
+            {
+                var sinkDatabase = await GetDatabase(sink.Database, server);
+
+                await hub.Maintenance.ForDatabase(hub.Database).SendAsync(new PutPullReplicationAsHubOperation(new PullReplicationDefinition(definitionName)
+                {
+                    Name = definitionName,
+                    Mode = PullReplicationMode.SinkToHub | PullReplicationMode.HubToSink
+                }));
+
+                await hub.Maintenance.SendAsync(new RegisterReplicationHubAccessOperation(definitionName, new ReplicationHubAccess
+                {
+                    Name = definitionName,
+                    CertificateBase64 = Convert.ToBase64String(pullReplicationCertificate.Export(X509ContentType.Cert))
+                }));
+
+                await sink.Maintenance.SendAsync(new PutConnectionStringOperation<RavenConnectionString>(new RavenConnectionString
+                {
+                    Database = hub.Database,
+                    Name = connectionStringName,
+                    TopologyDiscoveryUrls = hub.Urls
+                }));
+
+                var sinkTask = await sink.Maintenance.SendAsync(new UpdatePullReplicationAsSinkOperation(CreateSinkTask(PullReplicationMode.HubToSink | PullReplicationMode.SinkToHub)));
+
+                using (var session = hub.OpenSession())
+                {
+                    session.Store(new User { Name = "hub-before-mode-change" }, "users/hub-before-mode-change");
+                    session.SaveChanges();
+                }
+
+                Assert.True(WaitForDocument<User>(sink, "users/hub-before-mode-change", u => u.Name == "hub-before-mode-change", timeout), sink.Identifier);
+                var originalHubToSinkHandler = WaitForHubToSinkHandler(
+                    "Expected an active HubToSink incoming handler before narrowing the dual-mode sink task.");
+
+                using (var session = sink.OpenSession())
+                {
+                    session.Store(new User { Name = "sink-before-mode-change" }, "users/sink-before-mode-change");
+                    session.SaveChanges();
+                }
+
+                Assert.True(WaitForDocument<User>(hub, "users/sink-before-mode-change", u => u.Name == "sink-before-mode-change", timeout), hub.Identifier);
+                var originalSinkToHubHandler = WaitForSinkToHubHandler(
+                    "Expected an active SinkToHub outgoing handler before narrowing the dual-mode sink task.");
+
+                await sink.Maintenance.SendAsync(new UpdatePullReplicationAsSinkOperation(CreateSinkTask(remainingMode, sinkTask.TaskId)));
+
+                switch (remainingMode)
+                {
+                    case PullReplicationMode.SinkToHub:
+                        Assert.False(WaitForValue(() => HasIncomingHubToSinkPullHandler(sinkDatabase, sinkTask.TaskId), false, timeout),
+                            "Updating the dual-mode sink task to SinkToHub only should dispose the HubToSink incoming handler.");
+
+                        var currentSinkToHubHandler = WaitForSinkToHubHandler(
+                            "Updating the dual-mode sink task to SinkToHub only should keep the SinkToHub outgoing handler alive.");
+                        Assert.Same(originalSinkToHubHandler, currentSinkToHubHandler);
+
+                        using (var session = sink.OpenSession())
+                        {
+                            session.Store(new User { Name = "sink-after-mode-change" }, "users/sink-after-mode-change");
+                            session.SaveChanges();
+                        }
+
+                        Assert.True(WaitForDocument<User>(hub, "users/sink-after-mode-change", u => u.Name == "sink-after-mode-change", timeout), hub.Identifier);
+                        break;
+
+                    case PullReplicationMode.HubToSink:
+                        Assert.False(WaitForValue(() => GetOutgoingSinkToHubPullHandler(sinkDatabase, sinkTask.TaskId) != null, false, timeout),
+                            "Updating the dual-mode sink task to HubToSink only should dispose the SinkToHub outgoing handler.");
+
+                        var currentHubToSinkHandler = WaitForHubToSinkHandler(
+                            "Updating the dual-mode sink task to HubToSink only should keep the HubToSink incoming handler alive.");
+                        Assert.Same(originalHubToSinkHandler, currentHubToSinkHandler);
+
+                        using (var session = hub.OpenSession())
+                        {
+                            session.Store(new User { Name = "hub-after-mode-change" }, "users/hub-after-mode-change");
+                            session.SaveChanges();
+                        }
+
+                        Assert.True(WaitForDocument<User>(sink, "users/hub-after-mode-change", u => u.Name == "hub-after-mode-change", timeout), sink.Identifier);
+                        break;
+
+                    default:
+                        throw new ArgumentOutOfRangeException(nameof(remainingMode), remainingMode, null);
+                }
+
+                PullReplicationAsSink CreateSinkTask(PullReplicationMode mode, long taskId = 0)
+                {
+                    return new PullReplicationAsSink(hub.Database, connectionStringName, definitionName)
+                    {
+                        Name = sinkTaskName,
+                        TaskId = taskId,
+                        Mode = mode,
+                        CertificateWithPrivateKey = pullReplicationCertificateWithPrivateKey
+                    };
+                }
+
+                IncomingPullReplicationHandlerAsSink WaitForHubToSinkHandler(string message)
+                {
+                    IncomingPullReplicationHandlerAsSink handler = null;
+                    Assert.True(WaitForValue(() =>
+                    {
+                        handler = GetIncomingHubToSinkPullHandler(sinkDatabase, sinkTask.TaskId);
+                        return handler != null;
+                    }, true, timeout), message);
+
+                    return handler;
+                }
+
+                OutgoingPullReplicationHandlerAsSink WaitForSinkToHubHandler(string message)
+                {
+                    OutgoingPullReplicationHandlerAsSink handler = null;
+                    Assert.True(WaitForValue(() =>
+                    {
+                        handler = GetOutgoingSinkToHubPullHandler(sinkDatabase, sinkTask.TaskId);
+                        return handler != null;
+                    }, true, timeout), message);
+
+                    return handler;
+                }
             }
         }
 
@@ -1684,9 +1841,22 @@ namespace SlowTests.Server.Replication
 
         private static bool HasIncomingHubToSinkPullHandler(Raven.Server.Documents.DocumentDatabase database, long taskId)
         {
+            return GetIncomingHubToSinkPullHandler(database, taskId) != null;
+        }
+
+        private static IncomingPullReplicationHandlerAsSink GetIncomingHubToSinkPullHandler(Raven.Server.Documents.DocumentDatabase database, long taskId)
+        {
             return database.ReplicationLoader.IncomingHandlers
                 .OfType<IncomingPullReplicationHandlerAsSink>()
-                .Any(x => x.IncomingPullReplicationParams.TaskId == taskId && x.IncomingPullReplicationParams.Mode == PullReplicationMode.HubToSink);
+                .FirstOrDefault(x => x.IncomingPullReplicationParams.TaskId == taskId && x.IncomingPullReplicationParams.Mode == PullReplicationMode.HubToSink);
+        }
+
+        private static OutgoingPullReplicationHandlerAsSink GetOutgoingSinkToHubPullHandler(Raven.Server.Documents.DocumentDatabase database, long taskId)
+        {
+            return database.ReplicationLoader.OutgoingHandlers
+                .OfType<OutgoingPullReplicationHandlerAsSink>()
+                .FirstOrDefault(x => x.Destination is PullReplicationAsSink { TaskId: var destinationTaskId, Mode: PullReplicationMode.SinkToHub } &&
+                                     destinationTaskId == taskId);
         }
 
         private static bool HasHubToSinkReconnectQueued(Raven.Server.Documents.DocumentDatabase database, long taskId)

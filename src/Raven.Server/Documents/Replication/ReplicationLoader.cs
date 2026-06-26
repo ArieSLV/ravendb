@@ -1201,7 +1201,7 @@ namespace Raven.Server.Documents.Replication
         private static bool ShouldDropIncomingConnection(ReplicationNode connectionToRemove, IAbstractIncomingReplicationHandler incoming)
         {
             if (incoming is IncomingPullReplicationHandlerAsSink pullAsSink &&
-                connectionToRemove is PullReplicationAsSink { Mode: PullReplicationMode.HubToSink } pullReplicationAsSink)
+                connectionToRemove is PullReplicationAsSink pullReplicationAsSink)
             {
                 return pullAsSink.IncomingPullReplicationParams.IsSameHubToSinkTask(pullReplicationAsSink);
             }
