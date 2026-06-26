@@ -878,7 +878,7 @@ namespace Raven.Server.Documents.Replication.Outgoing
 
             _cts.SafeCancel(Logger, $"Failed to cancel {nameof(CancellationTokenSource)} while disposing of {GetType().Name} ({FromToString})");
 
-            _tcpConnectionOptions.Dispose();
+            _tcpConnectionOptions?.Dispose();
             DisposeTcpClient();
 
             _connectionDisposed.Set();

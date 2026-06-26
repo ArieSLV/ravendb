@@ -10,6 +10,7 @@ using Raven.Client.Documents.Operations.ConnectionStrings;
 using Raven.Client.Documents.Operations.ETL;
 using Raven.Client.Documents.Operations.OngoingTasks;
 using Raven.Client.Documents.Operations.Replication;
+using Raven.Client.Documents.Replication.Messages;
 using Raven.Client.Exceptions;
 using Raven.Client.Exceptions.Database;
 using Raven.Client.Exceptions.Sharding;
@@ -34,6 +35,52 @@ namespace SlowTests.Server.Replication
     {
         public PullReplicationTests(ITestOutputHelper output) : base(output)
         {
+        }
+
+        [RavenFact(RavenTestCategory.Replication)]
+        public async Task DisposingPullReplicationAsHubBeforeStartShouldNotThrow()
+        {
+            var definitionName = $"pull-replication {GetDatabaseName()}";
+
+            using (var store = GetDocumentStore())
+            {
+                var database = await GetDocumentDatabaseInstanceFor(store);
+                var initialRequest = new ReplicationInitialRequest
+                {
+                    PullReplicationDefinitionName = definitionName,
+                    Database = store.Database,
+                    SourceUrl = store.Urls[0],
+                    Info = new TcpConnectionInfo
+                    {
+                        Url = store.Urls[0],
+                        Urls = store.Urls,
+                        NodeTag = Server.ServerStore.NodeTag
+                    }
+                };
+
+                var pullReplicationDefinition = new PullReplicationDefinition(definitionName)
+                {
+                    Mode = PullReplicationMode.HubToSink,
+                    TaskId = 1
+                };
+
+                var toPullReplicationAsHub = typeof(PullReplicationDefinition).GetMethod("ToPullReplicationAsHub",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                Assert.NotNull(toPullReplicationAsHub);
+                var pullReplicationAsHub = toPullReplicationAsHub.Invoke(pullReplicationDefinition, new object[] { initialRequest, pullReplicationDefinition.TaskId });
+
+                var outgoingPullReplicationHandlerAsHubType = typeof(OutgoingPullReplicationHandler).Assembly.GetType(
+                    "Raven.Server.Documents.Replication.Outgoing.OutgoingPullReplicationHandlerAsHub",
+                    throwOnError: true);
+                var handler = Assert.IsAssignableFrom<IDisposable>(Activator.CreateInstance(
+                    outgoingPullReplicationHandlerAsHubType,
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic,
+                    binder: null,
+                    args: new[] { database.ReplicationLoader, database, pullReplicationAsHub, initialRequest.Info },
+                    culture: null));
+
+                handler.Dispose();
+            }
         }
 
         [RavenTheory(RavenTestCategory.Replication)]
