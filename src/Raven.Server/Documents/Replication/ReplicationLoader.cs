@@ -1014,7 +1014,7 @@ namespace Raven.Server.Documents.Replication
                     continue;
 
                 // Short path: restart all pull replications because supported feature shape changed
-                if (changes?.PullReplicationCompositeChangeVectorsSupported == true)
+                if (changes.PullReplicationCompositeChangeVectorsSupported.HasValue)
                 {
                     changes.OutgoingConnectionsToDrop.Add(instance.Destination);
                     continue;
@@ -1165,7 +1165,7 @@ namespace Raven.Server.Documents.Replication
 
         private void CollectIncomingReplicationChanges([NotNull]ReplicationChanges changes)
         {
-            var pullReplicationSupportedFeaturesChanged = changes?.PullReplicationCompositeChangeVectorsSupported == true;
+            var pullReplicationSupportedFeaturesChanged = changes.PullReplicationCompositeChangeVectorsSupported.HasValue;
             foreach ((string sourceDatabaseId, IAbstractIncomingReplicationHandler incomingReplicationHandler) in _incoming)
             {
                 // a restarted pull lane disposes the previous handler synchronously; everything else is deferred.
@@ -1316,7 +1316,7 @@ namespace Raven.Server.Documents.Replication
             var newPullReplicationAsSinkDestinations = BuildPullReplicationAsSinkDestinations(newRecord);
 
             // Short path: restart all pull replications because supported feature shape changed
-            if (changes?.PullReplicationCompositeChangeVectorsSupported == true)
+            if (changes.PullReplicationCompositeChangeVectorsSupported.HasValue)
             {
                 var enabledOwnedDestinations = newPullReplicationAsSinkDestinations
                     .Where(x => x.Disabled == false && IsMyTask(newRecord.RavenConnectionStrings, newRecord.Topology, x))
