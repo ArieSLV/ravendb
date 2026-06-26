@@ -74,10 +74,9 @@ public sealed class ShardReplicationLoader : ReplicationLoader
         return base.GetOutgoingReplicationHandlerInstance(info, node);
     }
 
-    protected override void HandleReplicationChanges(DatabaseRecord newRecord, List<IDisposable> instancesToDispose)
+    protected override void HandleAdditionalReplicationChanges(DatabaseRecord newRecord, ReplicationChanges changes)
     {
-        base.HandleReplicationChanges(newRecord, instancesToDispose);
-        HandleMigrationReplication(newRecord, instancesToDispose);
+        HandleMigrationReplication(newRecord, changes.InstancesToDispose);
     }
 
     private void OnDocumentReceived(IncomingReplicationHandler handler) => _database.HandleReshardingChanges();

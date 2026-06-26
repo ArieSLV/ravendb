@@ -82,24 +82,16 @@ namespace Raven.Server.Documents.Replication.Outgoing
         // we need to associate this instance to the replication definition.
         public string PullReplicationDefinitionName;
 
-        /// <summary>
-        /// The replication scope that should be disposed when the replication is done.
-        /// </summary>
-        private IDisposable _replicationScope;
-
         public OutgoingPullReplicationHandlerAsHub(ReplicationLoader parent, DocumentDatabase database, PullReplicationAsHub node, TcpConnectionInfo connectionInfo) : 
             base(parent, database, node, connectionInfo)
         {
         }
 
-        public void StartPullReplicationAsHub(IDisposable replicationScope, Stream stream, TcpConnectionHeaderMessage.SupportedFeatures supportedVersions)
+        public void StartPullReplicationAsHub(TcpConnectionOptions tcpConnectionOptions, TcpConnectionHeaderMessage.SupportedFeatures supportedVersions)
         {
             SupportedFeatures = supportedVersions;
-            _stream = stream;
-            _replicationScope = replicationScope;
-            if (replicationScope is TcpConnectionOptions tcpConnectionOptions)
-                _tcpConnectionOptions = tcpConnectionOptions;
-
+            _stream = tcpConnectionOptions.Stream;
+            _tcpConnectionOptions = tcpConnectionOptions;
             OutgoingReplicationThreadName = $"Pull replication as hub {FromToString}";
             _longRunningSendingWork =
                 PoolOfThreads.GlobalRavenThreadPool.LongRunning(x => HandleReplicationErrors(PullReplication), null, ThreadNames.ForOutgoingReplication(OutgoingReplicationThreadName,
@@ -114,8 +106,7 @@ namespace Raven.Server.Documents.Replication.Outgoing
             if (Logger.IsInfoEnabled)
                 Logger.Info($"Start pull replication as hub {FromToString}");
 
-            using (_replicationScope)
-            using (_stream)
+            using (_tcpConnectionOptions)
             using (_interruptibleRead = new InterruptibleRead<DocumentsContextPool, DocumentsOperationContext>(_parent.ContextPool, _stream))
             using (_database.DocumentsStorage.ContextPool.AllocateOperationContext(out JsonOperationContext context))
             using (context.GetMemoryBuffer(out _buffer))

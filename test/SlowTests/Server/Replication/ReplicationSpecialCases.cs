@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Raven.Client.Documents.Attachments;
+using Raven.Client.Documents.Operations.Replication;
 using Raven.Client.Documents.Replication;
 using Raven.Server.Config;
 using Raven.Server.Config.Settings;
@@ -23,6 +24,37 @@ namespace SlowTests.Server.Replication
     {
         public ReplicationSpecialCases(ITestOutputHelper output) : base(output)
         {
+        }
+
+        [RavenFact(RavenTestCategory.Replication | RavenTestCategory.Cluster)]
+        public async Task InternalReplicationStartsEvenWhenOngoingTasksAreDisabled()
+        {
+            var (nodes, leader) = await CreateRaftCluster(2, shouldRunInMemory: false);
+            var database = GetDatabaseName();
+            await CreateDatabaseInCluster(database, replicationFactor: 2, leader.WebUrl);
+
+            var nodeA = nodes[0];
+            var sibling = nodes.Single(x => ReferenceEquals(x, nodeA) == false);
+            var siblingNodeTag = sibling.ServerStore.NodeTag;
+
+            var dbA = await nodeA.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(database);
+            var dataPath = dbA.Configuration.Core.DataDirectory.FullPath;
+
+            nodeA.ServerStore.DatabasesLandlord.UnloadDirectly(database);
+            using (File.Create(Path.Combine(dataPath, "disable.tasks.marker")))
+            {
+            }
+
+            dbA = await nodeA.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(database);
+
+            Assert.True(dbA.DisableOngoingTasks, "Expected DisableOngoingTasks to be set from the marker file.");
+
+            Assert.True(
+                await WaitForValueAsync(() =>
+                    dbA.ReplicationLoader.OutgoingHandlers.Any(o => o.Destination is InternalReplication internalNode &&
+                                                                    internalNode.NodeTag == siblingNodeTag),
+                    expectedVal: true),
+                "Internal outgoing replication must start even when ongoing tasks are disabled.");
         }
 
         [RavenTheory(RavenTestCategory.Replication)]

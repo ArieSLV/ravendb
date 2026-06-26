@@ -7,6 +7,7 @@ using System.Linq;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
+using JetBrains.Annotations;
 using Raven.Client;
 using Raven.Client.Documents.Commands;
 using Raven.Client.Documents.Conventions;
@@ -396,13 +397,13 @@ namespace Raven.Server.Documents.Replication
             }
         }
 
-        private void QueueOutgoingForImmediateReconnect(DatabaseOutgoingReplicationHandler replicationHandler)
+        private void QueueOutgoingForImmediateReconnect(DatabaseOutgoingReplicationHandler replicationHandler, ReplicationNode destination)
         {
             UpdateLastEtag(replicationHandler);
 
-            var shutdownInfo = _outgoingFailureInfo.GetOrAdd(replicationHandler.Node, new ConnectionShutdownInfo
+            var shutdownInfo = _outgoingFailureInfo.GetOrAdd(destination, new ConnectionShutdownInfo
             {
-                Node = replicationHandler.Node,
+                Node = destination,
                 MaxConnectionTimeout = Database.Configuration.Replication.RetryMaxTimeout.AsTimeSpan.TotalMilliseconds
             });
             shutdownInfo.Reset();
@@ -544,8 +545,7 @@ namespace Raven.Server.Documents.Replication
             outgoingReplication.SuccessfulTwoWaysCommunication += OnOutgoingSendingSucceeded;
             outgoingReplication.SuccessfulReplication += ResetReplicationFailuresInfo;
 
-            // tcp ownership - the tcp is passed as a scope of the replication so that it can be properly disposed.
-            outgoingReplication.StartPullReplicationAsHub(tcpConnectionOptions, tcpConnectionOptions.Stream, supportedVersions);
+            outgoingReplication.StartPullReplicationAsHub(tcpConnectionOptions, supportedVersions);
             OutgoingReplicationAdded?.Invoke(outgoingReplication);
         }
 
@@ -604,7 +604,11 @@ namespace Raven.Server.Documents.Replication
 
             // we are pulling and therefore incoming, upon failure 'RetryPullReplication' will put us back as an outgoing
             RemoveOutgoingHandler(source);
+            RemoveOutgoingReconnectState(destination);
+        }
 
+        private void RemoveOutgoingReconnectState(ReplicationNode destination)
+        {
             if (_outgoingFailureInfo.TryRemove(destination, out ConnectionShutdownInfo info))
                 _reconnectQueue.TryRemove(info);
 
@@ -707,6 +711,22 @@ namespace Raven.Server.Documents.Replication
             public PreventDeletionsMode? PreventDeletionsMode;
             public ConnectionType Type;
             public long TaskId;
+
+            internal bool IsSameHubToSinkTask(PullReplicationAsSink destination)
+            {
+                // Match only the normalized HubToSink runtime lane: dual-mode sink definitions are split
+                // before collection, while SinkToHub incoming handlers live on the hub side.
+                if (destination == null ||
+                    Mode != PullReplicationMode.HubToSink ||
+                    destination.Mode != PullReplicationMode.HubToSink)
+                    return false;
+
+                if (TaskId != 0 && destination.TaskId != 0)
+                    return TaskId == destination.TaskId;
+
+                return string.Equals(Name, destination.HubName, StringComparison.OrdinalIgnoreCase) &&
+                       string.Equals(SourceDatabaseName, destination.Database, StringComparison.OrdinalIgnoreCase);
+            }
 
             public enum ConnectionType
             {
@@ -878,82 +898,59 @@ namespace Raven.Server.Documents.Replication
         {
             HandleConflictResolverChange(newRecord, index);
             HandleTopologyChange(newRecord);
-            UpdateConnectionStrings(newRecord);
-            HandlePullReplicationCompositeChangeVectorFeatureChange(newRecord);
+            HandleReplicationChanges(newRecord);
         }
 
-        private void HandlePullReplicationCompositeChangeVectorFeatureChange(DatabaseRecord newRecord)
+        private void HandleTopologyChange(DatabaseRecord newRecord)
         {
-            var supportsPullReplicationCompositeChangeVectors = SupportsPullReplicationCompositeChangeVectors(newRecord);
-            if (newRecord == null ||
-                _pullReplicationCompositeChangeVectorsSupported == supportsPullReplicationCompositeChangeVectors)
+            if (newRecord == null || _server.IsPassive())
                 return;
 
-            _pullReplicationCompositeChangeVectorsSupported = supportsPullReplicationCompositeChangeVectors;
+            _clusterTopology = GetClusterTopology();
+        }
 
-            List<PullReplicationAsSink> incomingPullReplicationAsSinkToReconnect = null;
-            foreach (var (key, repl) in _incoming)
+        private void HandleReplicationChanges(DatabaseRecord newRecord)
+        {
+            var changes = new ReplicationChanges();
+
+            if (DetectPullReplicationSupportedFeaturesChange(newRecord, out bool supportsPullReplicationCompositeChangeVectors))
+                changes.PullReplicationCompositeChangeVectorsSupported = supportsPullReplicationCompositeChangeVectors;
+
+            if (newRecord == null || _server.IsPassive() || _replicationDisabledByMarker)
             {
-                if (repl is IncomingPullReplicationHandler == false)
-                    continue;
+                changes.OutgoingConnectionsToDrop.AddRange(Destinations);
+                changes.ClearDestinations = true;
 
-                try
-                {
-                    if (_logger.IsInfoEnabled)
-                        _logger.Info($"Resetting {repl.ConnectionInfo} because pull replication composite change-vector support changed. Will be reconnected.");
-                    if (repl is IncomingPullReplicationHandlerAsSink pullAsSink)
-                    {
-                        var destination = _externalDestinations
-                            .OfType<PullReplicationAsSink>()
-                            .FirstOrDefault(x => x.Disabled == false &&
-                                                 x.Mode == PullReplicationMode.HubToSink &&
-                                                 IsSameHubToSinkPullReplicationTask(pullAsSink, x));
-                        if (destination != null)
-                        {
-                            incomingPullReplicationAsSinkToReconnect ??= new List<PullReplicationAsSink>();
-                            incomingPullReplicationAsSinkToReconnect.Add(destination);
-                        }
-                    }
+                if (_replicationDisabledByMarker && _logger.IsDebugEnabled)
+                    _logger.Debug(ReplicationDisabledByMarkerFile);
+            }
+            else
+            {
+                UpdateConnectionStrings(newRecord);
+                SetNumberOfSiblings(newRecord);
 
-                    repl.Dispose();
-                    _incoming.TryRemove(key, out _);
-                }
-                catch (Exception e)
-                {
-                    if (_logger.IsWarnEnabled)
-                        _logger.Warn($"Failed to reset {repl.ConnectionInfo} after pull replication composite change-vector support changed.", e);
-                }
+                HandleInternalReplication(newRecord, changes);
+                HandleExternalReplicationChanges(newRecord, changes);
+
+                HandlePullReplicationAsSinkChanges(newRecord, changes);
+                HandlePullReplicationAsHubChanges(newRecord, changes);
+
+                HandleAdditionalReplicationChanges(newRecord, changes);
             }
 
-            if (incomingPullReplicationAsSinkToReconnect != null && Database.DisableOngoingTasks == false)
-                Task.Run(() => StartOutgoingConnections(incomingPullReplicationAsSinkToReconnect));
+            CollectIncomingReplicationChanges(changes);
+            ApplyReplicationChanges(changes);
+        }
 
-            var shouldTryReconnect = false;
-            foreach (var repl in _outgoing)
-            {
-                if (repl is OutgoingPullReplicationHandler == false)
-                    continue;
+        protected virtual void HandleAdditionalReplicationChanges(DatabaseRecord newRecord, ReplicationChanges changes)
+        {
+        }
 
-                try
-                {
-                    if (repl is OutgoingPullReplicationHandlerAsHub == false)
-                    {
-                        QueueOutgoingForImmediateReconnect(repl);
-                        shouldTryReconnect = true;
-                    }
-
-                    repl.Dispose();
-                    _outgoing.TryRemove(repl);
-                }
-                catch (Exception e)
-                {
-                    if (_logger.IsWarnEnabled)
-                        _logger.Warn($"Failed to reset outgoing pull replication to {repl.DestinationFormatted} after pull replication composite change-vector support changed.", e);
-                }
-            }
-
-            if (shouldTryReconnect)
-                ForceTryReconnectAll();
+        private bool DetectPullReplicationSupportedFeaturesChange(DatabaseRecord newRecord, out bool supportsPullReplicationCompositeChangeVectors)
+        {
+            supportsPullReplicationCompositeChangeVectors = SupportsPullReplicationCompositeChangeVectors(newRecord);
+            return newRecord != null &&
+                   _pullReplicationCompositeChangeVectorsSupported != supportsPullReplicationCompositeChangeVectors;
         }
 
         private static bool SupportsPullReplicationCompositeChangeVectors(DatabaseRecord record)
@@ -964,10 +961,8 @@ namespace Raven.Server.Documents.Replication
         private void UpdateConnectionStrings(DatabaseRecord newRecord)
         {
             if (newRecord == null)
-            {
-                // we drop the connections in the handle topology change method
                 return;
-            }
+
             foreach (var connection in OutgoingFailureInfo)
             {
                 if (connection.Key is ExternalReplication external)
@@ -1005,57 +1000,25 @@ namespace Raven.Server.Documents.Replication
             }
         }
 
-        private void HandleTopologyChange(DatabaseRecord newRecord)
-        {
-            var instancesToDispose = new List<IDisposable>();
-            if (newRecord == null || _server.IsPassive() || _replicationDisabledByMarker)
-            {
-                DropOutgoingConnections(Destinations, instancesToDispose);
-                DropIncomingConnections(Destinations, instancesToDispose);
-                _internalDestinations.Clear();
-                _externalDestinations.Clear();
-                _destinations.Clear();
-                DisposeConnections(instancesToDispose);
-
-                if (_replicationDisabledByMarker && _logger.IsDebugEnabled) 
-                    _logger.Debug(ReplicationDisabledByMarkerFile);
-
-                return;
-            }
-
-            _clusterTopology = GetClusterTopology();
-
-            SetNumberOfSiblings(newRecord);
-
-            HandleReplicationChanges(newRecord, instancesToDispose);
-
-            var destinations = new List<ReplicationNode>();
-            destinations.AddRange(_internalDestinations);
-            destinations.AddRange(_externalDestinations);
-            _destinations = destinations;
-
-            DisposeConnections(instancesToDispose);
-        }
-
         private void SetNumberOfSiblings(DatabaseRecord newRecord)
         {
             // a promotable node isn't counted as a sibling, it is a new node that was added and doesn't hold all the data yet
             NumberOfSiblingsInInternalReplication = Math.Max(newRecord.Topology.Members.Count + newRecord.Topology.Rehabs.Count - 1, 0);
         }
 
-        protected virtual void HandleReplicationChanges(DatabaseRecord newRecord, List<IDisposable> instancesToDispose)
-        {
-            HandleInternalReplication(newRecord, instancesToDispose);
-            HandleExternalReplication(newRecord, instancesToDispose);
-            HandleHubPullReplication(newRecord, instancesToDispose);
-        }
-
-        private void HandleHubPullReplication(DatabaseRecord newRecord, List<IDisposable> instancesToDispose)
+        private void HandlePullReplicationAsHubChanges(DatabaseRecord newRecord, [NotNull] ReplicationChanges changes)
         {
             foreach (var instance in OutgoingHandlers)
             {
                 if (instance is OutgoingPullReplicationHandlerAsHub asHub == false)
                     continue;
+
+                // Short path: restart all pull replications because supported feature shape changed
+                if (changes?.PullReplicationCompositeChangeVectorsSupported == true)
+                {
+                    changes.OutgoingConnectionsToDrop.Add(instance.Destination);
+                    continue;
+                }
 
                 var pullReplication = newRecord.HubPullReplications.Find(x => x.Name == asHub.PullReplicationDefinitionName);
 
@@ -1072,18 +1035,7 @@ namespace Raven.Server.Documents.Replication
                     continue;
                 }
 
-                if (_logger.IsInfoEnabled)
-                    _logger.Info($"Stopping replication to {instance.Destination.FromString()}");
-
-                instance.Failed -= OnOutgoingSendingFailed;
-                instance.SuccessfulTwoWaysCommunication -= OnOutgoingSendingSucceeded;
-                instance.SuccessfulReplication -= ResetReplicationFailuresInfo;
-                instancesToDispose.Add(instance);
-                _outgoing.TryRemove(instance);
-                _lastSendEtagPerDestination.TryRemove(instance.Destination, out LastEtagPerDestination _);
-                _outgoingFailureInfo.TryRemove(instance.Destination, out ConnectionShutdownInfo info);
-                if (info != null)
-                    _reconnectQueue.TryRemove(info);
+                changes.OutgoingConnectionsToDrop.Add(instance.Destination);
             }
         }
 
@@ -1211,23 +1163,37 @@ namespace Raven.Server.Documents.Replication
             return stateBlittable != null ? JsonDeserializationCluster.ExternalReplicationState(stateBlittable) : new ExternalReplicationState();
         }
 
-        private void DropIncomingConnections(IEnumerable<ReplicationNode> connectionsToRemove, List<IDisposable> instancesToDispose)
+        private void CollectIncomingReplicationChanges([NotNull]ReplicationChanges changes)
         {
-            var toRemove = connectionsToRemove?.ToList();
-            if (toRemove == null || toRemove.Count == 0)
-                return;
-
-            // this is relevant for sink
-            foreach (var incoming in _incoming)
+            var pullReplicationSupportedFeaturesChanged = changes?.PullReplicationCompositeChangeVectorsSupported == true;
+            foreach ((string sourceDatabaseId, IAbstractIncomingReplicationHandler incomingReplicationHandler) in _incoming)
             {
-                var instance = incoming.Value as IncomingReplicationHandler;
-                if (toRemove.Any(conn => ShouldDropIncomingConnection(conn, incoming.Value)))
+                // a restarted pull lane disposes the previous handler synchronously; everything else is deferred.
+                // exactly one entry per source id => a handler can never be queued in two dispose lanes.
+                if (pullReplicationSupportedFeaturesChanged && incomingReplicationHandler is IncomingPullReplicationHandler)
                 {
-                    if (_incoming.TryRemove(incoming.Value.ConnectionInfo.SourceDatabaseId, out _))
-                        IncomingReplicationRemoved?.Invoke(instance);
-                    instance?.ClearEvents();
-                    instancesToDispose.Add(incoming.Value);
+                    changes.IncomingConnectionsToDrop[sourceDatabaseId] = new IncomingConnectionToDrop(incomingReplicationHandler, disposeImmediately: true);
+                    continue;
                 }
+
+                if (changes.OutgoingConnectionsToDrop.Any(conn => ShouldDropIncomingConnection(conn, incomingReplicationHandler)))
+                    changes.IncomingConnectionsToDrop[sourceDatabaseId] = new IncomingConnectionToDrop(incomingReplicationHandler, disposeImmediately: false);
+            }
+        }
+
+        private void DropIncomingConnections(Dictionary<string, IncomingConnectionToDrop> incomingConnections, List<IDisposable> instancesToDispose)
+        {
+            foreach (var (sourceDatabaseId, incoming) in incomingConnections)
+            {
+                // Remove the exact handler selected during collection, not a replacement that may have reused the same source database id.
+                var removed = _incoming.TryRemove(new KeyValuePair<string, IAbstractIncomingReplicationHandler>(sourceDatabaseId, incoming.Handler));
+
+                var instance = incoming.Handler as IncomingReplicationHandler;
+                if (removed)
+                    IncomingReplicationRemoved?.Invoke(instance);
+
+                instance?.ClearEvents();
+                instancesToDispose.Add(incoming.Handler);
             }
         }
 
@@ -1236,67 +1202,54 @@ namespace Raven.Server.Documents.Replication
             if (incoming is IncomingPullReplicationHandlerAsSink pullAsSink &&
                 connectionToRemove is PullReplicationAsSink { Mode: PullReplicationMode.HubToSink } pullReplicationAsSink)
             {
-                return IsSameHubToSinkPullReplicationTask(pullAsSink, pullReplicationAsSink);
+                return pullAsSink.IncomingPullReplicationParams.IsSameHubToSinkTask(pullReplicationAsSink);
             }
 
             return connectionToRemove.Url == incoming.ConnectionInfo.SourceUrl;
-        }
-
-        private static bool IsSameHubToSinkPullReplicationTask(IncomingPullReplicationHandlerAsSink incoming, PullReplicationAsSink destination)
-        {
-            var incomingParams = incoming.IncomingPullReplicationParams;
-            if (incomingParams.Mode != PullReplicationMode.HubToSink)
-                return false;
-
-            if (incomingParams.TaskId != 0 && destination.TaskId != 0)
-                return incomingParams.TaskId == destination.TaskId;
-
-            return string.Equals(incomingParams.Name, destination.HubName, StringComparison.OrdinalIgnoreCase) &&
-                   string.Equals(incomingParams.SourceDatabaseName, destination.Database, StringComparison.OrdinalIgnoreCase);
         }
 
         private void DisposeConnections(List<IDisposable> instancesToDispose)
         {
             ThreadPool.QueueUserWorkItem(toDispose =>
             {
-                Parallel.ForEach((List<IDisposable>)toDispose, instance =>
-                {
-                    try
-                    {
-                        instance?.Dispose();
-                    }
-                    catch (Exception e)
-                    {
-                        if (_logger.IsInfoEnabled)
-                        {
-                            switch (instance)
-                            {
-                                case DatabaseOutgoingReplicationHandler outHandler:
-                                    _logger.Info($"Failed to dispose outgoing replication to {outHandler.DestinationFormatted}", e);
-                                    break;
-
-                                case IncomingReplicationHandler inHandler:
-                                    _logger.Info($"Failed to dispose incoming replication to {inHandler.SourceFormatted}", e);
-                                    break;
-
-                                default:
-                                    _logger.Info($"Failed to dispose an unknown type '{instance?.GetType().FullName}", e);
-                                    break;
-                            }
-                        }
-                    }
-                });
+                Parallel.ForEach((List<IDisposable>)toDispose, DisposeConnection);
             }, instancesToDispose);
         }
 
-        private (List<ExternalReplicationBase> AddedDestinations, List<ExternalReplicationBase> RemovedDestiantions) FindExternalReplicationChanges(
-            DatabaseRecord databaseRecord, HashSet<ExternalReplicationBase> current,
-            List<ExternalReplicationBase> newDestinations)
+        private void DisposeConnection(IDisposable instance)
+        {
+            try
+            {
+                instance?.Dispose();
+            }
+            catch (Exception e)
+            {
+                if (_logger.IsInfoEnabled)
+                {
+                    switch (instance)
+                    {
+                        case DatabaseOutgoingReplicationHandler outHandler:
+                            _logger.Info($"Failed to dispose outgoing replication to {outHandler.DestinationFormatted}", e);
+                            break;
+
+                        case IncomingReplicationHandler inHandler:
+                            _logger.Info($"Failed to dispose incoming replication to {inHandler.SourceFormatted}", e);
+                            break;
+
+                        default:
+                            _logger.Info($"Failed to dispose an unknown type '{instance?.GetType().FullName}", e);
+                            break;
+                    }
+                }
+            }
+        }
+
+        private void CollectExternalReplicationChanges(DatabaseRecord databaseRecord, HashSet<ExternalReplicationBase> current, List<ExternalReplicationBase> newDestinations, ReplicationChanges changes)
         {
             var outgoingHandlers = OutgoingHandlers.ToList();
 
-            var addedDestinations = new List<ExternalReplicationBase>();
-            var removedDestinations = current.ToList();
+            changes.OutgoingConnectionsToDrop.AddRange(current);
+
             foreach (var newDestination in newDestinations.ToArray())
             {
                 if (IsMyTask(databaseRecord.RavenConnectionStrings, databaseRecord.Topology, newDestination) == false)
@@ -1305,7 +1258,7 @@ namespace Raven.Server.Documents.Replication
                 if (newDestination.Disabled)
                     continue;
 
-                removedDestinations.Remove(newDestination);
+                changes.OutgoingConnectionsToDrop.Remove(newDestination);
 
                 if (current.TryGetValue(newDestination, out var actual))
                 {
@@ -1335,95 +1288,243 @@ namespace Raven.Server.Documents.Replication
                     continue;
                 }
 
-                addedDestinations.Add(newDestination);
+                // external replication and sink pull are ongoing tasks:
+                // always track their enabled definitions in the runtime state, even while task execution is paused.
+                // DisableOngoingTasks gates only handler startup; tracking is still needed for later diffs and cleanup.
+                changes.ExternalDestinationsToRegister.Add(newDestination);
+                if (Database.DisableOngoingTasks == false)
+                    changes.OutgoingConnectionsToStart.Add(newDestination);
             }
-
-            return (addedDestinations, removedDestinations);
         }
 
-        private void HandleExternalReplication(DatabaseRecord newRecord, List<IDisposable> instancesToDispose)
+        private void HandleExternalReplicationChanges(DatabaseRecord newRecord, ReplicationChanges changes)
         {
-            var externalReplications = newRecord.ExternalReplications.Concat<ExternalReplicationBase>(newRecord.SinkPullReplications).ToList();
-            SetExternalReplicationProperties(newRecord, externalReplications);
+            var currentExternalReplications = _externalDestinations
+                // PullReplicationAsHub inherits from ExternalReplication, but it is a runtime hub connection,
+                // not a database-record external replication task. Use exact type matching to guard against
+                // accidentally treating it as regular external replication if that runtime invariant changes.
+                .Where(x => x.GetType() == typeof(ExternalReplication))
+                .ToHashSet();
 
-            var changes = FindExternalReplicationChanges(newRecord, _externalDestinations, externalReplications);
+            var newExternalReplications = BuildExternalReplicationDestinations(newRecord);
 
-            DropOutgoingConnections(changes.RemovedDestiantions, instancesToDispose);
-            DropIncomingConnections(changes.RemovedDestiantions, instancesToDispose);
+            CollectExternalReplicationChanges(newRecord, currentExternalReplications, [..newExternalReplications], changes);
+        }
 
-            var newDestinations = GetMyNewDestinations(newRecord, changes.AddedDestinations);
+        private void HandlePullReplicationAsSinkChanges(DatabaseRecord newRecord, ReplicationChanges changes)
+        {
+            var newPullReplicationAsSinkDestinations = BuildPullReplicationAsSinkDestinations(newRecord);
 
-            if (newDestinations.Count > 0 && Database.DisableOngoingTasks == false)
+            // Short path: restart all pull replications because supported feature shape changed
+            if (changes?.PullReplicationCompositeChangeVectorsSupported == true)
+            {
+                var enabledOwnedDestinations = newPullReplicationAsSinkDestinations
+                    .Where(x => x.Disabled == false && IsMyTask(newRecord.RavenConnectionStrings, newRecord.Topology, x))
+                    .ToList();
+
+                var outgoingPullReplicationAsSinkHandlers = OutgoingHandlers
+                    .OfType<OutgoingPullReplicationHandlerAsSink>()
+                    .ToList();
+
+                // build locally first, so reconnect targets do not depend on what anyone else may have added to changes
+                var outgoingConnectionsToReconnect = outgoingPullReplicationAsSinkHandlers
+                    .Select(handler => new OutgoingConnectionToReconnect(
+                        handler,
+                        newDestination: enabledOwnedDestinations.FirstOrDefault(destination => handler.Destination.Equals(destination))))
+                    .ToList();
+
+                changes.OutgoingConnectionsToReconnect.AddRange(outgoingConnectionsToReconnect);
+
+                changes.OutgoingConnectionsToDrop.AddRange(_externalDestinations.OfType<PullReplicationAsSink>());
+                changes.OutgoingConnectionsToDrop.AddRange(outgoingPullReplicationAsSinkHandlers.Select(handler => handler.Destination));
+
+                // every owned sink must be tracked again after the restart
+                changes.ExternalDestinationsToRegister.AddRange(enabledOwnedDestinations);
+
+                // start directly only those not handed to the reconnect path, and only while ongoing tasks are enabled
+                if (Database.DisableOngoingTasks == false)
+                {
+                    var reconnectTargets = outgoingConnectionsToReconnect
+                        .Where(item => item.NewDestination != null)
+                        .Select(item => item.NewDestination)
+                        .ToList();
+
+                    changes.OutgoingConnectionsToStart.AddRange(
+                        enabledOwnedDestinations.Where(destination => reconnectTargets.Contains(destination) == false));
+                }
+
+                return;
+            }
+
+            var currentPullReplicationAsSinkDestinations = _externalDestinations
+                .OfType<PullReplicationAsSink>()
+                .Cast<ExternalReplicationBase>()
+                .ToHashSet();
+
+            CollectExternalReplicationChanges(newRecord, currentPullReplicationAsSinkDestinations, [..newPullReplicationAsSinkDestinations], changes);
+        }
+
+        private void ApplyReplicationChanges(ReplicationChanges changes)
+        {
+            // commit deferred state first: nothing else here reads it, but it must run even on the
+            // ClearDestinations early-return path (preserves the latch update in passive/disabled cycles).
+            if (changes.PullReplicationCompositeChangeVectorsSupported.HasValue)
+                _pullReplicationCompositeChangeVectorsSupported = changes.PullReplicationCompositeChangeVectorsSupported.Value;
+
+            // Order matters: drop releases reconnect state that the reconnect step re-adds; immediate disposals
+            // must complete before new connections are started.
+            DropOutgoingConnections(changes.OutgoingConnectionsToDrop, changes.InstancesToDispose);
+
+            DropIncomingConnections(changes.IncomingConnectionsToDrop, changes.InstancesToDispose);
+            foreach (var incoming in changes.IncomingConnectionsToDrop.Values)
+            {
+                if (incoming.DisposeImmediately)
+                    DisposeConnectionImmediately(incoming.Handler, changes.InstancesToDispose);
+            }
+
+            if (changes.ClearDestinations)
+            {
+                _internalDestinations.Clear();
+                _externalDestinations.Clear();
+                _destinations.Clear();
+                DisposeConnections(changes.InstancesToDispose);
+                return;
+            }
+
+            // not a decision: ForceTryReconnectAll only revalidates ownership/state of the already-queued reconnects.
+            if (QueueOutgoingConnectionsForImmediateReconnect(changes.OutgoingConnectionsToReconnect, changes.InstancesToDispose))
+                ForceTryReconnectAll();
+
+            if (changes.OutgoingConnectionsToStart.Count > 0)
             {
                 Task.Run(() =>
                 {
                     // here we might have blocking calls to fetch the tcp info.
                     try
                     {
-                        StartOutgoingConnections(newDestinations);
+                        StartOutgoingConnections(changes.OutgoingConnectionsToStart);
                     }
                     catch (Exception e)
                     {
                         if (_logger.IsErrorEnabled)
-                            _logger.Error($"Failed to start the outgoing connections to {newDestinations.Count} new destinations", e);
+                            _logger.Error($"Failed to start {changes.OutgoingConnectionsToStart.Count} new outgoing replication connections", e);
                     }
                 });
             }
 
-            _externalDestinations.RemoveWhere(changes.RemovedDestiantions.Contains);
-            foreach (var newDestination in newDestinations)
-            {
-                _externalDestinations.Add(newDestination);
-            }
+            _externalDestinations.RemoveWhere(changes.OutgoingConnectionsToDrop.Contains);
+            foreach (var destination in changes.ExternalDestinationsToRegister)
+                _externalDestinations.Add(destination);
+
+            var destinations = new List<ReplicationNode>();
+            destinations.AddRange(_internalDestinations);
+            destinations.AddRange(_externalDestinations);
+            _destinations = destinations;
+
+            DisposeConnections(changes.InstancesToDispose);
         }
 
-        private void SetExternalReplicationProperties(DatabaseRecord newRecord, List<ExternalReplicationBase> externalReplications)
+        private bool QueueOutgoingConnectionsForImmediateReconnect(List<OutgoingConnectionToReconnect> outgoingConnections, List<IDisposable> instancesToDispose)
         {
-            for (var i = 0; i < externalReplications.Count; i++)
+            var shouldTryReconnect = false;
+            foreach (var outgoingConnectionToReconnect in outgoingConnections)
             {
-                var externalReplication = externalReplications[i];
-                if (ValidateConnectionString(newRecord.RavenConnectionStrings, externalReplication, out var connectionString) == false)
+                if (outgoingConnectionToReconnect.NewDestination != null)
                 {
-                    continue;
+                    QueueOutgoingForImmediateReconnect(outgoingConnectionToReconnect.Handler, outgoingConnectionToReconnect.NewDestination);
+                    shouldTryReconnect = true;
                 }
+
+                DisposeConnectionImmediately(outgoingConnectionToReconnect.Handler, instancesToDispose);
+            }
+
+            return shouldTryReconnect;
+        }
+
+        private void DisposeConnectionImmediately(IDisposable connection, List<IDisposable> instancesToDispose)
+        {
+            for (var i = 0; i < instancesToDispose.Count; i++)
+            {
+                if (ReferenceEquals(instancesToDispose[i], connection) == false)
+                    continue;
+
+                instancesToDispose.RemoveAt(i);
+                break;
+            }
+
+            DisposeConnection(connection);
+        }
+
+        private List<ExternalReplication> BuildExternalReplicationDestinations(DatabaseRecord newRecord)
+        {
+            var destinations = new List<ExternalReplication>();
+
+            foreach (var externalReplication in newRecord.ExternalReplications)
+            {
+                if (ValidateConnectionString(newRecord.RavenConnectionStrings, externalReplication, out var connectionString) == false)
+                    continue;
 
                 externalReplication.Database = connectionString.Database;
                 externalReplication.ConnectionString = connectionString;
-
-                if (externalReplication is PullReplicationAsSink sink &&
-                    sink.Mode == (PullReplicationMode.SinkToHub | PullReplicationMode.HubToSink))
-                {
-                    // we have dual mode here, need to split it
-                    sink.Mode = PullReplicationMode.SinkToHub;
-
-                    var other = new PullReplicationAsSink
-                    {
-                        Database = sink.Database,
-                        Disabled = sink.Disabled,
-                        AllowedHubToSinkPaths = sink.AllowedHubToSinkPaths,
-                        Mode = PullReplicationMode.HubToSink,
-                        Name = sink.Name,
-                        Url = sink.Url,
-                        ConnectionString = sink.ConnectionString,
-                        CertificatePassword = sink.CertificatePassword,
-                        AllowedSinkToHubPaths = sink.AllowedSinkToHubPaths,
-                        MentorNode = sink.MentorNode,
-                        TaskId = sink.TaskId,
-                        ConnectionStringName = sink.ConnectionStringName,
-                        HubName = sink.HubName,
-                        CertificateWithPrivateKey = sink.CertificateWithPrivateKey,
-                        AccessName = sink.AccessName
-                    };
-
-                    i += 1;
-                    externalReplications.Insert(i, other);
-                }
+                destinations.Add(externalReplication);
             }
+
+            return destinations;
         }
 
-        private List<ExternalReplicationBase> GetMyNewDestinations(DatabaseRecord newRecord, List<ExternalReplicationBase> added)
+        private List<PullReplicationAsSink> BuildPullReplicationAsSinkDestinations(DatabaseRecord newRecord)
         {
-            return added.Where(configuration => IsMyTask(newRecord.RavenConnectionStrings, newRecord.Topology, configuration)).ToList();
+            var destinations = new List<PullReplicationAsSink>();
+
+            foreach (var pullReplicationAsSink in newRecord.SinkPullReplications)
+            {
+                if (ValidateConnectionString(newRecord.RavenConnectionStrings, pullReplicationAsSink, out var connectionString) == false)
+                    continue;
+
+                if (pullReplicationAsSink.Mode.HasFlag(PullReplicationMode.SinkToHub))
+                {
+                    var sinkToHub = ClonePullReplicationAsSink(pullReplicationAsSink, PullReplicationMode.SinkToHub);
+                    AddResolvedDestination(sinkToHub);
+                }
+
+                if (pullReplicationAsSink.Mode.HasFlag(PullReplicationMode.HubToSink))
+                {
+                    var hubToSink = ClonePullReplicationAsSink(pullReplicationAsSink, PullReplicationMode.HubToSink);
+                    AddResolvedDestination(hubToSink);
+                }
+
+                void AddResolvedDestination(PullReplicationAsSink destination)
+                {
+                    destination.Database = connectionString.Database;
+                    destination.ConnectionString = connectionString;
+                    destinations.Add(destination);
+                }
+            }
+
+            return destinations;
+        }
+
+        private static PullReplicationAsSink ClonePullReplicationAsSink(PullReplicationAsSink sink, PullReplicationMode mode)
+        {
+            return new PullReplicationAsSink
+            {
+                Database = sink.Database,
+                Url = sink.Url,
+                Disabled = sink.Disabled,
+                Name = sink.Name,
+                ConnectionStringName = sink.ConnectionStringName,
+                MentorNode = sink.MentorNode,
+                PinToMentorNode = sink.PinToMentorNode,
+                TaskId = sink.TaskId,
+                ConnectionString = sink.ConnectionString,
+                Mode = mode,
+                AllowedHubToSinkPaths = sink.AllowedHubToSinkPaths,
+                AllowedSinkToHubPaths = sink.AllowedSinkToHubPaths,
+                CertificateWithPrivateKey = sink.CertificateWithPrivateKey,
+                CertificatePassword = sink.CertificatePassword,
+                AccessName = sink.AccessName,
+                HubName = sink.HubName
+            };
         }
 
         protected override CancellationToken GetCancellationToken() => Database.DatabaseShutdown;
@@ -1472,7 +1573,7 @@ namespace Raven.Server.Documents.Replication
             }
         }
 
-        private void HandleInternalReplication(DatabaseRecord newRecord, List<IDisposable> instancesToDispose)
+        private void HandleInternalReplication(DatabaseRecord newRecord, ReplicationChanges changes)
         {
             var newInternalDestinations =
                 newRecord.Topology?.GetDestinations(_server.NodeTag, Database.Name, newRecord.DeletionInProgress, _clusterTopology, _server.Engine.CurrentState);
@@ -1487,8 +1588,7 @@ namespace Raven.Server.Documents.Replication
                     Database = Database.Name
                 }).ToList();
 
-                DropOutgoingConnections(removed, instancesToDispose);
-                DropIncomingConnections(removed, instancesToDispose);
+                changes.OutgoingConnectionsToDrop.AddRange(removed);
             }
 
             if (internalConnections.AddedDestinations.Count > 0)
@@ -1500,19 +1600,8 @@ namespace Raven.Server.Documents.Replication
                     Database = Database.Name
                 }).ToList();
 
-                _ = Task.Run(() =>
-                {
-                    // here we might have blocking calls to fetch the tcp info.
-                    try
-                    {
-                        StartOutgoingConnections(added);
-                    }
-                    catch (Exception e)
-                    {
-                        if (_logger.IsErrorEnabled)
-                            _logger.Error($"Failed to start the outgoing connections to {added.Count} new destinations", e);
-                    }
-                });
+                // internal replication is part of the database, not an ongoing task: always (re)connect it
+                changes.OutgoingConnectionsToStart.AddRange(added);
             }
 
             _internalDestinations.Clear();
@@ -1574,9 +1663,7 @@ namespace Raven.Server.Documents.Replication
                 instancesToDispose.Add(instance);
                 _outgoing.TryRemove(instance);
                 _lastSendEtagPerDestination.TryRemove(instance.Destination, out LastEtagPerDestination _);
-                _outgoingFailureInfo.TryRemove(instance.Destination, out ConnectionShutdownInfo info);
-                if (info != null)
-                    _reconnectQueue.TryRemove(info);
+                RemoveOutgoingReconnectState(instance.Destination);
             }
         }
 
@@ -2250,6 +2337,63 @@ namespace Raven.Server.Documents.Replication
             }
 
             return c;
+        }
+
+        protected sealed class ReplicationChanges
+        {
+            // terminal directive: drop everything and reset the runtime state (passive / disabled-by-marker / no record)
+            public bool ClearDestinations;
+
+            // when set, commit this value to _pullReplicationCompositeChangeVectorsSupported during apply
+            // (deferred state mutation). null => the supported-feature shape did not change this cycle.
+            public bool? PullReplicationCompositeChangeVectorsSupported;
+
+            // Outgoing handlers to drop, matched by destination value.
+            public readonly List<ReplicationNode> OutgoingConnectionsToDrop = [];
+
+            // The exact set of outgoing connections to open now. All policy (ownership, disabled, ongoing-tasks gate,
+            // internal-vs-external, dedup against reconnect) is already applied by the collectors.
+            // Heterogeneous on purpose: internal replication lives here but never in ExternalDestinationsToRegister.
+            public readonly List<ReplicationNode> OutgoingConnectionsToStart = [];
+
+            // Live handlers to reconnect immediately to a freshly resolved destination.
+            public readonly List<OutgoingConnectionToReconnect> OutgoingConnectionsToReconnect = [];
+
+            // Incoming handlers to drop, keyed by source database id. The dispose lane is carried per entry,
+            // so a single source id can never end up in two lanes at once.
+            public readonly Dictionary<string, IncomingConnectionToDrop> IncomingConnectionsToDrop = [];
+
+            // External replication / sink-pull destinations that must be present in _externalDestinations,
+            // whether or not they are started (e.g. tracked but not started while ongoing tasks are disabled).
+            public readonly List<ExternalReplicationBase> ExternalDestinationsToRegister = [];
+
+            public readonly List<IDisposable> InstancesToDispose = [];
+        }
+
+        protected readonly struct OutgoingConnectionToReconnect
+        {
+            public readonly DatabaseOutgoingReplicationHandler Handler;
+            public readonly ReplicationNode NewDestination;
+
+            public OutgoingConnectionToReconnect(DatabaseOutgoingReplicationHandler handler, ReplicationNode newDestination)
+            {
+                Handler = handler;
+                NewDestination = newDestination;
+            }
+        }
+
+        protected readonly struct IncomingConnectionToDrop
+        {
+            public readonly IAbstractIncomingReplicationHandler Handler;
+
+            // when true, dispose synchronously before starting new connections, so a restarted lane cannot race the old handler
+            public readonly bool DisposeImmediately;
+
+            public IncomingConnectionToDrop(IAbstractIncomingReplicationHandler handler, bool disposeImmediately)
+            {
+                Handler = handler;
+                DisposeImmediately = disposeImmediately;
+            }
         }
     }
 
