@@ -1,4 +1,3 @@
-using System;
 using System.IO;
 using Raven.Client.Documents.Operations.Replication;
 using Raven.Client.Documents.Replication;
@@ -46,6 +45,11 @@ namespace Raven.Server.Documents.Replication.Outgoing
         {
         }
 
+        protected OutgoingPullReplicationHandler(ReplicationLoader parent, DocumentDatabase database, ReplicationNode node, TcpConnectionInfo connectionInfo, TcpConnectionOptions tcpConnectionOptions) :
+            base(parent, database, node, connectionInfo, tcpConnectionOptions)
+        {
+        }
+
         public override ReplicationDocumentSenderBase CreateDocumentSender(Stream stream, RavenLogger logger)
         {
             return new FilteredReplicationDocumentSender(stream, this, logger, PathsToSend, _destinationAcceptablePaths);
@@ -83,8 +87,12 @@ namespace Raven.Server.Documents.Replication.Outgoing
         public string PullReplicationDefinitionName;
 
         public OutgoingPullReplicationHandlerAsHub(ReplicationLoader parent, DocumentDatabase database, PullReplicationAsHub node, TcpConnectionInfo connectionInfo) : 
-            base(parent, database, node, connectionInfo)
+            base(parent, database, node, connectionInfo, tcpConnectionOptions: null)
         {
+            // HubToSink pull replication is initiated by the sink. The accepted incoming TCP connection
+            // already owns the TcpConnectionOptions, and StartPullReplicationAsHub assigns that instance.
+            // Creating constructor-owned TcpConnectionOptions here would orphan and leak that instance
+            // when StartPullReplicationAsHub replaces _tcpConnectionOptions with the accepted options.
         }
 
         public void StartPullReplicationAsHub(TcpConnectionOptions tcpConnectionOptions, TcpConnectionHeaderMessage.SupportedFeatures supportedVersions)
