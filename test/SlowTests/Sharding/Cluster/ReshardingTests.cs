@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -17,9 +18,12 @@ using Raven.Client.Documents.Operations.ETL;
 using Raven.Client.Documents.Operations.Replication;
 using Raven.Client.Documents.Operations.Revisions;
 using Raven.Client.Documents.Session;
+using Raven.Client.ServerWide;
 using Raven.Client.ServerWide.Operations;
 using Raven.Client.ServerWide.Sharding;
 using Raven.Server.Documents;
+using Raven.Server.Documents.Replication;
+using Raven.Server.Documents.Replication.Outgoing;
 using Raven.Server.Documents.Replication.ReplicationItems;
 using Raven.Server.Documents.Sharding;
 using Raven.Server.ServerWide.Context;
@@ -353,6 +357,162 @@ namespace SlowTests.Sharding.Cluster
                     var q = await session.Query<User>().ToListAsync();
                     Assert.Equal(expectedShard == shard ? 101 : 0, q.Count);
                 }
+            }
+        }
+
+        [RavenFact(RavenTestCategory.Replication | RavenTestCategory.Sharding)]
+        public async Task BucketMigrationShouldPlanReplacementWhenDestinationResponsibleNodeChanges()
+        {
+            var cluster = await CreateRaftCluster(3, watcherCluster: true, shouldRunInMemory: false);
+            var sourceNode = cluster.Leader.ServerStore.NodeTag;
+            var destinationNodes = cluster.Nodes
+                .Where(x => x.ServerStore.NodeTag != sourceNode)
+                .Select(x => x.ServerStore.NodeTag)
+                .Take(2)
+                .ToList();
+            Assert.Equal(2, destinationNodes.Count);
+
+            var allNodes = new List<string> { sourceNode };
+            allNodes.AddRange(destinationNodes);
+
+            var options = new Options
+            {
+                DatabaseMode = RavenDatabaseMode.Sharded,
+                ReplicationFactor = 1,
+                Server = cluster.Leader,
+                ModifyDatabaseRecord = record =>
+                {
+                    record.Sharding = new ShardingConfiguration
+                    {
+                        Shards = new Dictionary<int, DatabaseTopology>
+                        {
+                            [0] = new()
+                            {
+                                ReplicationFactor = 1,
+                                Members = new List<string> { sourceNode }
+                            },
+                            [1] = new()
+                            {
+                                ReplicationFactor = 2,
+                                Members = destinationNodes
+                            }
+                        },
+                        Orchestrator = new OrchestratorConfiguration
+                        {
+                            Topology = new OrchestratorTopology
+                            {
+                                ReplicationFactor = allNodes.Count,
+                                Members = allNodes
+                            }
+                        }
+                    };
+                }
+            };
+
+            using var store = GetDocumentStore(options);
+            var record = await store.Maintenance.Server.SendAsync(new GetDatabaseRecordOperation(store.Database));
+
+            string id = null;
+            var bucket = -1;
+            for (var i = 1; i < 1_000; i++)
+            {
+                var candidate = $"users/{i}-A";
+                var candidateBucket = Sharding.GetBucket(record.Sharding, candidate);
+                if (ShardHelper.GetShardNumberFor(record.Sharding, candidateBucket) != 0)
+                    continue;
+
+                id = candidate;
+                bucket = candidateBucket;
+                break;
+            }
+
+            Assert.NotNull(id);
+            Assert.NotEqual(-1, bucket);
+
+            using (var session = store.OpenAsyncSession())
+            {
+                await session.StoreAsync(new User { Name = "Original shard" }, id);
+                await session.SaveChangesAsync();
+            }
+
+            var sourceShardName = ShardHelper.ToShardName(store.Database, 0);
+            var sourceShard = (ShardedDocumentDatabase)await cluster.Leader.ServerStore.DatabasesLandlord.TryGetOrCreateResourceStore(sourceShardName);
+            var replicationTesting = sourceShard.ReplicationLoader.ForTestingPurposesOnly();
+            using var oldMigrationStarted = new ManualResetEventSlim(false);
+            using var releaseOldMigration = new ManualResetEventSlim(false);
+            using var replacementPlanCollected = new ManualResetEventSlim(false);
+            string oldDestinationNode = null;
+            string droppedDestinationNode = null;
+            string plannedReplacementNode = null;
+
+            try
+            {
+                replicationTesting.OnOutgoingReplicationStart = handler =>
+                {
+                    if (handler is not OutgoingMigrationReplicationHandler migrationHandler ||
+                        migrationHandler.BucketMigrationNode.Bucket != bucket)
+                        return;
+
+                    var destinationNode = migrationHandler.BucketMigrationNode.Node;
+                    if (Interlocked.CompareExchange(ref oldDestinationNode, destinationNode, null) != null)
+                        return;
+
+                    migrationHandler.ForTestingPurposesOnly().DebugWaitAndRunReplicationOnce = releaseOldMigration;
+                    oldMigrationStarted.Set();
+                };
+
+                var result = await cluster.Leader.ServerStore.Sharding.StartBucketMigration(store.Database, bucket, toShard: 1, RaftIdGenerator.NewId());
+                await Cluster.WaitForRaftIndexToBeAppliedInClusterAsync(result.Index);
+                Assert.True(oldMigrationStarted.Wait(TimeSpan.FromSeconds(60)), "The original migration outgoing handler did not start.");
+
+                var oldDestinationNodeSnapshot = Volatile.Read(ref oldDestinationNode);
+                Assert.NotNull(oldDestinationNodeSnapshot);
+                var expectedReplacementNode = destinationNodes.Single(x => x != oldDestinationNodeSnapshot);
+
+                replicationTesting.AfterCollectReplicationChanges = changes =>
+                {
+                    var currentOldDestinationNode = Volatile.Read(ref oldDestinationNode);
+                    if (currentOldDestinationNode == null)
+                        return;
+
+                    var migrationDrop = changes.OutgoingOnlyConnectionsToDrop
+                        .OfType<BucketMigrationReplication>()
+                        .FirstOrDefault(x => x.Bucket == bucket && x.Node == currentOldDestinationNode);
+                    if (migrationDrop == null)
+                        return;
+
+                    droppedDestinationNode = migrationDrop.Node;
+                    plannedReplacementNode = changes.OutgoingConnectionsToStart
+                        .OfType<BucketMigrationReplication>()
+                        .FirstOrDefault(x => x.Bucket == bucket)
+                        ?.Node;
+                    replacementPlanCollected.Set();
+                };
+
+                record = await store.Maintenance.Server.SendAsync(new GetDatabaseRecordOperation(store.Database));
+                var destinationTopology = record.Sharding.Shards[1];
+                Assert.True(destinationTopology.Members.Remove(oldDestinationNodeSnapshot));
+                destinationTopology.Rehabs.Add(oldDestinationNodeSnapshot);
+                destinationTopology.DemotionReasons[oldDestinationNodeSnapshot] = "test";
+                var topologyChange = await store.Maintenance.Server.SendAsync(new ModifyDatabaseTopologyOperation(store.Database, shardNumber: 1, destinationTopology));
+                await Cluster.WaitForRaftIndexToBeAppliedInClusterAsync(topologyChange.RaftCommandIndex);
+
+                if (replacementPlanCollected.IsSet == false)
+                {
+                    var shardRecord = sourceShard.ReadDatabaseRecord();
+                    sourceShard.ReplicationLoader.HandleDatabaseRecordChange(shardRecord, topologyChange.RaftCommandIndex);
+                }
+
+                Assert.True(replacementPlanCollected.Wait(TimeSpan.FromSeconds(60)),
+                    "The source shard did not collect a migration drop plan for the old destination node.");
+                Assert.Equal(oldDestinationNodeSnapshot, droppedDestinationNode);
+                Assert.Equal(expectedReplacementNode, plannedReplacementNode);
+            }
+            finally
+            {
+                replicationTesting.OnOutgoingReplicationStart = null;
+                replicationTesting.AfterCollectReplicationChanges = null;
+                releaseOldMigration.Set();
             }
         }
 

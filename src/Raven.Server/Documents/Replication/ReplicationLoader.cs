@@ -939,6 +939,7 @@ namespace Raven.Server.Documents.Replication
             }
 
             CollectIncomingReplicationChanges(changes);
+            ForTestingPurposes?.AfterCollectReplicationChanges?.Invoke(changes);
             ApplyReplicationChanges(changes);
         }
 
@@ -1373,7 +1374,7 @@ namespace Raven.Server.Documents.Replication
 
             // Order matters: drop releases reconnect state that the reconnect step re-adds; immediate disposals
             // must complete before new connections are started.
-            DropOutgoingConnections(changes.OutgoingConnectionsToDrop, changes.InstancesToDispose);
+            DropOutgoingConnections(changes.AllOutgoingConnectionsToDrop, changes.InstancesToDispose);
 
             DropIncomingConnections(changes.IncomingConnectionsToDrop, changes.InstancesToDispose);
             foreach (var incoming in changes.IncomingConnectionsToDrop.Values)
@@ -1625,9 +1626,18 @@ namespace Raven.Server.Documents.Replication
                 if (destination.Disabled)
                     continue;
 
-                if (_logger.IsDebugEnabled)
-                    _logger.Debug("Initialized outgoing replication for " + destination.FromString());
-                AddAndStartOutgoingReplication(destination);
+                try
+                {
+                    if (_logger.IsDebugEnabled)
+                        _logger.Debug($"Initialized outgoing replication for {destination}");
+
+                    AddAndStartOutgoingReplication(destination);
+                }
+                catch (Exception e)
+                {
+                    if (_logger.IsErrorEnabled)
+                        _logger.Error($"Failed to start outgoing replication to {destination.FromString()}", e);
+                }
             }
 
             if (_logger.IsDebugEnabled)
@@ -2339,7 +2349,7 @@ namespace Raven.Server.Documents.Replication
             return c;
         }
 
-        protected sealed class ReplicationChanges
+        protected internal sealed class ReplicationChanges
         {
             // terminal directive: drop everything and reset the runtime state (passive / disabled-by-marker / no record)
             public bool ClearDestinations;
@@ -2350,6 +2360,11 @@ namespace Raven.Server.Documents.Replication
 
             // Outgoing handlers to drop, matched by destination value.
             public readonly List<ReplicationNode> OutgoingConnectionsToDrop = [];
+
+            // Outgoing handlers to drop without deriving matching incoming handler drops.
+            public readonly List<ReplicationNode> OutgoingOnlyConnectionsToDrop = [];
+
+            public IEnumerable<ReplicationNode> AllOutgoingConnectionsToDrop => OutgoingConnectionsToDrop.Concat(OutgoingOnlyConnectionsToDrop);
 
             // The exact set of outgoing connections to open now. All policy (ownership, disabled, ongoing-tasks gate,
             // internal-vs-external, dedup against reconnect) is already applied by the collectors.
@@ -2370,7 +2385,7 @@ namespace Raven.Server.Documents.Replication
             public readonly List<IDisposable> InstancesToDispose = [];
         }
 
-        protected readonly struct OutgoingConnectionToReconnect
+        protected internal readonly struct OutgoingConnectionToReconnect
         {
             public readonly DatabaseOutgoingReplicationHandler Handler;
             public readonly ReplicationNode NewDestination;
@@ -2382,7 +2397,7 @@ namespace Raven.Server.Documents.Replication
             }
         }
 
-        protected readonly struct IncomingConnectionToDrop
+        protected internal readonly struct IncomingConnectionToDrop
         {
             public readonly IAbstractIncomingReplicationHandler Handler;
 

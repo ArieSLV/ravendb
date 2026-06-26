@@ -1,7 +1,5 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Linq;
-using System.Threading.Tasks;
 using Raven.Client.Documents.Replication;
 using Raven.Client.Documents.Replication.Messages;
 using Raven.Client.ServerWide;
@@ -76,12 +74,12 @@ public sealed class ShardReplicationLoader : ReplicationLoader
 
     protected override void HandleAdditionalReplicationChanges(DatabaseRecord newRecord, ReplicationChanges changes)
     {
-        HandleMigrationReplication(newRecord, changes.InstancesToDispose);
+        HandleMigrationReplication(newRecord, changes);
     }
 
     private void OnDocumentReceived(IncomingReplicationHandler handler) => _database.HandleReshardingChanges();
 
-    private void HandleMigrationReplication(DatabaseRecord newRecord, List<IDisposable> instancesToDispose)
+    private void HandleMigrationReplication(DatabaseRecord newRecord, ReplicationChanges changes)
     {
         var toRemove = new List<BucketMigrationReplication>();
         // remove
@@ -121,7 +119,7 @@ public sealed class ShardReplicationLoader : ReplicationLoader
             // even if the status is ownership transferred we will keep the connection open to send any left overs if needed
         }
 
-        DropOutgoingConnections(toRemove, instancesToDispose);
+        changes.OutgoingOnlyConnectionsToDrop.AddRange(toRemove);
 
         // add
         foreach (var migration in newRecord.Sharding.BucketMigrations)
@@ -134,8 +132,11 @@ public sealed class ShardReplicationLoader : ReplicationLoader
             var node = newRecord.Topology.WhoseTaskIsIt(RachisState.Follower, process, getLastResponsibleNode: null);
             if (node == _server.NodeTag)
             {
-                var current = OutgoingHandlers.OfType<OutgoingMigrationReplicationHandler>().SingleOrDefault(
-                    o => o.BucketMigrationNode.ForBucketMigration(process));
+                // The drop is applied later, so ignore matching handlers that are already scheduled for removal.
+                var current = OutgoingHandlers
+                    .OfType<OutgoingMigrationReplicationHandler>()
+                    .SingleOrDefault(o => o.BucketMigrationNode.ForBucketMigration(process) &&
+                                          toRemove.Contains(o.BucketMigrationNode) == false);
 
                 if (current == null)
                 {
@@ -152,27 +153,12 @@ public sealed class ShardReplicationLoader : ReplicationLoader
                         Url = _clusterTopology.GetUrlFromTag(destNode)
                     };
 
-                    // check if the migration already exists in the ReconnectQueue.
-                    // this is a precautionary measure to handle scenarios where there might 
-                    // have been an error during a previous replication attempt, causing the 
-                    // migration destination to already be queued for reconnection 
-                    if (ReconnectQueue.Contains(migrationDestination))
+                    // The replacement compares equal to a stale reconnect entry for the same migration identity; ignore
+                    // that stale entry when it is already scheduled for removal.
+                    if (toRemove.Contains(migrationDestination) == false && ReconnectQueue.Contains(migrationDestination))
                         continue;
 
-                    Task.Run(() =>
-                    {
-                        try
-                        {
-                            AddAndStartOutgoingReplication(migrationDestination);
-                        }
-                        catch (Exception e)
-                        {
-                            if (_logger.IsErrorEnabled)
-                            {
-                                _logger.Error($"Failed to start migration replication to shard {migrationDestination.Shard} on node {migrationDestination.Node}", e);
-                            }
-                        }
-                    });
+                    changes.OutgoingConnectionsToStart.Add(migrationDestination);
                 }
             }
         }
