@@ -83,7 +83,6 @@ namespace Raven.Server.Documents.Replication.Outgoing
         public string LastSentChangeVector;
         public string LastAcceptedChangeVector { get; set; }
         public long LastHeartbeatTicks;
-        public ReplicationNode Node => Destination;
         public string DestinationFormatted => $"{Destination.Url}/databases/{Destination.Database}";
 
         public int MissingAttachmentsRetries;

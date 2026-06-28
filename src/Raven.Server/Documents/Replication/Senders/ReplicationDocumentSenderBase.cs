@@ -209,7 +209,7 @@ namespace Raven.Server.Documents.Replication.Senders
 
                         var msg = $"Found {_orderedReplicaItems.Count:#,#;;0} documents " +
                                   $"and {_replicaAttachmentStreams.Count} attachment's streams " +
-                                  $"to replicate to {_parent.Node.FromString()}, ";
+                                  $"to replicate to {_parent.Destination.FromString()}, ";
 
                         var encryptionSize = documentsContext.Transaction.InnerTransaction.LowLevelTransaction.AdditionalMemoryUsageSize.GetValue(SizeUnit.Bytes);
                         if (encryptionSize > 0)
@@ -336,7 +336,7 @@ namespace Raven.Server.Documents.Replication.Senders
             if (item.Type == ReplicationBatchItem.ReplicationItemType.TimeSeriesSegment || item.Type == ReplicationBatchItem.ReplicationItemType.DeletedTimeSeriesRange)
             {
                 // the other side doesn't support TimeSeries, stopping replication
-                var message = $"{_parent.Node.FromString()} found an item of type 'TimeSeries' to replicate to {_parent.Destination.FromString()}, " +
+                var message = $"{_parent.Destination.FromString()} found an item of type 'TimeSeries' to replicate to {_parent.Destination.FromString()}, " +
                               $"while we are in legacy mode (downgraded our replication version to match the destination). " +
                               $"Can't send TimeSeries in legacy mode, destination {_parent.Destination.FromString()} does not support TimeSeries feature. Stopping replication. {item}";
 
@@ -353,7 +353,7 @@ namespace Raven.Server.Documents.Replication.Senders
             {
                 // the other side doesn't support counters, stopping replication
                 var message =
-                    $"{_parent.Node.FromString()} found an item of type `{nameof(ReplicationBatchItem.ReplicationItemType.CounterGroup)}` " +
+                    $"{_parent.Destination.FromString()} found an item of type `{nameof(ReplicationBatchItem.ReplicationItemType.CounterGroup)}` " +
                     $"to replicate to {_parent.Destination.FromString()}, " +
                     "while we are in legacy mode (downgraded our replication version to match the destination). " +
                     $"Can't send Counters in legacy mode, destination {_parent.Destination.FromString()} ";
@@ -378,7 +378,7 @@ namespace Raven.Server.Documents.Replication.Senders
                 doc.Flags.HasFlag(DocumentFlags.FromClusterTransaction))
             {
                 // the other side doesn't support cluster transactions, stopping replication
-                var message = $"{_parent.Node.FromString()} found a document {doc.Id} with flag `FromClusterTransaction` to replicate to {_parent.Destination.FromString()}, " +
+                var message = $"{_parent.Destination.FromString()} found a document {doc.Id} with flag `FromClusterTransaction` to replicate to {_parent.Destination.FromString()}, " +
                               "while we are in legacy mode (downgraded our replication version to match the destination). " +
                               $"Can't use Cluster Transactions legacy mode, destination {_parent.Destination.FromString()} does not support this feature. " +
                               "Stopping replication.";
@@ -414,7 +414,7 @@ namespace Raven.Server.Documents.Replication.Senders
                 }
 
                 // the other side doesn't support incremental time series, stopping replication
-                var message = $"{_parent.Node.FromString()} found an item of type 'IncrementalTimeSeries' to replicate to {_parent.Destination.FromString()}, " +
+                var message = $"{_parent.Destination.FromString()} found an item of type 'IncrementalTimeSeries' to replicate to {_parent.Destination.FromString()}, " +
                               $"while we are in legacy mode (downgraded our replication version to match the destination). " +
                               $"Can't send Incremental-TimeSeries in legacy mode, destination {_parent.Destination.FromString()} does not support Incremental-TimeSeries feature. Stopping replication.";
 

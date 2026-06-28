@@ -84,7 +84,7 @@ namespace Raven.Server.Documents.Replication
         private readonly ConcurrentDictionary<ReplicationNode, LastEtagPerDestination> _lastSendEtagPerDestination = new ConcurrentDictionary<ReplicationNode, LastEtagPerDestination>();
         private bool _pullReplicationCompositeChangeVectorsSupported;
 
-        public IEnumerable<ReplicationNode> OutgoingConnections => _outgoing.Select(x => x.Node);
+        public IEnumerable<ReplicationNode> OutgoingConnections => _outgoing.Select(x => x.Destination);
         public IEnumerable<DatabaseOutgoingReplicationHandler> OutgoingHandlers => _outgoing;
         public IEnumerable<ReplicationNode> ReconnectQueue => _reconnectQueue.Select(x => x.Node);
         public IReadOnlyDictionary<ReplicationNode, ConnectionShutdownInfo> OutgoingFailureInfo => _outgoingFailureInfo;
@@ -397,19 +397,19 @@ namespace Raven.Server.Documents.Replication
             }
         }
 
-        private void QueueOutgoingForImmediateReconnect(DatabaseOutgoingReplicationHandler replicationHandler, ReplicationNode destination)
+        private void QueueOutgoingForImmediateReconnect(OutgoingConnectionToReconnect outgoingConnectionToReconnect)
         {
-            UpdateLastEtag(replicationHandler);
+            UpdateLastEtag(outgoingConnectionToReconnect.Handler);
 
-            var shutdownInfo = _outgoingFailureInfo.GetOrAdd(destination, new ConnectionShutdownInfo
+            var shutdownInfo = _outgoingFailureInfo.GetOrAdd(outgoingConnectionToReconnect.NewDestination, new ConnectionShutdownInfo
             {
-                Node = destination,
+                Node = outgoingConnectionToReconnect.NewDestination,
                 MaxConnectionTimeout = Database.Configuration.Replication.RetryMaxTimeout.AsTimeSpan.TotalMilliseconds
             });
             shutdownInfo.Reset();
             shutdownInfo.RetryOn = DateTime.MinValue;
-            shutdownInfo.DestinationDbId = replicationHandler.DestinationDbId;
-            shutdownInfo.LastHeartbeatTicks = replicationHandler.LastHeartbeatTicks;
+            shutdownInfo.DestinationDbId = outgoingConnectionToReconnect.Handler.DestinationDbId;
+            shutdownInfo.LastHeartbeatTicks = outgoingConnectionToReconnect.Handler.LastHeartbeatTicks;
             _reconnectQueue.Add(shutdownInfo);
         }
 
@@ -1432,7 +1432,7 @@ namespace Raven.Server.Documents.Replication
             {
                 if (outgoingConnectionToReconnect.NewDestination != null)
                 {
-                    QueueOutgoingForImmediateReconnect(outgoingConnectionToReconnect.Handler, outgoingConnectionToReconnect.NewDestination);
+                    QueueOutgoingForImmediateReconnect(outgoingConnectionToReconnect);
                     shouldTryReconnect = true;
                 }
 
@@ -1970,7 +1970,7 @@ namespace Raven.Server.Documents.Replication
                 if (instance is OutgoingPullReplicationHandler)
                     _externalDestinations.Remove(instance.Destination as ExternalReplication);
 
-                if (_outgoingFailureInfo.TryGetValue(instance.Node, out ConnectionShutdownInfo failureInfo) == false)
+                if (_outgoingFailureInfo.TryGetValue(instance.Destination, out ConnectionShutdownInfo failureInfo) == false)
                     return;
 
                 UpdateLastEtag(instance);
@@ -1980,7 +1980,7 @@ namespace Raven.Server.Documents.Replication
                 failureInfo.LastHeartbeatTicks = instance.LastHeartbeatTicks;
 
                 if (_logger.IsDebugEnabled)
-                    _logger.Debug($"Document replication connection ({instance.Node}) failed {failureInfo.RetriesCount} times, the connection will be retried on {failureInfo.RetryOn}.", e);
+                    _logger.Debug($"Document replication connection ({instance.Destination}) failed {failureInfo.RetriesCount} times, the connection will be retried on {failureInfo.RetryOn}.", e);
 
                 _reconnectQueue.Add(failureInfo);
             }
@@ -1989,7 +1989,7 @@ namespace Raven.Server.Documents.Replication
         private void UpdateLastEtag(DatabaseOutgoingReplicationHandler instance)
         {
             var etagPerDestination = _lastSendEtagPerDestination.GetOrAdd(
-                instance.Node,
+                instance.Destination,
                 _ => new LastEtagPerDestination());
 
             if (etagPerDestination.LastEtag == instance._lastSentDocumentEtag)
@@ -2010,7 +2010,7 @@ namespace Raven.Server.Documents.Replication
 
         private void ResetReplicationFailuresInfo(DatabaseOutgoingReplicationHandler instance)
         {
-            if (_outgoingFailureInfo.TryGetValue(instance.Node, out ConnectionShutdownInfo failureInfo))
+            if (_outgoingFailureInfo.TryGetValue(instance.Destination, out ConnectionShutdownInfo failureInfo))
                 failureInfo.Reset();
         }
 
