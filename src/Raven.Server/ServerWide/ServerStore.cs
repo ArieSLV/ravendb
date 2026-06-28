@@ -2909,7 +2909,6 @@ namespace Raven.Server.ServerWide
                         return;
 
                     _shutdownNotification.Cancel();
-
                     if (ContextPool != null)
                     {
                         _server.Statistics.Persist(ContextPool, Logger);

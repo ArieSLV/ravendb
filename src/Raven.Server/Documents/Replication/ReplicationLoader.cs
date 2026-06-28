@@ -896,17 +896,10 @@ namespace Raven.Server.Documents.Replication
 
         public void HandleDatabaseRecordChange(DatabaseRecord newRecord, long index)
         {
-            HandleConflictResolverChange(newRecord, index);
-            HandleTopologyChange(newRecord);
-            HandleReplicationChanges(newRecord);
-        }
-
-        private void HandleTopologyChange(DatabaseRecord newRecord)
-        {
-            if (newRecord == null || _server.IsPassive())
-                return;
-
             _clusterTopology = GetClusterTopology();
+
+            HandleConflictResolverChange(newRecord, index);
+            HandleReplicationChanges(newRecord);
         }
 
         private void HandleReplicationChanges(DatabaseRecord newRecord)

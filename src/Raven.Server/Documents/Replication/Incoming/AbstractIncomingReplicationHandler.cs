@@ -679,7 +679,6 @@ namespace Raven.Server.Documents.Replication.Incoming
                     Logger.Debug($"Disposing IncomingReplicationHandler ({FromToString})");
 
                 _cts.SafeCancel(Logger, $"{nameof(IncomingReplicationHandler)} ({FromToString})");
-
                 try
                 {
                     _connectionOptionsDisposable?.Dispose();
