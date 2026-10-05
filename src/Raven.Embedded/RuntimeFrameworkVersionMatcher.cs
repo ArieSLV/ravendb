@@ -104,7 +104,7 @@ namespace Raven.Embedded
                     throw new InvalidOperationException("The dotnet runtime discovery command did not return any Microsoft.NETCore.App runtimes.");
 
                 // --info can fail in its SDK phase and still print a valid native runtime inventory.
-                if (process.ExitCode != 0)
+                    if (process.ExitCode != 0)
                 {
                     var logger = LoggingSource.Instance.GetLogger("Embedded", nameof(RuntimeFrameworkVersionMatcher));
                     if (logger.IsOperationsEnabled)

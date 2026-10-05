@@ -262,7 +262,15 @@ namespace Raven.Embedded
                     _logger.Info($"Starting global server: {process.Id}");
 
                 process.Exited += OnStartupExit;
-                RegisterProcessLifetimeEvents(process);
+
+                // Keep lifetime callbacks separate from the temporary startup state.
+                process.Exited += (sender, args) => ServerProcessExited?.Invoke(sender, new ServerProcessExitedEventArgs());
+#if NET462
+                AppDomain.CurrentDomain.DomainUnload += (sender, args) => ShutdownServerProcess(process);
+#else
+                AssemblyLoadContext.Default.Unloading += context => ShutdownServerProcess(process);
+#endif
+
                 output = process.ReadOutput(line =>
                 {
                     const string prefix = "Server available on: ";
@@ -274,13 +282,17 @@ namespace Raven.Embedded
                 if (process.HasExited)
                     OnStartupExit(process, EventArgs.Empty);
 
-                var observed = Task.WhenAny(startup.Task, output.Completion, output.ReadFailure);
+                var startupSignal = Task.WhenAny(startup.Task, output.Completion, output.ReadFailure);
 
                 var startupTimeout = _serverOptions.MaxServerStartupTimeDuration;
                 if (startupTimeout != TimeSpan.MaxValue)
+                {
                     startupTimeout -= elapsed.Elapsed;
+                    if (startupTimeout < TimeSpan.Zero)
+                        startupTimeout = TimeSpan.Zero; // avoid -1ms as it is Timeout.InfiniteTimeSpan
+                }
 
-                var isCompleted = await ProcessHelper.WaitForCompletionAsync(observed, startupTimeout).ConfigureAwait(false);
+                var isCompleted = await ProcessHelper.WaitForCompletionAsync(startupSignal, startupTimeout).ConfigureAwait(false);
 
                 if (output.ReadFailure.IsCompleted)
                     ExceptionDispatchInfo.Capture(await output.ReadFailure.ConfigureAwait(false)).Throw();
@@ -361,8 +373,10 @@ namespace Raven.Embedded
                     message.AppendLine("Standard error:");
                     message.AppendLine("<empty>");
                 }
+                
                 if (isCollected == false)
                     message.AppendLine("Output collection did not complete within the failure drain timeout; output may be incomplete.");
+
                 if (cleanupError != null)
                 {
                     message.AppendLine("Failed to clean up the server process:");
@@ -377,16 +391,6 @@ namespace Raven.Embedded
             }
 
             void OnStartupExit(object? sender, EventArgs args) => startup.TrySetResult(null);
-        }
-        private void RegisterProcessLifetimeEvents(Process process)
-        {
-            // Keep lifetime callbacks separate from the temporary startup state.
-            process.Exited += (sender, args) => ServerProcessExited?.Invoke(sender, new ServerProcessExitedEventArgs());
-#if NET462
-            AppDomain.CurrentDomain.DomainUnload += (sender, args) => ShutdownServerProcess(process);
-#else
-            AssemblyLoadContext.Default.Unloading += context => ShutdownServerProcess(process);
-#endif
         }
 
         public void OpenStudioInBrowser()
