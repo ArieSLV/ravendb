@@ -1,12 +1,12 @@
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Threading.Tasks;
-using Raven.Client.Extensions;
+using Sparrow.Logging;
 
 namespace Raven.Embedded
 {
@@ -79,84 +79,127 @@ namespace Raven.Embedded
 
             using var process = new Process();
             process.StartInfo = processStartInfo;
-            process.EnableRaisingEvents = true;
 
             var workingDirectory = Directory.GetCurrentDirectory();
+            var isStarted = false;
+            ProcessHelper.ProcessOutput output = null;
             try
             {
                 process.Start();
+                isStarted = true;
+                output = process.ReadOutput();
+                process.StandardInput.Close();
+
+                // Discovery has no deadline. A reader failure must still surface while the other pipe remains open.
+                await Task.WhenAny(output.Completion, output.ReadFailure).ConfigureAwait(false);
+
+                if (output.ReadFailure.IsCompleted)
+                    ExceptionDispatchInfo.Capture(await output.ReadFailure.ConfigureAwait(false)).Throw();
+
+                await output.Completion.ConfigureAwait(false);
+                await Task.Run(process.WaitForExit).ConfigureAwait(false);
+
+                List<RuntimeFrameworkVersion> runtimes = ParseFrameworkVersions(output.StandardOutput);
+                if (runtimes.Count == 0)
+                    throw new InvalidOperationException("The dotnet runtime discovery command did not return any Microsoft.NETCore.App runtimes.");
+
+                // --info can fail in its SDK phase and still print a valid native runtime inventory.
+                if (process.ExitCode != 0)
+                {
+                    var logger = LoggingSource.Instance.GetLogger("Embedded", nameof(RuntimeFrameworkVersionMatcher));
+                    if (logger.IsOperationsEnabled)
+                    {
+                        var warning = new StringBuilder("Warning: dotnet --info reported a failure, but returned a usable runtime inventory. Continuing runtime matching.");
+                        warning.AppendLine();
+                        output.AppendDiagnostics(warning, process.ExitCode);
+                        logger.Operations(warning.ToString());
+                    }
+                }
+                return runtimes;
             }
             catch (Exception e)
             {
-                string message = $"Unable to execute dotnet to retrieve list of installed runtimes.{Environment.NewLine}" +
-                                 $"Command was: {Environment.NewLine}" +
-                                 $"{workingDirectory}> \"{processStartInfo.FileName}\" {processStartInfo.Arguments}";
+                int? exitCodeBeforeTermination = null;
+                Exception cleanupFailure = null;
+                if (isStarted)
+                {
+                    try
+                    {
+                        if (process.HasExited)
+                            exitCodeBeforeTermination = process.ExitCode;
+                        else
+                            process.Kill();
+                    }
+                    catch (Exception cleanupError)
+                    {
+                        cleanupFailure = cleanupError;
+                    }
+                }
 
-                throw new InvalidOperationException(message, e);
+                var isOutputComplete = output == null || await output.DrainAsync(options.ProcessKillTimeout).ConfigureAwait(false);
+                var message = new StringBuilder();
+                message.AppendLine("Unable to discover installed .NET runtimes.");
+
+                if (isStarted == false)
+                    message.AppendLine("Unable to execute dotnet to retrieve list of installed runtimes.");
+
+                message.AppendLine(e.Message);
+                message.AppendLine($"Command: \"{processStartInfo.FileName}\" {processStartInfo.Arguments}");
+
+                if (output != null)
+                {
+                    output.AppendDiagnostics(message, exitCodeBeforeTermination);
+                }
+                else
+                {
+                    message.AppendLine($"Executable: '{processStartInfo.FileName}'");
+                    message.AppendLine($"Working directory: '{workingDirectory}'");
+                    if (exitCodeBeforeTermination.HasValue)
+                        message.AppendLine($"Exit code: {exitCodeBeforeTermination.Value} (0x{exitCodeBeforeTermination.Value:X8})");
+                    message.AppendLine("Standard output:");
+                    message.AppendLine("<empty>");
+                    message.AppendLine("Standard error:");
+                    message.AppendLine("<empty>");
+                }
+
+                if (isOutputComplete == false)
+                    message.AppendLine("Process output collection did not complete before the cleanup timeout; output may be incomplete.");
+
+                if (cleanupFailure != null)
+                {
+                    message.AppendLine("Failed to clean up the runtime discovery process:");
+                    message.AppendLine(cleanupFailure.ToString());
+                }
+                throw new InvalidOperationException(message.ToString(), e);
             }
+            finally
+            {
+                output?.StopCapturing();
+            }
+        }
 
-            var isInsideRuntimes = false;
-            var runtimeLines = new List<string>();
-            var output = process.ReadOutput(onOutputLine: line =>
+        private static List<RuntimeFrameworkVersion> ParseFrameworkVersions(string standardOutput)
+        {
+            var runtimes = new List<RuntimeFrameworkVersion>();
+            bool isInsideRuntimes = false;
+            using var reader = new StringReader(standardOutput);
+            string line;
+            while ((line = reader.ReadLine()) != null)
             {
                 line = line.Trim();
                 if (line.StartsWith(".NET runtimes installed:") || line.StartsWith(".NET Core runtimes installed:"))
                     isInsideRuntimes = true;
                 else if (isInsideRuntimes && line.StartsWith("Microsoft.NETCore.App"))
-                    runtimeLines.Add(line);
-            });
-
-            try
-            {
-                process.StandardInput.Close();
-
-                if (await output.Completion.WaitWithTimeout(options.MaxServerStartupTimeDuration).ConfigureAwait(false) == false)
-                    throw new InvalidOperationException($"The dotnet runtime discovery command did not complete within {options.MaxServerStartupTimeDuration}.");
-
-                await output.Completion.ConfigureAwait(false);
-                if (process.ExitCode != 0)
-                    throw new InvalidOperationException("The dotnet runtime discovery command failed.");
-
-                var runtimes = new List<RuntimeFrameworkVersion>();
-                foreach (string line in runtimeLines)
                 {
-                    var values = line.Split(' ');
+                    string[] values = line.Split(' ');
                     if (values.Length < 2)
                         throw new InvalidOperationException($"Invalid runtime line. Expected 'Microsoft.NETCore.App x.x.x', but was '{line}'.");
-
                     runtimes.Add(new RuntimeFrameworkVersion(values[1]));
                 }
-
-                return runtimes.Count != 0
-                    ? runtimes
-                    : throw new InvalidOperationException("The command completed successfully, but no Microsoft.NETCore.App runtimes were found in its output. " +
-                                                          "Check the .NET installation and the output below.");
             }
-            catch (Exception e)
-            {
-                var exitCodeBeforeTermination = output.ExitCode;
-                try
-                {
-                    if (process.HasExited == false)
-                        process.Kill();
-                }
-                catch (Exception cleanupError) when (cleanupError is Win32Exception or InvalidOperationException)
-                {
-                    // Cleanup must not replace the original discovery failure.
-                }
-
-                await output.DrainAsync(options.ProcessKillTimeout).ConfigureAwait(false);
-
-                var message = new StringBuilder();
-                message.AppendLine("Unable to discover installed .NET runtimes.");
-                message.AppendLine(e.Message);
-                message.AppendLine($"Command: \"{processStartInfo.FileName}\" {processStartInfo.Arguments}");
-                message.AppendLine("Run the command above from the same working directory and under the same account/environment as the tests. Check ServerOptions.DotNetPath and the .NET installation.");
-
-                output.AppendDiagnostics(message, exitCodeBeforeTermination);
-                throw new InvalidOperationException(message.ToString(), e);
-            }
+            return runtimes;
         }
+
         internal sealed class RuntimeFrameworkVersion
         {
             private static readonly char[] Separators = { '.' };

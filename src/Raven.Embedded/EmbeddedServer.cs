@@ -5,6 +5,7 @@ using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 
 #if !NET462
 
@@ -252,70 +253,140 @@ namespace Raven.Embedded
                 throw new ArgumentNullException(nameof(_serverOptions));
 
             var process = await RavenServerRunner.RunAsync(_serverOptions).ConfigureAwait(false);
-            if (_logger.IsInfoEnabled)
-                _logger.Info($"Starting global server: {process.Id}");
-
-            process.Exited += (sender, e) => ServerProcessExited?.Invoke(sender, new ServerProcessExitedEventArgs());
-
-#if NET462
-            AppDomain.CurrentDomain.DomainUnload += (s, args) =>
-            {
-                ShutdownServerProcess(process);
-            };
-#else
-            AssemblyLoadContext.Default.Unloading += c =>
-            {
-                ShutdownServerProcess(process);
-            };
-#endif
-
-            var serverUrlTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-            var outputString = process.ReadOutput(onOutputLine: line =>
-            {
-                const string prefix = "Server available on: ";
-                if (line.StartsWith(prefix))
-                    serverUrlTcs.TrySetResult(line.Substring(prefix.Length));
-            });
-
+            var elapsed = Stopwatch.StartNew();
+            var startup = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            ProcessHelper.ProcessOutput? output = null;
             try
             {
-                var startupTask = Task.WhenAny(serverUrlTcs.Task, outputString.Completion);
-                var isCompleted = await startupTask.WaitWithTimeout(_serverOptions.MaxServerStartupTimeDuration).ConfigureAwait(false);
-                var exitCode = outputString.ExitCode;
+                if (_logger.IsInfoEnabled)
+                    _logger.Info($"Starting global server: {process.Id}");
 
-                if (isCompleted == false || serverUrlTcs.Task.IsCompleted == false || exitCode.HasValue)
+                process.Exited += OnStartupExit;
+                RegisterProcessLifetimeEvents(process);
+                output = process.ReadOutput(line =>
                 {
-                    throw new InvalidOperationException(isCompleted == false
-                        ? $"Server startup did not complete within {_serverOptions.MaxServerStartupTimeDuration}."
-                        : "The server process exited before startup completed.");
+                    const string prefix = "Server available on: ";
+                    if (line.StartsWith(prefix))
+                        startup.TrySetResult(line.Substring(prefix.Length));
+                });
+
+                // Exit is independent of EOF: a descendant can keep the redirected pipes open.
+                if (process.HasExited)
+                    OnStartupExit(process, EventArgs.Empty);
+
+                var observed = Task.WhenAny(startup.Task, output.Completion, output.ReadFailure);
+
+                var startupTimeout = _serverOptions.MaxServerStartupTimeDuration;
+                if (startupTimeout != TimeSpan.MaxValue)
+                    startupTimeout -= elapsed.Elapsed;
+
+                var isCompleted = await ProcessHelper.WaitForCompletionAsync(observed, startupTimeout).ConfigureAwait(false);
+
+                if (output.ReadFailure.IsCompleted)
+                    ExceptionDispatchInfo.Capture(await output.ReadFailure.ConfigureAwait(false)).Throw();
+
+                if (process.HasExited)
+                    throw new InvalidOperationException("The server process exited before startup completed.");
+
+                if (isCompleted == false)
+                    throw new InvalidOperationException($"Server startup did not complete within {_serverOptions.MaxServerStartupTimeDuration}.");
+
+                if (startup.Task.IsCompleted == false)
+                {
+                    // Both streams ended without readiness; process exit can be observed after EOF.
+                    // On Linux, exit_files() precedes exit_notify(): https://github.com/torvalds/linux/blob/v6.12/kernel/exit.c
+                    // Give its notification a brief chance to arrive before shutdown can change the exit status.
+                    await ProcessHelper.WaitForCompletionAsync(startup.Task, timeout: TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+                    throw new InvalidOperationException(process.HasExited
+                        ? "The server process exited before startup completed."
+                        : "The server output ended before startup completed.");
                 }
 
-                var serverUrl = new Uri(await serverUrlTcs.Task.ConfigureAwait(false));
+                var serverUrl = new Uri((await startup.Task.ConfigureAwait(false))!);
 
+                // Readiness must not hide a failure already observed before handing the server to its caller.
+                if (output.ReadFailure.IsCompleted)
+                    ExceptionDispatchInfo.Capture(await output.ReadFailure.ConfigureAwait(false)).Throw();
+
+                if (process.HasExited)
+                    throw new InvalidOperationException("The server process exited before startup completed.");
+
+                output.StopCapturing();
                 return (serverUrl, process);
             }
-            catch (Exception e)
+            catch (Exception error)
             {
+                int? exitCodeBeforeShutdown = null;
+                Exception? cleanupError = null;
                 try
                 {
-                    // Capture the exit code before cleanup can terminate a still-running process.
-                    var exitCodeBeforeShutdown = outputString.ExitCode;
-
-                    ShutdownServerProcess(process);
-                    await outputString.DrainAsync(_serverOptions.ProcessKillTimeout).ConfigureAwait(false);
-
-                    var message = new StringBuilder();
-                    message.AppendLine("Unable to start the RavenDB Server");
-                    message.AppendLine(e.Message);
-                    outputString.AppendDiagnostics(message, exitCodeBeforeShutdown);
-
-                    throw new InvalidOperationException(message.ToString(), e);
+                    exitCodeBeforeShutdown = process.HasExited
+                        ? process.ExitCode
+                        : null;
                 }
-                finally
+                catch (Exception observationError)
                 {
-                    process.Dispose();
+                    cleanupError = observationError;
                 }
+
+                try
+                {
+                    ShutdownServerProcess(process);
+                }
+                catch (Exception shutdownError)
+                {
+                    cleanupError = cleanupError == null
+                        ? shutdownError
+                        : new AggregateException(cleanupError, shutdownError);
+                }
+
+                // Wait for the active readers, not process exit, before taking the failure snapshot.
+                var isCollected = output == null || await output.DrainAsync(_serverOptions.ProcessKillTimeout).ConfigureAwait(false);
+                var message = new StringBuilder();
+                message.AppendLine("Unable to start the RavenDB Server");
+                message.AppendLine(error.Message);
+                if (output != null)
+                {
+                    output.AppendDiagnostics(message, exitCodeBeforeShutdown);
+                    output.StopCapturing();
+                }
+                else
+                {
+                    message.AppendLine($"Executable: '{process.StartInfo.FileName}'");
+                    message.AppendLine($"Working directory: '{System.IO.Directory.GetCurrentDirectory()}'");
+                    if (exitCodeBeforeShutdown.HasValue)
+                        message.AppendLine($"Exit code: {exitCodeBeforeShutdown.Value} (0x{exitCodeBeforeShutdown.Value:X8})");
+                    message.AppendLine("Standard output:");
+                    message.AppendLine("<empty>");
+                    message.AppendLine("Standard error:");
+                    message.AppendLine("<empty>");
+                }
+                if (isCollected == false)
+                    message.AppendLine("Output collection did not complete within the failure drain timeout; output may be incomplete.");
+                if (cleanupError != null)
+                {
+                    message.AppendLine("Failed to clean up the server process:");
+                    message.AppendLine(cleanupError.ToString());
+                }
+
+                throw new InvalidOperationException(message.ToString(), error);
             }
+            finally
+            {
+                process.Exited -= OnStartupExit;
+            }
+
+            void OnStartupExit(object? sender, EventArgs args) => startup.TrySetResult(null);
+        }
+        private void RegisterProcessLifetimeEvents(Process process)
+        {
+            // Keep lifetime callbacks separate from the temporary startup state.
+            process.Exited += (sender, args) => ServerProcessExited?.Invoke(sender, new ServerProcessExitedEventArgs());
+#if NET462
+            AppDomain.CurrentDomain.DomainUnload += (sender, args) => ShutdownServerProcess(process);
+#else
+            AssemblyLoadContext.Default.Unloading += context => ShutdownServerProcess(process);
+#endif
         }
 
         public void OpenStudioInBrowser()

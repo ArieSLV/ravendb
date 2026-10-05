@@ -1,140 +1,162 @@
 #nullable enable
 using System;
-using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Raven.Client.Extensions;
-using Sparrow.Platform;
 
 namespace Raven.Embedded
 {
     internal static class ProcessHelper
     {
-        internal static ProcessOutput ReadOutput(this Process process, Action<string> onOutputLine) => new(process, onOutputLine);
+        internal static ProcessOutput ReadOutput(this Process process, Action<string>? onOutputLine = null) => new(process, onOutputLine);
+
+        internal static async Task<bool> WaitForCompletionAsync(Task task, TimeSpan timeout)
+        {
+            if (timeout == Timeout.InfiniteTimeSpan || timeout == TimeSpan.MaxValue)
+                return await task.WaitWithTimeout(Timeout.InfiniteTimeSpan).ConfigureAwait(false);
+
+            var elapsed = Stopwatch.StartNew();
+            while (task.IsCompleted == false)
+            {
+                var remaining = timeout - elapsed.Elapsed;
+                if (remaining <= TimeSpan.Zero)
+                    return task.IsCompleted;
+
+                // WaitWithTimeout uses shared timers which may fire early. The stopwatch owns the deadline.
+                if (await task.WaitWithTimeout(remaining).ConfigureAwait(false))
+                    return true;
+            }
+            return true;
+        }
 
         internal sealed class ProcessOutput
         {
-            private readonly Process _process;
             private readonly string _executable;
             private readonly string _workingDirectory;
-            private readonly string? _resolvedExecutable;
-            private readonly CapturedOutput _standardOutput = new();
-            private readonly CapturedOutput _standardError = new();
+            private readonly object _locker = new();
+            private readonly TaskCompletionSource<Exception> _readFailure = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            private StringBuilder? _standardOutput = new();
+            private StringBuilder? _standardError = new();
+            private Action<string>? _onOutputLine;
 
+            // Completion concerns the two readers only. The caller owns process exit and cleanup.
             internal Task Completion { get; }
+            internal Task<Exception> ReadFailure => _readFailure.Task;
 
-            internal int? ExitCode => _process.HasExited ? _process.ExitCode : null;
-
-            internal ProcessOutput(Process process, Action<string> onOutputLine)
+            internal string StandardOutput
             {
-                _process = process;
-                _executable = process.StartInfo.FileName;
-                _workingDirectory = string.IsNullOrEmpty(process.StartInfo.WorkingDirectory) ? Directory.GetCurrentDirectory() : process.StartInfo.WorkingDirectory;
-                try
+                get
                 {
-                    _resolvedExecutable = process.MainModule?.FileName;
-                }
-                catch (Exception error) when (error is Win32Exception or InvalidOperationException or NotSupportedException or NullReferenceException)
-                {
-                    // An early exit can make the image unavailable.
-                    // .NET Framework can also throw NullReferenceException from ProcessModule.FileName while inspecting a child.
-                }
-
-                var exited = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-                process.Exited += OnExit;
-                process.EnableRaisingEvents = true;
-                if (process.HasExited)
-                    exited.TrySetResult(true);
-
-                // Start both readers immediately.
-                // Keep draining after a server announces readiness - otherwise later console output can fill a pipe and block the running server.
-                var outputReadStreamTask = ReadStream(process.StandardOutput, _standardOutput, onOutputLine);
-                var errorOutputReadStreamTask = ReadStream(process.StandardError, _standardError, onLine: null);
-                Completion = CompleteAsync();
-                _ = Completion.IgnoreUnobservedExceptions();
-                return;
-
-                void OnExit(object? sender, EventArgs args) => exited.TrySetResult(true);
-
-                async Task CompleteAsync()
-                {
-                    try
-                    {
-                        await Task.WhenAll(outputReadStreamTask, errorOutputReadStreamTask, exited.Task).ConfigureAwait(false);
-                    }
-                    finally
-                    {
-                        process.Exited -= OnExit;
-                    }
+                    lock (_locker)
+                        return _standardOutput?.ToString() ?? string.Empty;
                 }
             }
 
-            internal async Task DrainAsync(TimeSpan timeout)
+            internal ProcessOutput(Process process, Action<string>? onOutputLine)
+            {
+                _executable = process.StartInfo.FileName;
+                _workingDirectory = string.IsNullOrEmpty(process.StartInfo.WorkingDirectory) ? Directory.GetCurrentDirectory() : process.StartInfo.WorkingDirectory;
+                _onOutputLine = onOutputLine;
+
+                var stdout = process.StandardOutput;
+                var stderr = process.StandardError;
+
+                // Start both readers immediately and keep draining after server readiness.
+                var stdoutTask = ReadStream(stdout, isStandardOutput: true);
+                var stderrTask = ReadStream(stderr, isStandardOutput: false);
+                Completion = Task.WhenAll(stdoutTask, stderrTask);
+                _ = Completion.IgnoreUnobservedExceptions();
+            }
+
+            internal void StopCapturing()
+            {
+                lock (_locker)
+                {
+                    _standardOutput = null;
+                    _standardError = null;
+                    _onOutputLine = null;
+                }
+            }
+
+            internal async Task<bool> DrainAsync(TimeSpan timeout)
             {
                 try
                 {
-                    // Let the readers consume trailing output, including unterminated lines,
-                    // before the caller builds its diagnostic or disposes the process.
-                    if (await Completion.WaitWithTimeout(timeout).ConfigureAwait(false))
-                        await Completion.ConfigureAwait(false);
+                    if (await WaitForCompletionAsync(Completion, timeout).ConfigureAwait(false) == false)
+                        return false;
+
+                    await Completion.ConfigureAwait(false);
                 }
-                catch (Exception error) when (error is Win32Exception or InvalidOperationException or IOException)
+                catch (Exception)
                 {
-                    // Cleanup must not replace the original startup/discovery failure.
+                    // Reader failures are included in AppendDiagnostics; they must not replace the initiating failure.
                 }
+
+                return Completion.IsCompleted;
             }
 
             internal void AppendDiagnostics(StringBuilder message, int? exitCode)
             {
                 // Server arguments can contain license keys and certificate passwords.
-                // Report the executable here; callers may add arguments only when they are known to be safe.
+                // Report the configured executable; reconstructing PATH lookup can misidentify the launched image.
                 message.AppendLine($"Executable: '{_executable}'");
                 message.AppendLine($"Working directory: '{_workingDirectory}'");
-                message.AppendLine($"Resolved executable: {_resolvedExecutable ?? "unavailable (the process may have exited before it could be queried)"}");
                 if (exitCode.HasValue)
-                {
                     message.AppendLine($"Exit code: {exitCode.Value} (0x{exitCode.Value:X8})");
-                    if (PlatformDetails.RunningOnPosix == false && exitCode.Value == unchecked((int)0xC0000135))
-                        message.AppendLine("Windows reported STATUS_DLL_NOT_FOUND: a DLL required by the process could not be found.");
-                }
-                message.AppendLine("Standard output:");
-                message.AppendLine(_standardOutput.ToString());
-                message.AppendLine("Standard error:");
-                message.AppendLine(_standardError.ToString());
-            }
 
-            private static async Task ReadStream(StreamReader stream, CapturedOutput output, Action<string>? onLine)
-            {
-                string? line;
-                while ((line = await stream.ReadLineAsync().ConfigureAwait(false)) != null)
+                lock (_locker)
                 {
-                    output.AppendLine(line);
-                    onLine?.Invoke(line);
+                    message.AppendLine("Standard output:");
+                    AppendOutput(message, _standardOutput);
+                    message.AppendLine("Standard error:");
+                    AppendOutput(message, _standardError);
+                }
+
+                if (ReadFailure.IsCompleted)
+                {
+                    message.AppendLine("Failed to read process output:");
+                    message.AppendLine(ReadFailure.Result.ToString());
                 }
             }
 
-            private sealed class CapturedOutput
+            private static void AppendOutput(StringBuilder message, StringBuilder? output)
             {
-                private readonly StringBuilder _text = new();
+                message.AppendLine(output == null
+                    ? "<capture stopped after startup>"
+                    : output.Length == 0
+                        ? "<empty>"
+                        : output.ToString());
+            }
 
-                internal void AppendLine(string line)
+            private async Task ReadStream(StreamReader stream, bool isStandardOutput)
+            {
+                try
                 {
-                    lock (_text)
+                    using (stream)
                     {
-                        _text.AppendLine(line);
+                        string? line;
+                        while ((line = await stream.ReadLineAsync().ConfigureAwait(false)) != null)
+                        {
+                            lock (_locker)
+                            {
+                                if (isStandardOutput)
+                                {
+                                    _standardOutput?.AppendLine(line);
+                                    _onOutputLine?.Invoke(line);
+                                }
+                                else
+                                    _standardError?.AppendLine(line);
+                            }
+                        }
                     }
                 }
-
-                public override string ToString()
+                catch (Exception error)
                 {
-                    lock (_text)
-                    {
-                        return _text.Length == 0
-                            ? "<empty>"
-                            : _text.ToString();
-                    }
+                    _readFailure.TrySetResult(error);
+                    throw;
                 }
             }
         }

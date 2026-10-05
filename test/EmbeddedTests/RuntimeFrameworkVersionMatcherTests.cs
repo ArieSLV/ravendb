@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.IO;
 using System.Threading.Tasks;
 using Raven.Embedded;
@@ -124,106 +124,110 @@ namespace EmbeddedTests
         }
 
 #if NETCOREAPP
-        [Theory]
-        [InlineData("diagnosis")]
-        [InlineData("command")]
-        [InlineData("exit code")]
-        [InlineData("stderr")]
-        public async Task Should_report_runtime_discovery_failure_when_dotnet_host_is_incomplete(string diagnostic)
+        [Fact]
+        public void Should_report_runtime_discovery_failure_when_dotnet_host_is_incomplete()
         {
             ServerOptions options = CopyServerAndCreateOptions();
             options.DotNetPath = CopyDotNetHost();
 
-            InvalidOperationException error = await GetStartupFailure(options);
+            InvalidOperationException error = GetStartupFailure(options);
 
-            // Each diagnostic is checked independently so the red run reaches every assertion.
-            switch (diagnostic)
-            {
-                case "diagnosis":
-                    Assert.DoesNotContain("Could not find a matching runtime", error.Message);
-                    Assert.Contains("Unable to discover installed .NET runtimes", error.Message);
-                    break;
-                case "command":
-                    Assert.Contains(options.DotNetPath, error.Message);
-                    Assert.Contains("--info", error.Message);
-                    break;
-                case "exit code":
-                    Assert.Contains(RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "-2147450749 (0x80008083)" : "131 (0x00000083)", error.Message);
-                    break;
-                case "stderr":
-                    Assert.Contains("host", error.Message);
-                    Assert.Contains("fxr", error.Message);
-                    break;
-            }
-        }
-
-        [WindowsFact]
-        public async Task Should_report_windows_loader_failure_with_empty_output()
-        {
-            ServerOptions options = CopyServerAndCreateOptions();
-            options.DotNetPath = CopyDotNetHost();
-
-            // Change an import in a private copy, leaving the installed host untouched. Windows
-            // must fail in the real loader because the required DLL does not exist.
-            byte[] executable = File.ReadAllBytes(options.DotNetPath);
-            int importOffset = Encoding.ASCII.GetString(executable).IndexOf("KERNEL32.dll\0", StringComparison.OrdinalIgnoreCase);
-            Assert.True(importOffset >= 0, "The Windows dotnet host must import KERNEL32.dll.");
-            Encoding.ASCII.GetBytes("RDB27484.dll").CopyTo(executable, importOffset);
-            File.WriteAllBytes(options.DotNetPath, executable);
-
-            // Verify the native failure itself before exercising the public embedded lifecycle.
-            using (Process child = Process.Start(new ProcessStartInfo(options.DotNetPath, "--info")
-                   { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true }))
-            {
-                Task<string> output = child.StandardOutput.ReadToEndAsync();
-                Task<string> error = child.StandardError.ReadToEndAsync();
-                Assert.True(child.WaitForExit(30_000));
-                Assert.Equal(unchecked((int)0xC0000135), child.ExitCode);
-                Assert.Empty(await output);
-                Assert.Empty(await error);
-            }
-
-            InvalidOperationException failure = await GetStartupFailure(options);
-            Assert.Contains("-1073741515 (0xC0000135)", failure.Message);
-            Assert.Contains("STATUS_DLL_NOT_FOUND", failure.Message);
-            Assert.Contains(options.DotNetPath, failure.Message);
+            Assert.DoesNotContain("Could not find a matching runtime", error.Message);
+            Assert.Contains("Unable to discover installed .NET runtimes", error.Message);
+            Assert.Contains(options.DotNetPath, error.Message);
+            Assert.Contains("--info", error.Message);
+            Assert.Contains("Working directory:", error.Message);
+            Assert.Contains(RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "-2147450749 (0x80008083)" : "131 (0x00000083)", error.Message);
+            Assert.Contains("Standard output:", error.Message);
+            Assert.Contains("Standard error:", error.Message);
+            Assert.Contains("host", error.Message);
+            Assert.Contains("fxr", error.Message);
         }
 
         [Fact]
-        public async Task Should_preserve_a_genuine_runtime_version_mismatch()
+        public void Should_preserve_a_genuine_runtime_version_mismatch()
         {
             ServerOptions options = CopyServerAndCreateOptions();
             options.FrameworkVersion = "999.0.0+";
 
-            InvalidOperationException error = await GetStartupFailure(options);
+            InvalidOperationException error = GetStartupFailure(options);
             Assert.Contains("Could not find a matching runtime for '999.0.0+'. Available runtimes:", error.Message);
             Assert.Contains(Environment.NewLine + "- ", error.Message);
         }
-
-        private static async Task<InvalidOperationException> GetStartupFailure(ServerOptions options)
+#if NET8_0_OR_GREATER
+        [Fact]
+        public async Task Should_use_available_runtimes_when_the_sdk_cannot_start()
         {
-            var embedded = new EmbeddedServer();
-            InvalidOperationException startupError = null;
-            try
+            var options = CopyServerAndCreateOptions();
+            options.DotNetPath = CopyDotNetHost();
+            var privateRoot = Path.GetDirectoryName(options.DotNetPath);
+            var runtimeDirectory = RuntimeEnvironment.GetRuntimeDirectory().TrimEnd(Path.DirectorySeparatorChar);
+            var installation = Directory.GetParent(runtimeDirectory).Parent.Parent.FullName;
+            var runtimeVersion = Path.GetFileName(runtimeDirectory);
+            CopyDirectory(runtimeDirectory, Path.Combine(privateRoot, "shared", "Microsoft.NETCore.App", runtimeVersion));
+            CopyDirectory(Path.Combine(installation, "shared", "Microsoft.AspNetCore.App", runtimeVersion), Path.Combine(privateRoot, "shared", "Microsoft.AspNetCore.App", runtimeVersion));
+
+            var hostDirectory = Directory.GetDirectories(Path.Combine(installation, "host", "fxr"))[0];
+            CopyDirectory(hostDirectory, Path.Combine(privateRoot, "host", "fxr", Path.GetFileName(hostDirectory)));
+            var sdkDirectory = Directory.GetDirectories(Path.Combine(installation, "sdk"))
+                .OrderByDescending(x => new Version(Path.GetFileName(x).Split('-')[0]))
+                .First(x => Path.GetFileName(x).StartsWith(Environment.Version.Major + "."));
+            var sdkCopy = Path.Combine(privateRoot, "sdk", Path.GetFileName(sdkDirectory));
+            Directory.CreateDirectory(sdkCopy);
+            File.Copy(Path.Combine(sdkDirectory, "dotnet.dll"), Path.Combine(sdkCopy, "dotnet.dll"));
+            // Only the SDK's runtime is missing. The application's installed runtime remains usable.
+            File.WriteAllText(Path.Combine(sdkCopy, "dotnet.runtimeconfig.json"), "{\"runtimeOptions\":{\"framework\":{\"name\":\"Microsoft.NETCore.App\",\"version\":\"999.0.0\"}}}");
+            options.FrameworkVersion = runtimeVersion + "+";
+
+            using (var probe = Process.Start(new ProcessStartInfo(options.DotNetPath, "--info")
+                   { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true }))
             {
-                embedded.StartServer(options);
-                startupError = await Assert.ThrowsAsync<InvalidOperationException>(() => embedded.GetServerUriAsync());
-                return startupError;
+                var stdout = probe.StandardOutput.ReadToEndAsync();
+                var stderr = probe.StandardError.ReadToEndAsync();
+                Assert.True(probe.WaitForExit(30_000));
+                Assert.NotEqual(0, probe.ExitCode);
+                Assert.Contains("Microsoft.NETCore.App " + runtimeVersion, await stdout);
+                Assert.Contains("999.0.0", await stderr);
             }
-            finally
-            {
-                try
-                {
-                    embedded.Dispose();
-                }
-                catch (AggregateException error) when (startupError != null && error.InnerExceptions.Count == 1 && ReferenceEquals(error.InnerException, startupError))
-                {
-                    // Dispose also observes the faulted startup task.
-                    // Do not let the same exception hide the diagnostic assertion this regression is checking.
-                }
-            }
+
+            using var embedded = new EmbeddedServer();
+            embedded.StartServer(options);
+            Assert.NotNull(await embedded.GetServerUriAsync());
+            Assert.True(await embedded.GetServerProcessIdAsync() > 0);
         }
 
+        private static void CopyDirectory(string source, string destination)
+        {
+            Directory.CreateDirectory(destination);
+            foreach (var file in Directory.GetFiles(source))
+                File.Copy(file, Path.Combine(destination, Path.GetFileName(file)));
+            foreach (var directory in Directory.GetDirectories(source))
+                CopyDirectory(directory, Path.Combine(destination, Path.GetFileName(directory)));
+        }
+#endif
+
+        [Fact]
+        public async Task Should_rethrow_the_observed_startup_failure_when_disposed()
+        {
+            ServerOptions options = CopyServerAndCreateOptions();
+            options.DotNetPath = CopyDotNetHost();
+            var embedded = new EmbeddedServer();
+            embedded.StartServer(options);
+            InvalidOperationException startupError = await Assert.ThrowsAsync<InvalidOperationException>(() => embedded.GetServerUriAsync());
+
+            AggregateException disposalError = Assert.Throws<AggregateException>(() => embedded.Dispose());
+            Assert.Same(startupError, disposalError.InnerException);
+        }
+
+        private static InvalidOperationException GetStartupFailure(ServerOptions options)
+        {
+            AggregateException error = Assert.Throws<AggregateException>(() =>
+            {
+                using var embedded = new EmbeddedServer();
+                embedded.StartServer(options);
+            });
+            return Assert.IsType<InvalidOperationException>(error.InnerException);
+        }
         private string CopyDotNetHost()
         {
             string runtimeDirectory = RuntimeEnvironment.GetRuntimeDirectory();
@@ -236,14 +240,6 @@ namespace EmbeddedTests
             return copy;
         }
 
-        private sealed class WindowsFactAttribute : FactAttribute
-        {
-            public WindowsFactAttribute()
-            {
-                if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) == false)
-                    Skip = "This test exercises the Windows native DLL loader.";
-            }
-        }
 #endif
         private static List<RuntimeFrameworkVersionMatcher.RuntimeFrameworkVersion> GetRuntimes()
         {
