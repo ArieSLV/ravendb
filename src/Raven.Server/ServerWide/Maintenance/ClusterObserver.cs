@@ -203,13 +203,10 @@ namespace Raven.Server.ServerWide.Maintenance
                         }
 
                         // before the topology maintenance below, which skips a database or a shard while its topology changes
-                        if (rawRecord.IsSharded == false)
+                        foreach (var (name, topology) in rawRecord.Topologies)
                         {
-                            foreach (var (name, topology) in rawRecord.Topologies)
-                            {
-                                if (topology != null)
-                                    CheckClusterTransactionCounters(context, new DatabaseObservationState(name, rawRecord, topology, clusterTopology, newStats, prevStats, etag, _iteration));
-                            }
+                            if (topology != null)
+                                CheckClusterTransactionCounters(context, new DatabaseObservationState(name, rawRecord, topology, clusterTopology, newStats, prevStats, etag, _iteration));
                         }
 
                         if (rawRecord.IsSharded)
@@ -828,6 +825,8 @@ namespace Raven.Server.ServerWide.Maintenance
         {
             try
             {
+                var isSharded = ShardHelper.TryGetShardNumberAndDatabaseName(state.Name, out var databaseName, out var shardNumber);
+
                 var groupId = state.DatabaseTopology.DatabaseTopologyIdBase64;
                 var mismatches = new List<(string Node, string Details)>();
                 var checkedNodes = 0;
@@ -845,33 +844,39 @@ namespace Raven.Server.ServerWide.Maintenance
 
                     var executedIndex = report.ExecutedClusterTransactionRaftIndex;
                     var position = report.ExecutedClusterTransactionPreviousCount;
-                    var executed = $"Node '{node}' executed the cluster transaction at Raft index {executedIndex:#,#;;0} at position {position:#,#;;0}";
+                    var nodeLabel = isSharded ? $"Node '{node}' (shard {shardNumber})" : $"Node '{node}'";
+                    var executed = $"{nodeLabel} executed the cluster transaction at Raft index {executedIndex:#,#;;0} at position {position:#,#;;0}";
 
                     string details = null;
-                    if (ClusterTransactionCommand.TryReadRaftIndexByPreviousCount(context, state.Name, previousCount: position, out var indexHere))
+                    if (ClusterTransactionCommand.TryReadRaftIndexByPreviousCount(context, databaseName, previousCount: position, out var indexHere, out var shardHere))
                     {
                         checkedNodes++;
                         if (indexHere != executedIndex)
                             details = $"{executed}; on node '{_nodeTag}' that position holds the transaction at Raft index {indexHere:#,#;;0}.";
+                        else if (isSharded && shardHere != shardNumber)
+                            details = $"{executed}; on node '{_nodeTag}' that position holds the part of the same transaction for shard {shardHere}.";
                     }
                     else
                     {
-                        var firstPosition = ClusterTransactionCommand.ReadFirstClusterTransactionPreviousCount(context, state.Name, out var firstRaftIndex);
+                        var firstPosition = ClusterTransactionCommand.ReadFirstClusterTransactionPreviousCount(context, databaseName, out var firstRaftIndex);
                         if (firstPosition == null)
                         {
-                            checkedNodes++;
-                            var countersTree = context.Transaction.InnerTransaction.ReadTree(ClusterStateMachine.TransactionCommandsCountPerDatabase);
-                            var countHere = countersTree == null ? 0 : ClusterTransactionCommand.GetPrevCount(context, countersTree, state.Name);
-                            if (report.ExecutedClusterTransactionNextCount != countHere)
-                                details = $"Node '{node}' executed every cluster transaction up to position {report.ExecutedClusterTransactionNextCount:#,#;;0}; " +
-                                          $"node '{_nodeTag}' is at position {countHere:#,#;;0} after the same transactions.";
+                            if (isSharded == false)
+                            {
+                                checkedNodes++;
+                                var countersTree = context.Transaction.InnerTransaction.ReadTree(ClusterStateMachine.TransactionCommandsCountPerDatabase);
+                                var countHere = countersTree == null ? 0 : ClusterTransactionCommand.GetPrevCount(context, countersTree, databaseName);
+                                if (report.ExecutedClusterTransactionNextCount != countHere)
+                                    details = $"{nodeLabel} executed every cluster transaction up to position {report.ExecutedClusterTransactionNextCount:#,#;;0}; " +
+                                              $"node '{_nodeTag}' is at position {countHere:#,#;;0} after the same transactions.";
+                            }
                         }
                         else if (firstPosition.Value < position)
                         {
                             checkedNodes++;
                             details = $"{executed}; node '{_nodeTag}' has no transaction starting at that position.";
                         }
-                        else if (firstRaftIndex <= executedIndex)
+                        else if (firstRaftIndex < executedIndex || (isSharded == false && firstRaftIndex == executedIndex))
                         {
                             checkedNodes++;
                             details = $"{executed}; on node '{_nodeTag}' that transaction is stored at a later position " +
@@ -891,10 +896,10 @@ namespace Raven.Server.ServerWide.Maintenance
                 {
                     message += $" Every checked node differs from node '{_nodeTag}', so node '{_nodeTag}' is the likely odd one.";
                     if (state.DatabaseTopology.RelevantFor(_nodeTag) == false)
-                        message += $" Node '{_nodeTag}' does not host this database, so its own counter does not affect writes while that stays so.";
+                        message += $" Node '{_nodeTag}' does not host this database{(isSharded ? " shard" : "")}, so its own counter does not affect writes while that stays so.";
                 }
 
-                RaiseClusterTransactionCounterMismatch(state.Name, string.Join(",", mismatches.Select(m => m.Node)), message);
+                RaiseClusterTransactionCounterMismatch(databaseName, alertKey: state.Name, string.Join(",", mismatches.Select(m => m.Node)), message);
             }
             catch (Exception e)
             {
@@ -902,7 +907,7 @@ namespace Raven.Server.ServerWide.Maintenance
             }
         }
 
-        private void RaiseClusterTransactionCounterMismatch(string database, string nodes, string details)
+        private void RaiseClusterTransactionCounterMismatch(string database, string alertKey, string nodes, string details)
         {
             var message = details + " While the counters differ, cluster-wide transactions on this database can be acknowledged to the client without being written.";
             var alert = AlertRaised.Create(
@@ -911,10 +916,10 @@ namespace Raven.Server.ServerWide.Maintenance
                 message,
                 AlertType.ClusterTransactionCounterMismatch,
                 NotificationSeverity.Error,
-                key: database);
+                key: alertKey);
 
             // once per database and set of differing nodes; again only if the alert was dismissed
-            if (_raisedClusterTransactionCounterAlerts.Add($"{database}/{nodes}") == false && NotificationCenter.Exists(alert.Id))
+            if (_raisedClusterTransactionCounterAlerts.Add($"{alertKey}/{nodes}") == false && NotificationCenter.Exists(alert.Id))
                 return;
 
             NotificationCenter.Add(alert);
