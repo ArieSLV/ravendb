@@ -804,18 +804,22 @@ namespace SlowTests.Cluster
 
                 foreach (var (tag, nodeReport) in stats)
                 {
-                    if (nodeReport.Report.TryGetValue(database, out var r) == false)
+                    var reports = nodeReport.Report.Where(x => x.Key == database || x.Key.StartsWith(database + "$")).ToList();
+                    if (reports.Count == 0)
                     {
                         sb.AppendLine($"{tag}: no report for the database");
                         continue;
                     }
 
-                    var found = ClusterTransactionCommand.TryReadRaftIndexByPreviousCount(context, database, r.ExecutedClusterTransactionPreviousCount, out var atIndex);
-                    var at = found ? atIndex : (long?)null;
-                    var firstPosition = ClusterTransactionCommand.ReadFirstClusterTransactionPreviousCount(context, database, out var firstRaftIndex);
-                    sb.AppendLine($"{tag}: status {r.Status}, executed index {r.ExecutedClusterTransactionRaftIndex}, position {r.ExecutedClusterTransactionPreviousCount}, " +
-                                  $"next {r.ExecutedClusterTransactionNextCount}, group {r.DatabaseGroupId}; leader at that position: {at?.ToString() ?? "none"}, " +
-                                  $"first stored: {firstPosition?.ToString() ?? "none"} (Raft index {firstRaftIndex})");
+                    foreach (var (name, r) in reports)
+                    {
+                        var found = ClusterTransactionCommand.TryReadRaftIndexByPreviousCount(context, database, r.ExecutedClusterTransactionPreviousCount, out var atIndex, out var shardAt);
+                        var at = found ? atIndex : (long?)null;
+                        var firstPosition = ClusterTransactionCommand.ReadFirstClusterTransactionPreviousCount(context, database, out var firstRaftIndex);
+                        sb.AppendLine($"{tag} {name}: status {r.Status}, executed index {r.ExecutedClusterTransactionRaftIndex}, position {r.ExecutedClusterTransactionPreviousCount}, " +
+                                      $"next {r.ExecutedClusterTransactionNextCount}, group {r.DatabaseGroupId}; leader at that position: {at?.ToString() ?? "none"} (shard {shardAt?.ToString() ?? "-"}), " +
+                                      $"first stored: {firstPosition?.ToString() ?? "none"} (Raft index {firstRaftIndex})");
+                    }
                 }
             }
 

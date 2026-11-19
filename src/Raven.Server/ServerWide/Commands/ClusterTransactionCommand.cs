@@ -784,9 +784,10 @@ namespace Raven.Server.ServerWide.Commands
             }
         }
 
-        public static unsafe bool TryReadRaftIndexByPreviousCount(ClusterOperationContext context, string database, long previousCount, out long raftIndex)
+        public static unsafe bool TryReadRaftIndexByPreviousCount(ClusterOperationContext context, string database, long previousCount, out long raftIndex, out int? shardNumber)
         {
             raftIndex = 0;
+            shardNumber = null;
 
             var items = context.Transaction.InnerTransaction.OpenTable(ClusterStateMachine.TransactionCommandsSchema, ClusterStateMachine.TransactionCommands);
             using (GetPrefix(context, database, out var key, previousCount))
@@ -795,6 +796,14 @@ namespace Raven.Server.ServerWide.Commands
                     return false;
 
                 raftIndex = *(long*)reader.Read((int)TransactionCommandsColumn.RaftIndex, out _);
+
+                var ptr = reader.Read((int)TransactionCommandsColumn.Commands, out var size);
+                using (var commands = new BlittableJsonReaderObject(ptr, size, context))
+                {
+                    if (commands.TryGet(nameof(SingleClusterDatabaseCommand.ShardNumber), out int stored))
+                        shardNumber = stored;
+                }
+
                 return true;
             }
         }
