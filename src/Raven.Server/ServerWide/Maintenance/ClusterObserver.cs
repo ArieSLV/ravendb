@@ -270,6 +270,12 @@ namespace Raven.Server.ServerWide.Maintenance
                             }
                         }
 
+                        if (rawRecord.IsSharded == false)
+                        {
+                            foreach (var state in mergedState.States)
+                                CheckClusterTransactionCounters(context, state.Value);
+                        }
+
                         var cleanUp = mergedState.States.Min(s => CleanUpDatabaseValues(context, s.Value) ?? -1);
                         if (cleanUp > 0)
                         {
@@ -810,6 +816,108 @@ namespace Raven.Server.ServerWide.Maintenance
             var result = await _server.SendToLeaderAsync(new DeleteExpiredCompareExchangeCommand(nowTicks, batchSize, RaftIdGenerator.NewId()));
             await _server.Cluster.WaitForIndexNotification(result.Index);
             return (bool)result.Result;
+        }
+
+        private readonly HashSet<string> _raisedClusterTransactionCounterAlerts = new();
+
+        internal void CheckClusterTransactionCounters(ClusterOperationContext context, DatabaseObservationState state)
+        {
+            try
+            {
+                var groupId = state.DatabaseTopology.DatabaseTopologyIdBase64;
+                var mismatches = new List<(string Node, string Details)>();
+                var checkedNodes = 0;
+
+                foreach (var node in state.DatabaseTopology.AllNodes)
+                {
+                    // skip: this node (its own commands always match), no report yet, nothing executed since load or an older
+                    // version (0), a report about a deleted database with the same name (another topology id)
+                    var report = state.GetCurrentDatabaseReport(node);
+                    if (node == _nodeTag ||
+                        report == null ||
+                        report.ExecutedClusterTransactionRaftIndex == 0 ||
+                        report.DatabaseGroupId != groupId)
+                        continue;
+
+                    var executedIndex = report.ExecutedClusterTransactionRaftIndex;
+                    var position = report.ExecutedClusterTransactionPreviousCount;
+                    var executed = $"Node '{node}' executed the cluster transaction at Raft index {executedIndex:#,#;;0} at position {position:#,#;;0}";
+
+                    string details = null;
+                    if (ClusterTransactionCommand.TryReadRaftIndexByPreviousCount(context, state.Name, previousCount: position, out var indexHere))
+                    {
+                        checkedNodes++;
+                        if (indexHere != executedIndex)
+                            details = $"{executed}; on node '{_nodeTag}' that position holds the transaction at Raft index {indexHere:#,#;;0}.";
+                    }
+                    else
+                    {
+                        var firstPosition = ClusterTransactionCommand.ReadFirstClusterTransactionPreviousCount(context, state.Name, out var firstRaftIndex);
+                        if (firstPosition == null)
+                        {
+                            checkedNodes++;
+                            var countersTree = context.Transaction.InnerTransaction.ReadTree(ClusterStateMachine.TransactionCommandsCountPerDatabase);
+                            var countHere = countersTree == null ? 0 : ClusterTransactionCommand.GetPrevCount(context, countersTree, state.Name);
+                            if (report.ExecutedClusterTransactionNextCount != countHere)
+                                details = $"Node '{node}' executed every cluster transaction up to position {report.ExecutedClusterTransactionNextCount:#,#;;0}; " +
+                                          $"node '{_nodeTag}' is at position {countHere:#,#;;0} after the same transactions.";
+                        }
+                        else if (firstPosition.Value < position)
+                        {
+                            checkedNodes++;
+                            details = $"{executed}; node '{_nodeTag}' has no transaction starting at that position.";
+                        }
+                        else if (firstRaftIndex <= executedIndex)
+                        {
+                            checkedNodes++;
+                            details = $"{executed}; on node '{_nodeTag}' that transaction is stored at a later position " +
+                                      $"(the first stored transaction, Raft index {firstRaftIndex:#,#;;0}, is at position {firstPosition.Value:#,#;;0}).";
+                        }
+                    }
+
+                    if (details != null)
+                        mismatches.Add((node, details));
+                }
+
+                if (mismatches.Count == 0)
+                    return;
+
+                var message = string.Join(" ", mismatches.Select(m => m.Details));
+                if (checkedNodes >= 2 && mismatches.Count == checkedNodes)
+                {
+                    message += $" Every checked node differs from node '{_nodeTag}', so node '{_nodeTag}' is the likely odd one.";
+                    if (state.DatabaseTopology.RelevantFor(_nodeTag) == false)
+                        message += $" Node '{_nodeTag}' does not host this database, so its own counter does not affect writes while that stays so.";
+                }
+
+                RaiseClusterTransactionCounterMismatch(state.Name, string.Join(",", mismatches.Select(m => m.Node)), message);
+            }
+            catch (Exception e)
+            {
+                _observerLogger.Log($"Failed to check the cluster transaction counters of database '{state.Name}'", _iteration, e, state.Name);
+            }
+        }
+
+        private void RaiseClusterTransactionCounterMismatch(string database, string nodes, string details)
+        {
+            var message = details + " While the counters differ, cluster-wide transactions on this database can be acknowledged to the client without being written.";
+            var alert = AlertRaised.Create(
+                database,
+                $"Cluster transaction counters of database '{database}' differ between nodes",
+                message,
+                AlertType.ClusterTransactionCounterMismatch,
+                NotificationSeverity.Error,
+                key: database);
+
+            // once per database and set of differing nodes; again only if the alert was dismissed
+            if (_raisedClusterTransactionCounterAlerts.Add($"{database}/{nodes}") == false && NotificationCenter.Exists(alert.Id))
+                return;
+
+            NotificationCenter.Add(alert);
+            _observerLogger.AddToDecisionLog(database, message, _iteration);
+
+            if (_observerLogger.Logger.IsOperationsEnabled)
+                _observerLogger.Logger.Operations($"Database '{database}': cluster transaction counters differ between nodes. {message}");
         }
 
         private long? CleanUpDatabaseValues(ClusterOperationContext context, DatabaseObservationState state)

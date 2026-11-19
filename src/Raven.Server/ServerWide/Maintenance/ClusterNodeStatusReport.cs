@@ -72,6 +72,14 @@ namespace Raven.Server.ServerWide.Maintenance
         public long LastCompareExchangeIndex { get; set; }
         public long LastClusterWideTransactionRaftIndex { get; set; }
 
+        // All three ExecutedClusterTransaction* fields are 0 when the node has not executed a cluster transaction since the
+        // database was loaded, or runs an older version.
+        public long ExecutedClusterTransactionRaftIndex { get; set; }
+        public long ExecutedClusterTransactionPreviousCount { get; set; }
+        public long ExecutedClusterTransactionNextCount { get; set; }
+
+        public string DatabaseGroupId { get; set; }
+
         public DatabaseStatusReport()
         {
         }
@@ -96,6 +104,10 @@ namespace Raven.Server.ServerWide.Maintenance
 
             LastCompareExchangeIndex = other.LastCompareExchangeIndex;
             LastClusterWideTransactionRaftIndex = other.LastClusterWideTransactionRaftIndex;
+            ExecutedClusterTransactionPreviousCount = other.ExecutedClusterTransactionPreviousCount;
+            ExecutedClusterTransactionRaftIndex = other.ExecutedClusterTransactionRaftIndex;
+            ExecutedClusterTransactionNextCount = other.ExecutedClusterTransactionNextCount;
+            DatabaseGroupId = other.DatabaseGroupId;
             LastEtag = other.LastEtag;
             LastTombstoneEtag = other.LastTombstoneEtag;
             NumberOfConflicts = other.NumberOfConflicts;
@@ -169,7 +181,11 @@ namespace Raven.Server.ServerWide.Maintenance
                 [nameof(Error)] = Error,
                 [nameof(UpTime)] = UpTime,
                 [nameof(LastCompareExchangeIndex)] = LastCompareExchangeIndex,
-                [nameof(LastClusterWideTransactionRaftIndex)] = LastClusterWideTransactionRaftIndex
+                [nameof(LastClusterWideTransactionRaftIndex)] = LastClusterWideTransactionRaftIndex,
+                [nameof(ExecutedClusterTransactionPreviousCount)] = ExecutedClusterTransactionPreviousCount,
+                [nameof(ExecutedClusterTransactionRaftIndex)] = ExecutedClusterTransactionRaftIndex,
+                [nameof(ExecutedClusterTransactionNextCount)] = ExecutedClusterTransactionNextCount,
+                [nameof(DatabaseGroupId)] = DatabaseGroupId
             };
             var indexStats = new DynamicJsonValue();
             foreach (var stat in LastIndexStats)

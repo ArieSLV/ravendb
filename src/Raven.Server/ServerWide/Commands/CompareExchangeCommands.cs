@@ -27,6 +27,8 @@ namespace Raven.Server.ServerWide.Commands
 
         public long Index;
 
+        internal RachisConsensus.TestingStuff ForTestingPurposes;
+
         [JsonDeserializationIgnore]
         public JsonOperationContext ContextToWriteResult { get; set; }
 
@@ -223,6 +225,7 @@ namespace Raven.Server.ServerWide.Commands
         {
             try
             {
+                ForTestingPurposes?.BeforeGetCompareExchangeExpires?.Invoke(Key);
                 return CompareExchangeExpirationStorage.TryGetExpires(value, out ticks);
             }
             catch (Exception e)
