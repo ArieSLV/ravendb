@@ -19,6 +19,7 @@ using Raven.Server.ServerWide.Commands;
 using Raven.Server.Json;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.ServerWide.Maintenance;
+using Raven.Server.Utils;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using Voron;
@@ -644,7 +645,7 @@ namespace SlowTests.Cluster
         }
 
         [RavenFact(RavenTestCategory.Cluster | RavenTestCategory.ClusterTransactions | RavenTestCategory.Sharding)]
-        public async Task Cluster_Transaction_Counter_Check_Skips_Sharded_Databases()
+        public async Task Cluster_Transaction_Counter_Check_Raises_No_Alert_On_A_Sharded_Database_Under_Load()
         {
             var (nodes, leader) = await CreateRaftCluster(3, leaderIndex: 0);
             var options = Sharding.GetOptionsForCluster(leader, shards: 2, shardReplicationFactor: 2, orchestratorReplicationFactor: 2);
@@ -652,13 +653,157 @@ namespace SlowTests.Cluster
             using (var store = GetDocumentStore(options))
             {
                 var database = store.Database;
-                await WriteClusterWide(store, "sharded", count: 20);
+                var transactions = await RunMixedLoad(store, "sharded", TimeSpan.FromSeconds(15));
+                Output.WriteLine($"cluster-wide transactions: {transactions:N0}");
+
+                Assert.True(await WaitForValueAsync(() => ShardsReported(leader, database, shards: 2), true), Diagnose(nodes, database));
                 await Task.Delay(TimeSpan.FromSeconds(3));
 
-                foreach (var node in nodes)
-                    Assert.False(HasCounterAlert(node, database));
+                Assert.False(HasShardCounterAlertOnAnyNode(nodes, database, shards: 2), ReadShardCounterAlertMessages(nodes, database, shards: 2));
                 Assert.DoesNotContain(leader.ServerStore.Observer.ReadDecisionsForDatabase().List, e => e.Message.Contains("Failed to check the cluster transaction counters"));
             }
+        }
+
+        [RavenFact(RavenTestCategory.Cluster | RavenTestCategory.ClusterTransactions | RavenTestCategory.Sharding)]
+        public async Task Cluster_Transaction_Counter_Mismatch_On_A_Sharded_Database_Is_Detected()
+        {
+            var (nodes, leader) = await CreateRaftCluster(3, leaderIndex: 0);
+            var options = Sharding.GetOptionsForCluster(leader, shards: 2, shardReplicationFactor: 2, orchestratorReplicationFactor: 2);
+
+            using (var store = GetDocumentStore(options))
+            {
+                var database = store.Database;
+                await WriteClusterWide(store, "warmup", count: 5, documentsPerTransaction: 3);
+                Assert.True(await WaitForValueAsync(() => ShardsReported(leader, database, shards: 2), true), Diagnose(nodes, database));
+                Assert.False(HasShardCounterAlertOnAnyNode(nodes, database, shards: 2));
+
+                var raised = nodes.First(n => n != leader);
+                RaiseClusterTransactionCounter(raised, database, 2);
+                await WriteClusterWide(store, "after", count: 5, documentsPerTransaction: 3);
+
+                Assert.True(await WaitForValueAsync(() => HasShardCounterAlertOnAnyNode(nodes, database, shards: 2), true, timeout: 15_000), Diagnose(nodes, database));
+                var message = ReadShardCounterAlertMessages(nodes, database, shards: 2);
+                Output.WriteLine(message);
+                Assert.Contains($"Node '{raised.ServerStore.NodeTag}' (shard ", message);
+            }
+        }
+
+        [RavenFact(RavenTestCategory.Cluster | RavenTestCategory.ClusterTransactions | RavenTestCategory.Sharding)]
+        public async Task Cluster_Transaction_Counter_Mismatch_On_A_Shard_Is_Detected_When_The_Position_Holds_Another_Shard_Of_The_Same_Transaction()
+        {
+            var (nodes, leader) = await CreateRaftCluster(3, leaderIndex: 0);
+            var others = nodes.Where(n => n != leader).ToList();
+            var options = Sharding.GetOptionsForCluster(leader, shards: 2, shardReplicationFactor: 2, orchestratorReplicationFactor: 2);
+            var modify = options.ModifyDatabaseRecord;
+            options.ModifyDatabaseRecord = r =>
+            {
+                modify(r);
+                r.Sharding.Shards[0].Members = new List<string> { leader.ServerStore.NodeTag, others[0].ServerStore.NodeTag };
+                r.Sharding.Shards[1].Members = new List<string> { leader.ServerStore.NodeTag, others[1].ServerStore.NodeTag };
+            };
+
+            using (var store = GetDocumentStore(options))
+            {
+                var database = store.Database;
+                var idsPerShard = await IdsPerShard(store, "split", perShard: 40);
+
+                int? firstShard = null;
+                var next = 0;
+                for (var attempt = 0; attempt < 10 && firstShard == null; attempt++, next += 2)
+                {
+                    await WriteSplitTransaction(store, idsPerShard, next);
+                    firstShard = FirstStoredShardOfLastTransaction(leader, database);
+                }
+                Assert.True(firstShard != null, "Setup: could not see the stored order of a transaction's shard parts");
+                Output.WriteLine($"a transaction stores shard {firstShard}'s part first");
+
+                Assert.True(await WaitForValueAsync(() => ShardsReported(leader, database, shards: 2), true), Diagnose(nodes, database));
+                Assert.False(HasShardCounterAlertOnAnyNode(nodes, database, shards: 2));
+
+                var raised = others[firstShard.Value];
+                RaiseClusterTransactionCounter(raised, database, 2);
+                for (var i = 0; i < 3; i++, next += 2)
+                    await WriteSplitTransaction(store, idsPerShard, next);
+
+                Assert.True(await WaitForValueAsync(() => HasShardCounterAlertOnAnyNode(nodes, database, shards: 2), true, timeout: 15_000), Diagnose(nodes, database));
+                var message = ReadShardCounterAlertMessages(nodes, database, shards: 2);
+                Output.WriteLine(message);
+                Assert.Contains($"Node '{raised.ServerStore.NodeTag}' (shard {firstShard})", message);
+                Assert.Contains("the part of the same transaction for shard", message);
+            }
+        }
+
+        private async Task<Dictionary<int, List<string>>> IdsPerShard(IDocumentStore store, string prefix, int perShard)
+        {
+            var result = new Dictionary<int, List<string>> { [0] = new(), [1] = new() };
+            for (var i = 0; result.Values.Any(l => l.Count < perShard); i++)
+            {
+                var id = $"{prefix}/{i}";
+                var shard = await Sharding.GetShardNumberForAsync(store, id);
+                if (result[shard].Count < perShard)
+                    result[shard].Add(id);
+            }
+            return result;
+        }
+
+        private static async Task WriteSplitTransaction(IDocumentStore store, Dictionary<int, List<string>> idsPerShard, int start)
+        {
+            using (var session = store.OpenAsyncSession(new SessionOptions { TransactionMode = TransactionMode.ClusterWide }))
+            {
+                foreach (var shard in new[] { 0, 1 })
+                    for (var d = 0; d < 2; d++)
+                        await session.StoreAsync(new User { Name = "split" }, idsPerShard[shard][start + d]);
+                await session.SaveChangesAsync();
+            }
+        }
+
+        private static int? FirstStoredShardOfLastTransaction(RavenServer node, string database)
+        {
+            using (node.ServerStore.Engine.ContextPool.AllocateOperationContext(out ClusterOperationContext context))
+            using (context.OpenReadTransaction())
+            {
+                var stored = ClusterTransactionCommand.ReadCommandsBatch(context, database, fromCount: null, take: long.MaxValue).ToList();
+                try
+                {
+                    var last = stored.GroupBy(c => c.Index).OrderByDescending(g => g.Key).FirstOrDefault();
+                    if (last == null || last.Count() < 2)
+                        return null;
+                    return last.OrderBy(c => c.PreviousCount).First().ShardNumber;
+                }
+                finally
+                {
+                    foreach (var c in stored)
+                        c.Dispose();
+                }
+            }
+        }
+
+        private static bool ShardsReported(RavenServer leader, string database, int shards)
+        {
+            var stats = leader.ServerStore.ClusterMaintenanceSupervisor.GetStats();
+            for (var shard = 0; shard < shards; shard++)
+            {
+                var name = ShardHelper.ToShardName(database, shard);
+                if (stats.Values.Any(s => s.Report.TryGetValue(name, out var r) && r.ExecutedClusterTransactionRaftIndex > 0) == false)
+                    return false;
+            }
+            return true;
+        }
+
+        private static bool HasShardCounterAlertOnAnyNode(IEnumerable<RavenServer> nodes, string database, int shards) =>
+            nodes.Any(n => Enumerable.Range(0, shards).Any(s => HasCounterAlert(n, ShardHelper.ToShardName(database, s))));
+
+        private static string ReadShardCounterAlertMessages(IEnumerable<RavenServer> nodes, string database, int shards)
+        {
+            var sb = new System.Text.StringBuilder();
+            foreach (var node in nodes)
+                for (var s = 0; s < shards; s++)
+                {
+                    var name = ShardHelper.ToShardName(database, s);
+                    if (HasCounterAlert(node, name))
+                        sb.Append($"[on {node.ServerStore.NodeTag}, {name}] {ReadCounterAlertMessage(node, name)} ");
+                }
+            return sb.ToString();
         }
 
         [RavenFact(RavenTestCategory.Cluster)]
@@ -804,18 +949,22 @@ namespace SlowTests.Cluster
 
                 foreach (var (tag, nodeReport) in stats)
                 {
-                    if (nodeReport.Report.TryGetValue(database, out var r) == false)
+                    var reports = nodeReport.Report.Where(x => x.Key == database || x.Key.StartsWith(database + "$")).ToList();
+                    if (reports.Count == 0)
                     {
                         sb.AppendLine($"{tag}: no report for the database");
                         continue;
                     }
 
-                    var found = ClusterTransactionCommand.TryReadRaftIndexByPreviousCount(context, database, r.ExecutedClusterTransactionPreviousCount, out var atIndex);
-                    var at = found ? atIndex : (long?)null;
-                    var firstPosition = ClusterTransactionCommand.ReadFirstClusterTransactionPreviousCount(context, database, out var firstRaftIndex);
-                    sb.AppendLine($"{tag}: status {r.Status}, executed index {r.ExecutedClusterTransactionRaftIndex}, position {r.ExecutedClusterTransactionPreviousCount}, " +
-                                  $"next {r.ExecutedClusterTransactionNextCount}, group {r.DatabaseGroupId}; leader at that position: {at?.ToString() ?? "none"}, " +
-                                  $"first stored: {firstPosition?.ToString() ?? "none"} (Raft index {firstRaftIndex})");
+                    foreach (var (name, r) in reports)
+                    {
+                        var found = ClusterTransactionCommand.TryReadRaftIndexByPreviousCount(context, database, r.ExecutedClusterTransactionPreviousCount, out var atIndex, out var shardAt);
+                        var at = found ? atIndex : (long?)null;
+                        var firstPosition = ClusterTransactionCommand.ReadFirstClusterTransactionPreviousCount(context, database, out var firstRaftIndex);
+                        sb.AppendLine($"{tag} {name}: status {r.Status}, executed index {r.ExecutedClusterTransactionRaftIndex}, position {r.ExecutedClusterTransactionPreviousCount}, " +
+                                      $"next {r.ExecutedClusterTransactionNextCount}, group {r.DatabaseGroupId}; leader at that position: {at?.ToString() ?? "none"} (shard {shardAt?.ToString() ?? "-"}), " +
+                                      $"first stored: {firstPosition?.ToString() ?? "none"} (Raft index {firstRaftIndex})");
+                    }
                 }
             }
 
