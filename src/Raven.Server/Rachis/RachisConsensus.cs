@@ -698,6 +698,8 @@ namespace Raven.Server.Rachis
 
             internal Action BeforeExecuteAddDatabaseCommand;
 
+            internal Action<string> BeforeGetCompareExchangeExpires; // gets: compare exchange key
+
             public static unsafe void InsertToLogDirectlyForDebug(ClusterOperationContext context, RachisConsensus node, long term, long index, CommandBase cmd, RachisEntryFlags flags)
             {
                 var table = context.Transaction.InnerTransaction.OpenTable(LogsTable, EntriesSlice);

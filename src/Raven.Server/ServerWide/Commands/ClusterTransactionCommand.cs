@@ -158,6 +158,8 @@ namespace Raven.Server.ServerWide.Commands
 
         public bool FromBackup;
 
+        internal RachisConsensus.TestingStuff ForTestingPurposes;
+
         public ClusterTransactionCommand() { }
 
         public ClusterTransactionCommand(
@@ -379,6 +381,7 @@ namespace Raven.Server.ServerWide.Commands
                     case CommandType.CompareExchangePUT:
                         var put = new AddOrUpdateCompareExchangeCommand(DatabaseName, clusterCommand.Id, clusterCommand.Document, clusterCommand.Index, context, null);
                         put.CurrentTicks = CommandCreationTicks;
+                        put.ForTestingPurposes = ForTestingPurposes;
                         if (put.Validate(context, items, out current) == false)
                         {
                             errors.Add(GenerateErrorInfo(clusterCommand, current));
