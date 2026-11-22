@@ -202,6 +202,16 @@ namespace Raven.Server.ServerWide.Maintenance
                             continue;
                         }
 
+                        // before the topology maintenance below, which skips a database or a shard while its topology changes
+                        if (rawRecord.IsSharded == false)
+                        {
+                            foreach (var (name, topology) in rawRecord.Topologies)
+                            {
+                                if (topology != null)
+                                    CheckClusterTransactionCounters(context, new DatabaseObservationState(name, rawRecord, topology, clusterTopology, newStats, prevStats, etag, _iteration));
+                            }
+                        }
+
                         if (rawRecord.IsSharded)
                         {
                             var databaseName = rawRecord.DatabaseName;
@@ -268,12 +278,6 @@ namespace Raven.Server.ServerWide.Maintenance
                                 if (responsibleNodeCommands is { Count: > 0 })
                                     responsibleNodePerDatabase[topology.Name] = responsibleNodeCommands;
                             }
-                        }
-
-                        if (rawRecord.IsSharded == false)
-                        {
-                            foreach (var state in mergedState.States)
-                                CheckClusterTransactionCounters(context, state.Value);
                         }
 
                         var cleanUp = mergedState.States.Min(s => CleanUpDatabaseValues(context, s.Value) ?? -1);
