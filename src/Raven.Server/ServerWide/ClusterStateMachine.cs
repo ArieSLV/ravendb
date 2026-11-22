@@ -1001,6 +1001,7 @@ namespace Raven.Server.ServerWide
             try
             {
                 clusterTransaction = (ClusterTransactionCommand)JsonDeserializationCluster.Commands[nameof(ClusterTransactionCommand)](cmd);
+                clusterTransaction.ForTestingPurposes = _parent.ForTestingPurposes;
                 rawRecord = ReadRawDatabaseRecord(context, clusterTransaction.DatabaseName);
                 if (rawRecord == null)
                     throw DatabaseDoesNotExistException.CreateWithMessage(clusterTransaction.DatabaseName, $"Could not execute update command of type '{nameof(ClusterTransactionCommand)}'.");

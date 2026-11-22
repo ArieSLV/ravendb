@@ -355,6 +355,15 @@ namespace Raven.Server.ServerWide.Maintenance
             report.LastClusterWideTransactionRaftIndex = dbInstance.ClusterWideTransactionIndexWaiter.LastIndex;
             report.LastCompareExchangeIndex = dbInstance.CompareExchangeStorage.GetLastCompareExchangeIndex(ctx);
             report.LastCompletedClusterTransaction = dbInstance.LastCompletedClusterTransaction;
+
+            var executed = dbInstance.LastExecutedClusterTransaction;
+            if (executed != null)
+            {
+                report.ExecutedClusterTransactionRaftIndex = executed.RaftIndex;
+                report.ExecutedClusterTransactionPreviousCount = executed.PreviousCount;
+                report.ExecutedClusterTransactionNextCount = executed.NextCount;
+            }
+            report.DatabaseGroupId = dbInstance.DatabaseGroupId;
         }
 
         private static void FillIndexInfo(Index index, QueryOperationContext context, DateTime now, DatabaseStatusReport report)

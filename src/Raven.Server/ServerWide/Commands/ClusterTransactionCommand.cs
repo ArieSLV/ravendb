@@ -158,6 +158,8 @@ namespace Raven.Server.ServerWide.Commands
 
         public bool FromBackup;
 
+        internal RachisConsensus.TestingStuff ForTestingPurposes;
+
         public ClusterTransactionCommand() { }
 
         public ClusterTransactionCommand(
@@ -379,6 +381,7 @@ namespace Raven.Server.ServerWide.Commands
                     case CommandType.CompareExchangePUT:
                         var put = new AddOrUpdateCompareExchangeCommand(DatabaseName, clusterCommand.Id, clusterCommand.Document, clusterCommand.Index, context, null);
                         put.CurrentTicks = CommandCreationTicks;
+                        put.ForTestingPurposes = ForTestingPurposes;
                         if (put.Validate(context, items, out current) == false)
                         {
                             errors.Add(GenerateErrorInfo(clusterCommand, current));
@@ -763,16 +766,36 @@ namespace Raven.Server.ServerWide.Commands
             }
         }
 
-        public static unsafe long? ReadFirstClusterTransactionPreviousCount(ClusterOperationContext context, string database)
+        public static long? ReadFirstClusterTransactionPreviousCount(ClusterOperationContext context, string database) => ReadFirstClusterTransactionPreviousCount(context, database, out _);
+
+        public static unsafe long? ReadFirstClusterTransactionPreviousCount(ClusterOperationContext context, string database, out long raftIndex)
         {
+            raftIndex = 0;
+
             var items = context.Transaction.InnerTransaction.OpenTable(ClusterStateMachine.TransactionCommandsSchema, ClusterStateMachine.TransactionCommands);
             using (GetPrefix(context, database, out var prefixSlice))
             {
                 if (items.SeekOnePrimaryKeyPrefix(prefixSlice, out var reader) == false)
                     return null;
 
+                raftIndex = *(long*)reader.Read((int)TransactionCommandsColumn.RaftIndex, out _);
                 var keyPtr = reader.Read((int)TransactionCommandsColumn.Key, out var size);
                 return Bits.SwapBytes(*(long*)(keyPtr + size - sizeof(long)));
+            }
+        }
+
+        public static unsafe bool TryReadRaftIndexByPreviousCount(ClusterOperationContext context, string database, long previousCount, out long raftIndex)
+        {
+            raftIndex = 0;
+
+            var items = context.Transaction.InnerTransaction.OpenTable(ClusterStateMachine.TransactionCommandsSchema, ClusterStateMachine.TransactionCommands);
+            using (GetPrefix(context, database, out var key, previousCount))
+            {
+                if (items.ReadByKey(key, out var reader) == false)
+                    return false;
+
+                raftIndex = *(long*)reader.Read((int)TransactionCommandsColumn.RaftIndex, out _);
+                return true;
             }
         }
 

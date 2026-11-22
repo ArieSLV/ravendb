@@ -409,6 +409,10 @@ namespace Raven.Server.ServerWide.Maintenance
                     copy.LastCompareExchangeIndex = dbReport.LastCompareExchangeIndex;
                     copy.LastClusterWideTransactionRaftIndex = dbReport.LastClusterWideTransactionRaftIndex;
                     copy.LastCompletedClusterTransaction = dbReport.LastCompletedClusterTransaction;
+                    copy.ExecutedClusterTransactionPreviousCount = dbReport.ExecutedClusterTransactionPreviousCount;
+                    copy.ExecutedClusterTransactionRaftIndex = dbReport.ExecutedClusterTransactionRaftIndex;
+                    copy.ExecutedClusterTransactionNextCount = dbReport.ExecutedClusterTransactionNextCount;
+                    copy.DatabaseGroupId = dbReport.DatabaseGroupId;
 
                     copy.UpTime = dbReport.UpTime;
                     nodeReport.Report[dbName] = copy;

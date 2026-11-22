@@ -566,6 +566,9 @@ namespace Raven.Server.Documents
         private long _lastCompletedClusterTransaction;
         public long LastCompletedClusterTransaction => _lastCompletedClusterTransaction;
 
+        public sealed record ExecutedClusterTransaction(long RaftIndex, long PreviousCount, long NextCount);
+        public ExecutedClusterTransaction LastExecutedClusterTransaction { get; private set; }
+
         public readonly RaftIndexWaiter ClusterWideTransactionIndexWaiter;
         public bool IsEncrypted => MasterKey != null;
 
@@ -859,6 +862,7 @@ namespace Raven.Server.Documents
 
                 _nextClusterCommand = command.PreviousCount + command.Commands.Count;
                 _lastCompletedClusterTransaction = _nextClusterCommand.Value - 1;
+                LastExecutedClusterTransaction = new ExecutedClusterTransaction(command.Index, command.PreviousCount, _nextClusterCommand.Value);
             }
             catch (Exception e)
             {
